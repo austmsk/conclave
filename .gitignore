@@ -1,0 +1,44 @@
+# Secrets — a safety net, not the control.
+# Real secrets live in ~/.config/conclave/secrets.env, outside this repo.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.env
+
+# Binaries
+/bin/
+/dist/
+conclave-server
+conclave-worker
+*.exe
+
+# Go build and test output
+*.test
+*.out
+coverage.*
+/vendor/
+
+# Local runtime state
+/artifacts/
+/tmp/
+/data/
+/.pgdata/
+*.db
+*.sqlite
+
+# Claude Code — settings.json is committed; personal overrides are not
+.claude/settings.local.json
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local tooling
+.direnv/
+.tool-versions.local
