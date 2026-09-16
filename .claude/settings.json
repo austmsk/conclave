@@ -25,7 +25,7 @@
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Bash(git push --force:*)",
-      "Bash(git push:* main)",
+      "Bash(git push:*)",
       "Bash(curl:*)",
       "Bash(wget:*)"
     ]
