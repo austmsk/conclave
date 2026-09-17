@@ -42,6 +42,10 @@ type Attempt struct {
 	State  AttemptState  `json:"state"`
 	Reason FailureReason `json:"reason,omitempty"`
 
+	// Revision counts state changes. Compare-and-set updates match on it as
+	// well as State, so a stale retry cannot re-apply itself (RL-13).
+	Revision int `json:"revision"`
+
 	Provenance Provenance `json:"provenance"`
 	Usage      Usage      `json:"usage"`
 

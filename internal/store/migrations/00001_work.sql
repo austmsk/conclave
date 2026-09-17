@@ -15,6 +15,12 @@
 --   * Changing a state column fires record_state_transition (00003), which
 --     writes the audit row itself and refuses the change when no actor is
 --     set. The audit trail does not depend on callers remembering the helper.
+--   * Every state table carries `revision`, incremented by that trigger on
+--     each state change. The helper's compare-and-set matches on state AND
+--     revision, because several lifecycles are cyclic (running ->
+--     needs_attention -> running) and a stale retry that matched on state
+--     alone would silently re-apply itself (RL-13). It is named revision,
+--     not version, because plans already have a domain version number.
 
 -- +goose Up
 
@@ -39,6 +45,7 @@ CREATE TABLE feature_requests (
                      'needs_attention', 'delivered', 'cancelled')),
     -- Set when state is needs_attention; the owner reads it to decide.
     reason       text,
+    revision     integer     NOT NULL DEFAULT 0 CHECK (revision >= 0),
     -- Temporal workflow id, derived from the issue number, so a run can be
     -- followed from this row into the Temporal UI (RL-14).
     workflow_id  text        NOT NULL,
@@ -56,6 +63,7 @@ CREATE TABLE plans (
     state              text        NOT NULL CHECK (state IN ('proposed', 'approved', 'superseded', 'rejected')),
     -- Set when state is rejected or superseded; why.
     reason             text,
+    revision           integer     NOT NULL DEFAULT 0 CHECK (revision >= 0),
     -- Pinned at approval (FR-S19); an approved plan must carry one, which is
     -- why plans are approved through store.ApprovePlan rather than the
     -- generic transition helper.
@@ -87,6 +95,7 @@ CREATE TABLE tasks (
     -- Milestone 1 statuses only; later milestones extend the CHECK.
     state      text        NOT NULL CHECK (state IN ('running', 'done', 'needs_attention', 'cancelled')),
     reason     text,
+    revision   integer     NOT NULL DEFAULT 0 CHECK (revision >= 0),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (plan_id, key)
@@ -98,6 +107,7 @@ CREATE TABLE attempts (
     ordinal             integer        NOT NULL CHECK (ordinal > 0),
     state               text           NOT NULL CHECK (state IN ('running', 'passed', 'failed', 'errored')),
     reason              text,
+    revision            integer     NOT NULL DEFAULT 0 CHECK (revision >= 0),
     -- Provenance is columns rather than JSON because Milestone 2 groups
     -- results by model and prompt version.
     role                text           NOT NULL,

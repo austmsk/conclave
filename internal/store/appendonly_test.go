@@ -32,8 +32,8 @@ func seedAccounting(t *testing.T, ctx context.Context, tx pgx.Tx, s ids) {
 		t.Fatalf("seeding cost event: %v", err)
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO state_transitions
-		(entity_kind, entity_id, from_state, to_state, actor)
-		VALUES ('task', $1, 'running', 'done', 'test')`, s.task)
+		(entity_kind, entity_id, from_state, to_state, actor, db_user, revision)
+		VALUES ('task', $1, 'running', 'done', 'test', 'test', 1)`, s.task)
 	if err != nil {
 		t.Fatalf("seeding state transition: %v", err)
 	}
@@ -61,8 +61,8 @@ func TestAppRoleCannotAlterAppendOnlyRows(t *testing.T) {
 		{"delete cost event", `DELETE FROM cost_events`, permissionDenied},
 		{"truncate cost events", `TRUNCATE cost_events`, permissionDenied},
 		{"insert state transition", `INSERT INTO state_transitions
-			(entity_kind, entity_id, from_state, to_state, actor)
-			VALUES ('task', '` + s.task + `', 'running', 'done', 'test')`, ""},
+			(entity_kind, entity_id, from_state, to_state, actor, db_user, revision)
+			VALUES ('task', '` + s.task + `', 'running', 'done', 'test', 'test', 2)`, ""},
 		{"update state transition", `UPDATE state_transitions SET actor = 'someone else'`, permissionDenied},
 		{"delete state transition", `DELETE FROM state_transitions`, permissionDenied},
 		{"truncate state transitions", `TRUNCATE state_transitions`, permissionDenied},

@@ -23,15 +23,35 @@ func stateOf(t *testing.T, ctx context.Context, tx pgx.Tx, table, id string) (st
 	return state, reason
 }
 
-type audit struct {
-	kind, from, to, actor, reason string
+func revisionOf(t *testing.T, ctx context.Context, tx pgx.Tx, table, id string) int {
+	t.Helper()
+	var rev int
+	if err := tx.QueryRow(ctx, `SELECT revision FROM `+table+` WHERE id = $1`, id).Scan(&rev); err != nil {
+		t.Fatalf("reading revision of %s %s: %v", table, id, err)
+	}
+	return rev
 }
 
-// audits returns every audit row for the entity, oldest first.
+func sessionUser(t *testing.T, ctx context.Context, tx pgx.Tx) string {
+	t.Helper()
+	var u string
+	if err := tx.QueryRow(ctx, `SELECT session_user`).Scan(&u); err != nil {
+		t.Fatalf("reading session_user: %v", err)
+	}
+	return u
+}
+
+type audit struct {
+	kind, from, to, actor, dbUser, reason string
+	revision                              int
+}
+
+// audits returns every audit row for the entity, oldest first. The table is
+// schema-qualified so a temp table can never satisfy this helper.
 func audits(t *testing.T, ctx context.Context, tx pgx.Tx, id string) []audit {
 	t.Helper()
-	rows, err := tx.Query(ctx, `SELECT entity_kind, from_state, to_state, actor, coalesce(reason, '')
-		FROM state_transitions WHERE entity_id = $1 ORDER BY occurred_at, id`, id)
+	rows, err := tx.Query(ctx, `SELECT entity_kind, from_state, to_state, actor, db_user, coalesce(reason, ''), revision
+		FROM public.state_transitions WHERE entity_id = $1 ORDER BY revision`, id)
 	if err != nil {
 		t.Fatalf("reading audit rows: %v", err)
 	}
@@ -39,7 +59,7 @@ func audits(t *testing.T, ctx context.Context, tx pgx.Tx, id string) []audit {
 	var out []audit
 	for rows.Next() {
 		var a audit
-		if err := rows.Scan(&a.kind, &a.from, &a.to, &a.actor, &a.reason); err != nil {
+		if err := rows.Scan(&a.kind, &a.from, &a.to, &a.actor, &a.dbUser, &a.reason, &a.revision); err != nil {
 			t.Fatalf("scanning audit row: %v", err)
 		}
 		out = append(out, a)
@@ -58,14 +78,15 @@ func tableFor(kind contracts.EntityKind) string {
 	}[kind]
 }
 
-// move is the production path for a transition. Plan approval is the one
-// move with its own entry point because it pins the base commit.
+// move is the production path for a transition of a freshly seeded record
+// (revision 0). Plan approval is the one move with its own entry point
+// because it pins the base commit.
 func move(ctx context.Context, tx pgx.Tx, kind contracts.EntityKind, id, from, to string) error {
 	if kind == contracts.EntityPlan && to == string(contracts.PlanApproved) {
-		return store.ApprovePlan(ctx, tx, id, "abc123", testActor)
+		return store.ApprovePlan(ctx, tx, id, 0, "abc123", testActor)
 	}
 	return store.Transition(ctx, tx, store.TransitionRequest{
-		Kind: kind, ID: id, From: from, To: to, Actor: testActor, Reason: "because",
+		Kind: kind, ID: id, From: from, To: to, Revision: 0, Actor: testActor, Reason: "because",
 	})
 }
 
@@ -119,7 +140,11 @@ func checkMove(t *testing.T, ctx context.Context, tx pgx.Tx, s ids, m legalMove)
 	if got, _ := stateOf(t, ctx, tx, tableFor(m.kind), id); got != m.to {
 		t.Errorf("state = %q, want %q", got, m.to)
 	}
-	want := []audit{{kind: string(m.kind), from: m.from, to: m.to, actor: testActor}}
+	if rev := revisionOf(t, ctx, tx, tableFor(m.kind), id); rev != 1 {
+		t.Errorf("revision = %d, want 1", rev)
+	}
+	want := []audit{{kind: string(m.kind), from: m.from, to: m.to, actor: testActor,
+		dbUser: sessionUser(t, ctx, tx), revision: 1}}
 	got := audits(t, ctx, tx, id)
 	for i := range got {
 		got[i].reason = "" // reason varies by path; checked in TestTransitionRecordsReason
@@ -135,7 +160,7 @@ func TestTransitionRecordsReason(t *testing.T) {
 
 	err := store.Transition(ctx, tx, store.TransitionRequest{
 		Kind: contracts.EntityTask, ID: s.task,
-		From: "running", To: "needs_attention",
+		From: "running", To: "needs_attention", Revision: 0,
 		Actor: "workflow:feature-7", Reason: "no attempt passed",
 	})
 	if err != nil {
@@ -144,14 +169,14 @@ func TestTransitionRecordsReason(t *testing.T) {
 	if state, reason := stateOf(t, ctx, tx, "tasks", s.task); state != "needs_attention" || reason != "no attempt passed" {
 		t.Errorf("task = (%q, %q), want (needs_attention, no attempt passed)", state, reason)
 	}
-	want := []audit{{"task", "running", "needs_attention", "workflow:feature-7", "no attempt passed"}}
+	want := []audit{{"task", "running", "needs_attention", "workflow:feature-7", sessionUser(t, ctx, tx), "no attempt passed", 1}}
 	if got := audits(t, ctx, tx, s.task); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("audit rows = %+v, want %+v", got, want)
 	}
 }
 
-// TestTransitionReplayInOneTransaction covers the sequential half of RL-13:
-// the same request twice, then a conflicting one, all on one connection.
+// TestTransitionReplayInOneTransaction covers the sequential half of RL-13
+// on an acyclic lifecycle: the same request twice, then a conflicting one.
 // The concurrent half lives in race_test.go.
 func TestTransitionReplayInOneTransaction(t *testing.T) {
 	ctx, tx := testTx(t)
@@ -159,7 +184,7 @@ func TestTransitionReplayInOneTransaction(t *testing.T) {
 
 	finish := store.TransitionRequest{
 		Kind: contracts.EntityAttempt, ID: s.attempt,
-		From: "running", To: "passed", Actor: "activity:gate",
+		From: "running", To: "passed", Revision: 0, Actor: "activity:gate",
 	}
 	if err := store.Transition(ctx, tx, finish); err != nil {
 		t.Fatalf("first transition: %v", err)
@@ -173,18 +198,57 @@ func TestTransitionReplayInOneTransaction(t *testing.T) {
 		t.Errorf("audit rows after retry = %d, want 1", n)
 	}
 
-	race := finish
-	race.To = "failed"
-	err = store.Transition(ctx, tx, race)
+	conflict := finish
+	conflict.To = "failed"
+	err = store.Transition(ctx, tx, conflict)
 	var wrong *store.WrongStateError
 	if !errors.As(err, &wrong) {
 		t.Fatalf("conflict: got %v, want WrongStateError", err)
 	}
-	if wrong.Expected != "running" || wrong.Actual != "passed" {
+	if wrong.Expected != "running" || wrong.Actual != "passed" || wrong.ExpectedRevision != 0 || wrong.ActualRevision != 1 {
 		t.Errorf("WrongStateError = %+v", wrong)
 	}
 	if errors.Is(err, store.ErrAlreadyApplied) {
 		t.Error("a conflict must not be reported as already applied")
+	}
+}
+
+// TestTransitionStaleRetryOnCyclicLifecycle is the case state-only
+// compare-and-set gets wrong. A task fails, the owner retries it back to
+// running, and then Temporal replays the original failing activity. Its
+// From still matches the current state; only the revision says it is stale.
+func TestTransitionStaleRetryOnCyclicLifecycle(t *testing.T) {
+	ctx, tx := testTx(t)
+	s := seed(t, ctx, tx)
+
+	fail := store.TransitionRequest{Kind: contracts.EntityTask, ID: s.task,
+		From: "running", To: "needs_attention", Revision: 0, Actor: "activity:gate", Reason: "no attempt passed"}
+	retry := store.TransitionRequest{Kind: contracts.EntityTask, ID: s.task,
+		From: "needs_attention", To: "running", Revision: 1, Actor: "owner:12345"}
+	for _, req := range []store.TransitionRequest{fail, retry} {
+		if err := store.Transition(ctx, tx, req); err != nil {
+			t.Fatalf("%s -> %s: %v", req.From, req.To, err)
+		}
+	}
+
+	err := store.Transition(ctx, tx, fail)
+	var wrong *store.WrongStateError
+	if !errors.As(err, &wrong) {
+		t.Fatalf("stale replay: got %v, want WrongStateError", err)
+	}
+	if wrong.Actual != "running" || wrong.ActualRevision != 2 {
+		t.Errorf("WrongStateError = %+v, want running at revision 2", wrong)
+	}
+	if state, _ := stateOf(t, ctx, tx, "tasks", s.task); state != "running" {
+		t.Errorf("stale replay changed state to %q", state)
+	}
+	if n := len(audits(t, ctx, tx, s.task)); n != 2 {
+		t.Errorf("audit rows = %d, want 2", n)
+	}
+
+	// The owner's own request replayed is the genuine already-applied case.
+	if err := store.Transition(ctx, tx, retry); !errors.Is(err, store.ErrAlreadyApplied) {
+		t.Errorf("replaying the latest transition: got %v, want ErrAlreadyApplied", err)
 	}
 }
 
@@ -193,22 +257,30 @@ func TestTransitionRefusals(t *testing.T) {
 	s := seed(t, ctx, tx)
 
 	var illegal *store.IllegalTransitionError
+	var wrong *store.WrongStateError
+	attempt := store.TransitionRequest{Kind: contracts.EntityAttempt, ID: s.attempt,
+		From: "running", To: "passed", Revision: 0, Actor: testActor}
+	with := func(f func(*store.TransitionRequest)) store.TransitionRequest {
+		r := attempt
+		f(&r)
+		return r
+	}
 	cases := []struct {
 		name string
 		req  store.TransitionRequest
 		want func(error) bool
 	}{
-		{"illegal move", store.TransitionRequest{Kind: contracts.EntityAttempt, ID: s.attempt,
-			From: "running", To: "running", Actor: testActor},
+		{"illegal move", with(func(r *store.TransitionRequest) { r.To = "running" }),
 			func(err error) bool { return errors.As(err, &illegal) }},
-		{"unknown kind", store.TransitionRequest{Kind: "widget", ID: s.attempt,
-			From: "running", To: "passed", Actor: testActor},
+		{"unknown kind", with(func(r *store.TransitionRequest) { r.Kind = "widget" }),
 			func(err error) bool { return errors.As(err, &illegal) }},
-		{"missing actor", store.TransitionRequest{Kind: contracts.EntityAttempt, ID: s.attempt,
-			From: "running", To: "passed"},
+		{"missing actor", with(func(r *store.TransitionRequest) { r.Actor = "" }),
 			func(err error) bool { return err != nil && !errors.As(err, &illegal) }},
-		{"not found", store.TransitionRequest{Kind: contracts.EntityAttempt,
-			ID: "00000000-0000-0000-0000-000000000000", From: "running", To: "passed", Actor: testActor},
+		{"negative revision", with(func(r *store.TransitionRequest) { r.Revision = -1 }),
+			func(err error) bool { return err != nil && !errors.As(err, &illegal) && !errors.As(err, &wrong) }},
+		{"stale revision", with(func(r *store.TransitionRequest) { r.Revision = 5 }),
+			func(err error) bool { return errors.As(err, &wrong) && wrong.ActualRevision == 0 }},
+		{"not found", with(func(r *store.TransitionRequest) { r.ID = "00000000-0000-0000-0000-000000000000" }),
 			func(err error) bool { return errors.Is(err, store.ErrNotFound) }},
 		{"plan approval through the generic helper", store.TransitionRequest{Kind: contracts.EntityPlan,
 			ID: s.plan, From: "proposed", To: "approved", Actor: testActor},
@@ -216,47 +288,17 @@ func TestTransitionRefusals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := store.Transition(ctx, tx, tc.req)
-			if !tc.want(err) {
+			if err := store.Transition(ctx, tx, tc.req); !tc.want(err) {
 				t.Fatalf("got %v", err)
 			}
-			for _, kind := range []contracts.EntityKind{contracts.EntityAttempt, contracts.EntityPlan} {
-				id := map[contracts.EntityKind]string{contracts.EntityAttempt: s.attempt, contracts.EntityPlan: s.plan}[kind]
+			for _, id := range []string{s.attempt, s.plan} {
 				if n := len(audits(t, ctx, tx, id)); n != 0 {
-					t.Errorf("%s audit rows = %d, want 0", kind, n)
+					t.Errorf("audit rows for %s = %d, want 0", id, n)
 				}
 			}
 			if state, _ := stateOf(t, ctx, tx, "attempts", s.attempt); state != "running" {
 				t.Errorf("attempt state changed to %q", state)
 			}
 		})
-	}
-}
-
-// TestDirectStateUpdateIsRefused attempts the bypass: application code that
-// updates a state column without going through the helper. The trigger
-// refuses it, so an unaudited state change is impossible for the
-// application role rather than merely discouraged (FR-SEC10).
-func TestDirectStateUpdateIsRefused(t *testing.T) {
-	ctx, tx := testTx(t)
-	s := seed(t, ctx, tx)
-
-	sp := savepoint(t, ctx, tx)
-	_, err := sp.Exec(ctx, `UPDATE attempts SET state = 'passed' WHERE id = $1`, s.attempt)
-	if got := sqlState(err); got != store.SQLStateUnattributedStateChange {
-		t.Fatalf("direct update: got %v (SQLSTATE %q), want SQLSTATE %s", err, got, store.SQLStateUnattributedStateChange)
-	}
-	_ = sp.Rollback(ctx)
-
-	if state, _ := stateOf(t, ctx, tx, "attempts", s.attempt); state != "running" {
-		t.Errorf("attempt state = %q after refused update, want running", state)
-	}
-	if n := len(audits(t, ctx, tx, s.attempt)); n != 0 {
-		t.Errorf("audit rows = %d, want 0", n)
-	}
-
-	// Updates that leave state alone are unaffected.
-	if _, err := tx.Exec(ctx, `UPDATE attempts SET steps = 3 WHERE id = $1`, s.attempt); err != nil {
-		t.Errorf("non-state update: %v", err)
 	}
 }

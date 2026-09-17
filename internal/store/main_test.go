@@ -32,6 +32,7 @@ var (
 	// directly; everything under test runs through beginAppTx.
 	pool  *pgxpool.Pool
 	sqlDB *sql.DB
+	dsn   string
 )
 
 // TestMain starts one Postgres container for the package. Without Docker the
@@ -76,8 +77,9 @@ func startPostgres(ctx context.Context) (testcontainers.Container, string, error
 	return ctr, dsn, nil
 }
 
-func run(ctx context.Context, m *testing.M, dsn string) (int, error) {
+func run(ctx context.Context, m *testing.M, connString string) (int, error) {
 	var err error
+	dsn = connString
 	pool, err = pgxpool.New(ctx, dsn)
 	if err != nil {
 		return 1, fmt.Errorf("opening pool: %w", err)
@@ -120,6 +122,19 @@ func beginAppTx(ctx context.Context) (pgx.Tx, error) {
 		return nil, fmt.Errorf("set role: %w", err)
 	}
 	return tx, nil
+}
+
+// ownerConn opens a dedicated owner connection for tests that need
+// session-level state (SET ROLE, session-scoped settings) without leaking
+// it into the pool. It is closed when the test ends.
+func ownerConn(t *testing.T, ctx context.Context) *pgx.Conn {
+	t.Helper()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	return conn
 }
 
 // testTx returns an application-role transaction that is rolled back when

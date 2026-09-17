@@ -38,8 +38,28 @@ GRANT SELECT, INSERT
     ON cost_events, state_transitions
     TO conclave_app;
 
+-- Temporary tables are searched before public, so a temp table named after
+-- the audit table is the one way a non-owner could try to divert audit
+-- rows. The trigger pins its search_path against this; withholding TEMP
+-- from everyone but the owner is the second layer. PUBLIC holds TEMP on
+-- every database by default, hence the revoke rather than a missing grant.
+-- +goose StatementBegin
+DO $$
+BEGIN
+    EXECUTE format('REVOKE TEMP ON DATABASE %I FROM PUBLIC', current_database());
+END
+$$;
+-- +goose StatementEnd
+
 -- +goose Down
 
+-- +goose StatementBegin
+DO $$
+BEGIN
+    EXECUTE format('GRANT TEMP ON DATABASE %I TO PUBLIC', current_database());
+END
+$$;
+-- +goose StatementEnd
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM conclave_app;
 REVOKE USAGE ON SCHEMA public FROM conclave_app;
 DROP ROLE IF EXISTS conclave_app;

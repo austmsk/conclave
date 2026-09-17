@@ -22,6 +22,7 @@ type FeatureRequest struct {
 	Title       string               `json:"title"`
 	Status      FeatureRequestStatus `json:"status"`
 	Reason      string               `json:"reason,omitempty"`
+	Revision    int                  `json:"revision"`
 	WorkflowID  string               `json:"workflow_id"`
 	CreatedAt   time.Time            `json:"created_at"`
 	UpdatedAt   time.Time            `json:"updated_at"`
@@ -34,6 +35,8 @@ type Plan struct {
 	FeatureRequestID string     `json:"feature_request_id"`
 	Version          int        `json:"version"`
 	Status           PlanStatus `json:"status"`
+	Reason           string     `json:"reason,omitempty"`
+	Revision         int        `json:"revision"`
 	BaseSHA          string     `json:"base_sha,omitempty"`
 	Tasks            []TaskSpec `json:"tasks"`
 	CreatedAt        time.Time  `json:"created_at"`
@@ -42,11 +45,12 @@ type Plan struct {
 
 // Task is the durable record of one unit of work from an approved plan.
 type Task struct {
-	ID     string     `json:"id"`
-	PlanID string     `json:"plan_id"`
-	Spec   TaskSpec   `json:"spec"`
-	Status TaskStatus `json:"status"`
-	Reason string     `json:"reason,omitempty"`
+	ID       string     `json:"id"`
+	PlanID   string     `json:"plan_id"`
+	Spec     TaskSpec   `json:"spec"`
+	Status   TaskStatus `json:"status"`
+	Reason   string     `json:"reason,omitempty"`
+	Revision int        `json:"revision"`
 }
 
 // CostEvent records one billable model call. IdempotencyKey is unique in the
@@ -69,8 +73,10 @@ type CostEvent struct {
 }
 
 // StateTransition is one audit row: who moved which record from what to what,
-// and when (FR-SEC10). Rows are append-only; the application database role
-// cannot update or delete them.
+// and when (FR-SEC10). Actor is what the application reported; DBUser is the
+// login Postgres authenticated. Revision is the record's revision after the
+// change. Rows are append-only; the application database role cannot update
+// or delete them.
 type StateTransition struct {
 	ID         string     `json:"id"`
 	Kind       EntityKind `json:"entity_kind"`
@@ -78,6 +84,8 @@ type StateTransition struct {
 	From       string     `json:"from_state"`
 	To         string     `json:"to_state"`
 	Actor      string     `json:"actor"`
+	DBUser     string     `json:"db_user"`
+	Revision   int        `json:"revision"`
 	Reason     string     `json:"reason,omitempty"`
 	OccurredAt time.Time  `json:"occurred_at"`
 }
