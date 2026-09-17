@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +31,7 @@ func TestLifecycle(t *testing.T) {
 }
 
 func checkWorkspace(t *testing.T, h *harness, sb *docker.Sandbox) {
-	if got := h.out(t, sb, "ls -A"); got != ".git\n.gitignore\nREADME.md\nsrc" {
+	if got := h.out(t, sb, "ls -A"); got != ".git\n.gitignore\n.gitmodules\nREADME.md\nlib\nsrc" {
 		t.Errorf("workspace listing:\n%s", got)
 	}
 	if got := h.out(t, sb, "cat src/tally.go"); !strings.Contains(got, "func Count") {
@@ -141,14 +143,14 @@ func TestExecTimeoutKillsTheProcessTree(t *testing.T) {
 
 	start := time.Now()
 	res, err := sb.Exec(h.ctx, contracts.ExecRequest{
-		Command: []string{"/bin/sh", "-c", "sleep 300 & sleep 300"},
+		Command: []string{"/bin/sh", "-c", "sleep 300 & while :; do echo streaming; done"},
 		Timeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
-	if !res.TimedOut {
-		t.Fatalf("expected TimedOut, got %+v", res)
+	if !res.TimedOut || !bytes.Contains(res.Stdout, []byte("streaming")) {
+		t.Fatalf("expected TimedOut with captured output, got timedOut=%v len=%d", res.TimedOut, len(res.Stdout))
 	}
 	if elapsed := time.Since(start); elapsed > 15*time.Second {
 		t.Errorf("timeout took %v to enforce", elapsed)
@@ -194,7 +196,7 @@ func TestExecRefusesAfterLifetime(t *testing.T) {
 	if err != nil || !res.TimedOut {
 		t.Fatalf("sandbox lifetime should bound a longer request timeout: %+v %v", res, err)
 	}
-	time.Sleep(time.Until(time.Now().Add(500 * time.Millisecond)))
+	time.Sleep(500 * time.Millisecond)
 	if _, err := sb.Exec(h.ctx, contracts.ExecRequest{Command: []string{"true"}}); !errors.Is(err, docker.ErrExpired) {
 		t.Errorf("Exec past lifetime = %v, want ErrExpired", err)
 	}
@@ -206,25 +208,114 @@ func TestCallerCancellationKillsTheCommand(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(h.ctx, 500*time.Millisecond)
 	defer cancel()
-	_, err := sb.Exec(ctx, contracts.ExecRequest{Command: []string{"sleep", "300"}})
+	// The command streams output the whole time, so a buffer read that
+	// raced the reader would be caught by the race detector.
+	res, err := sb.Exec(ctx, contracts.ExecRequest{Command: []string{"/bin/sh", "-c", "while :; do echo streaming; done"}})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Exec = %v, want context deadline", err)
 	}
-	if got := h.out(t, sb, "ps -o comm | grep -c '^sleep' || true"); got != "1" {
-		// One sleep is the init loop's own.
-		t.Errorf("cancelled command survived: %s sleeps", got)
+	if !bytes.Contains(res.Stdout, []byte("streaming")) {
+		t.Error("output captured before cancellation was lost")
+	}
+	if got := h.out(t, sb, "ps -o args | grep -c '[e]cho streaming' || true"); got != "0" {
+		t.Errorf("cancelled command survived: %s", got)
+	}
+}
+
+func TestCloseDoesNotWaitForARunningExec(t *testing.T) {
+	h := newHarness(t)
+	sb := h.create(t, h.spec(t, contracts.NetworkNone))
+
+	execErr := make(chan error, 1)
+	go func() {
+		_, err := sb.Exec(h.ctx, contracts.ExecRequest{Command: []string{"sleep", "300"}, Timeout: time.Minute})
+		execErr <- err
+	}()
+	time.Sleep(500 * time.Millisecond)
+
+	start := time.Now()
+	if err := sb.Close(h.ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("Close waited %v for the running command", took)
+	}
+	select {
+	case err := <-execErr:
+		if !errors.Is(err, docker.ErrClosed) {
+			t.Errorf("Exec under Close = %v, want ErrClosed", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Exec did not return after Close")
+	}
+	if n := len(h.containers(t)); n != 0 {
+		t.Errorf("%d containers remain", n)
+	}
+}
+
+func TestExecRunsBinariesFromWritableMounts(t *testing.T) {
+	h := newHarness(t)
+	sb := h.create(t, h.spec(t, contracts.NetworkNone))
+
+	// A real ELF binary copied into each writable mount, and a script
+	// written there, both executed from that mount.
+	for _, dir := range []string{"/workspace", "/home/agent", "/tmp"} {
+		got := h.out(t, sb, "mkdir -p "+dir+"/bin && cp /bin/busybox "+dir+"/bin/busybox && "+dir+"/bin/busybox echo binary-ok; printf '#!/bin/sh\\necho script-ok\\n' > "+dir+"/run.sh && chmod +x "+dir+"/run.sh && "+dir+"/run.sh")
+		if got != "binary-ok\nscript-ok" {
+			t.Errorf("%s: %q", dir, got)
+		}
+	}
+	// The workspace is where a toolchain builds and runs tests.
+	if err := sb.WriteFile(h.ctx, "scripts/test.sh", []byte("#!/bin/sh\necho tests-pass\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.out(t, sb, "chmod +x scripts/test.sh && ./scripts/test.sh"); got != "tests-pass" {
+		t.Errorf("script from the workspace: %q", got)
+	}
+	if got := h.out(t, sb, "chmod u+s /tmp/bin/busybox && /tmp/bin/busybox id -u"); got != "1000" {
+		t.Errorf("setuid should be ignored on the mount: %q", got)
+	}
+}
+
+func TestReadFileTooLargeIsAPlainError(t *testing.T) {
+	h := newHarness(t)
+	spec := h.spec(t, contracts.NetworkNone)
+	p, err := docker.New(h.ctx, docker.Config{Namespace: h.namespace, MaxOutputBytes: 64 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	raw, err := p.Create(h.ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = raw.Close(context.Background()) }()
+
+	h.out(t, raw, "dd if=/dev/zero of=big.bin bs=1k count=100 2>/dev/null; echo done")
+	if _, err := raw.ReadFile(h.ctx, "big.bin"); !errors.Is(err, docker.ErrFileTooLarge) {
+		t.Fatalf("ReadFile = %v, want ErrFileTooLarge", err)
+	}
+	// Nothing was killed: a process started before the read is still there.
+	h.out(t, raw, "sleep 300 >/dev/null 2>&1 & echo started")
+	if _, err := raw.ReadFile(h.ctx, "big.bin"); !errors.Is(err, docker.ErrFileTooLarge) {
+		t.Fatalf("ReadFile = %v, want ErrFileTooLarge", err)
+	}
+	if got := h.out(t, raw, "ps -o args | grep -c '^sleep 300' || true"); got != "1" {
+		t.Errorf("an oversized read killed other processes: %s sleeps remain", got)
 	}
 }
 
 func TestCreateFailureLeavesNothingBehind(t *testing.T) {
 	h := newHarness(t)
 	spec := h.spec(t, contracts.NetworkRegistries)
-	// Below the daemon's minimum, so ContainerCreate fails after the
-	// network has already been created.
-	spec.Limits.MemoryBytes = 1 << 20
+	// An unreadable file makes the tree upload fail after the network and
+	// the container both exist.
+	if err := os.Chmod(filepath.Join(spec.TreePath, "README.md"), 0); err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := h.p.Create(h.ctx, spec); err == nil {
-		t.Fatal("Create should fail for a memory limit the daemon rejects")
+	if _, _, err := h.p.CreateWithInstall(h.ctx, spec, nil); err == nil {
+		t.Fatal("CreateWithInstall should fail when the tree cannot be archived")
 	}
 	if n := len(h.containers(t)); n != 0 {
 		t.Errorf("%d containers left behind", n)

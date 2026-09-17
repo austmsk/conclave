@@ -51,6 +51,12 @@ func TestWorkspacePathAcceptsOrdinaryPaths(t *testing.T) {
 		"file%.txt",
 		"with space/name.txt",
 		"unicode/日本語.txt",
+		// Glob characters are literal: the script never expands them, so
+		// the validator has no reason to refuse a legal filename.
+		"a*b.txt",
+		"q?.txt",
+		"[set].txt",
+		".gi*/config",
 	}
 	for _, p := range accepted {
 		got, err := workspacePath(p)

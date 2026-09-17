@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,13 +24,17 @@ var (
 	// ErrOutputTooLarge reports a command whose output passed
 	// Config.MaxOutputBytes; the command was killed.
 	ErrOutputTooLarge = errors.New("command output exceeds limit")
+	// ErrFileTooLarge reports a ReadFile of a file larger than
+	// Config.MaxOutputBytes. Nothing is killed.
+	ErrFileTooLarge = errors.New("file exceeds read limit")
 	// ErrKilled reports that processes did not stop when told to and the
 	// container was killed outright. The sandbox is unusable afterwards.
 	ErrKilled = errors.New("sandbox killed: processes did not stop")
 )
 
-// Sandbox is one running container. Operations are serialized: the agent
-// runs one command at a time, and a file read never races a command.
+// Sandbox is one running container. Commands are serialized: the agent
+// runs one at a time, and a file read never races a command. Lifecycle
+// state is guarded separately so Close never waits for a command.
 type Sandbox struct {
 	cli       *client.Client
 	id        string
@@ -41,8 +46,12 @@ type Sandbox struct {
 	maxOutput int64
 	uid, gid  int
 
-	mu         sync.Mutex
+	// ops serializes commands.
+	ops sync.Mutex
+	// life guards the fields below.
+	life       sync.Mutex
 	closed     bool
+	closing    bool
 	killed     bool
 	networkCut bool
 }
@@ -71,8 +80,8 @@ func (s *Sandbox) Exec(ctx context.Context, req contracts.ExecRequest) (contract
 		}
 		workDir = workspaceDir + "/" + rel
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.ops.Lock()
+	defer s.ops.Unlock()
 	res, err := s.run(ctx, execSpec{cmd: req.Command, workDir: workDir, timeout: req.Timeout})
 	if err != nil {
 		return res, fmt.Errorf("exec %q: %w", req.Command[0], err)
@@ -80,48 +89,70 @@ func (s *Sandbox) Exec(ctx context.Context, req contracts.ExecRequest) (contract
 	return res, nil
 }
 
-// readScript walks the path one component at a time, refusing any symlink
-// so a read cannot be redirected out of the workspace, then prints the
-// file. It runs as the sandbox user and so cannot read what the agent
-// could not.
-const readScript = `p=/workspace
-IFS=/; set -- $1; unset IFS
-for c in "$@"; do
+// Exit codes the file scripts use for their own refusals, distinct from
+// anything cat or mkdir return.
+const (
+	exitSymlink   = 3
+	exitNotFile   = 4
+	exitMkdir     = 5
+	exitTooLarge  = 6
+	execArgvShell = "/bin/sh"
+)
+
+// readScript walks the path one component at a time, refusing any
+// symlink so a read cannot be redirected out of the workspace, then
+// prints the file. The path arrives as $1 and is only ever expanded
+// quoted, with globbing off, so it is used exactly as given. It runs as
+// the sandbox user and so cannot read what the agent could not.
+const readScript = `set -f
+rest=$1; p=/workspace
+while [ -n "$rest" ]; do
+  case $rest in
+    */*) c=${rest%%/*}; rest=${rest#*/} ;;
+    *) c=$rest; rest= ;;
+  esac
   p="$p/$c"
   [ -L "$p" ] && { echo "refusing symlink: $p" >&2; exit 3; }
 done
 [ -f "$p" ] || { echo "not a regular file: $p" >&2; exit 4; }
+[ "$(wc -c < "$p")" -le "$2" ] || { echo "file larger than $2 bytes" >&2; exit 6; }
 exec cat -- "$p"`
 
 // writeScript mirrors readScript, creating missing parent directories and
 // refusing to write through a symlink or over a non-file.
-const writeScript = `p=/workspace
-IFS=/; set -- $1; unset IFS
-n=$#; i=0
-for c in "$@"; do
-  i=$((i+1)); p="$p/$c"
+const writeScript = `set -f
+rest=$1; p=/workspace
+while [ -n "$rest" ]; do
+  case $rest in
+    */*) c=${rest%%/*}; rest=${rest#*/} ;;
+    *) c=$rest; rest= ;;
+  esac
+  p="$p/$c"
   [ -L "$p" ] && { echo "refusing symlink: $p" >&2; exit 3; }
-  [ $i -lt $n ] || break
+  [ -n "$rest" ] || break
   [ -e "$p" ] || mkdir -- "$p" || exit 5
   [ -d "$p" ] || { echo "not a directory: $p" >&2; exit 4; }
 done
 [ -e "$p" ] && [ ! -f "$p" ] && { echo "not a regular file: $p" >&2; exit 4; }
 exec cat > "$p"`
 
-// ReadFile returns the contents of a workspace file.
+// ReadFile returns the contents of a workspace file. A file larger than
+// Config.MaxOutputBytes is refused with ErrFileTooLarge before any of it
+// is read.
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	rel, err := workspacePath(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading %q: %w", path, err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.run(ctx, execSpec{cmd: []string{"/bin/sh", "-c", readScript, "sh", rel}, workDir: workspaceDir})
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	limit := strconv.FormatInt(s.maxOutput, 10)
+	res, err := s.run(ctx, execSpec{cmd: []string{execArgvShell, "-c", readScript, "sh", rel, limit}, workDir: workspaceDir})
 	if err != nil {
 		return nil, fmt.Errorf("reading %q: %w", path, err)
 	}
-	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("reading %q: %s", path, strings.TrimSpace(string(res.Stderr)))
+	if err := fileScriptError(res); err != nil {
+		return nil, fmt.Errorf("reading %q: %w", path, err)
 	}
 	return res.Stdout, nil
 }
@@ -132,16 +163,32 @@ func (s *Sandbox) WriteFile(ctx context.Context, path string, data []byte) error
 	if err != nil {
 		return fmt.Errorf("writing %q: %w", path, err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.run(ctx, execSpec{cmd: []string{"/bin/sh", "-c", writeScript, "sh", rel}, workDir: workspaceDir, stdin: bytes.NewReader(data)})
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	res, err := s.run(ctx, execSpec{cmd: []string{execArgvShell, "-c", writeScript, "sh", rel}, workDir: workspaceDir, stdin: bytes.NewReader(data)})
 	if err != nil {
 		return fmt.Errorf("writing %q: %w", path, err)
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("writing %q: %s", path, strings.TrimSpace(string(res.Stderr)))
+	if err := fileScriptError(res); err != nil {
+		return fmt.Errorf("writing %q: %w", path, err)
 	}
 	return nil
+}
+
+func fileScriptError(res contracts.ExecResult) error {
+	msg := strings.TrimSpace(string(res.Stderr))
+	switch res.ExitCode {
+	case 0:
+		return nil
+	case exitSymlink:
+		return fmt.Errorf("%w: %s", ErrInvalidPath, msg)
+	case exitTooLarge:
+		return fmt.Errorf("%w: %s", ErrFileTooLarge, msg)
+	case exitNotFile, exitMkdir:
+		return errors.New(msg)
+	default:
+		return fmt.Errorf("exit %d: %s", res.ExitCode, msg)
+	}
 }
 
 // Diff returns the workspace as a binary-safe unified diff against the
@@ -151,9 +198,9 @@ func (s *Sandbox) WriteFile(ctx context.Context, path string, data []byte) error
 // untrusted code has touched.
 func (s *Sandbox) Diff(ctx context.Context) ([]byte, error) {
 	script := `git add -A -N . && exec git diff --binary --no-color --no-ext-diff "$1"`
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	res, err := s.run(ctx, execSpec{cmd: []string{"/bin/sh", "-c", script, "sh", s.base}, workDir: workspaceDir})
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	res, err := s.run(ctx, execSpec{cmd: []string{execArgvShell, "-c", script, "sh", s.base}, workDir: workspaceDir})
 	if err != nil {
 		return nil, fmt.Errorf("diffing workspace: %w", err)
 	}
@@ -163,13 +210,12 @@ func (s *Sandbox) Diff(ctx context.Context) ([]byte, error) {
 	return res.Stdout, nil
 }
 
-// DisconnectNetwork ends the install phase: the container loses every
-// interface but loopback. It must be called before the agent is given
-// control of a sandbox created with NetworkRegistries, and is a no-op for
-// one created with NetworkNone or already disconnected.
-func (s *Sandbox) DisconnectNetwork(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// disconnectNetwork ends the install phase: the container loses every
+// interface but loopback. CreateWithInstall calls it before returning, so
+// no sandbox is ever handed out with a network attached.
+func (s *Sandbox) disconnectNetwork(ctx context.Context) error {
+	s.life.Lock()
+	defer s.life.Unlock()
 	if s.closed {
 		return ErrClosed
 	}
@@ -184,17 +230,23 @@ func (s *Sandbox) DisconnectNetwork(ctx context.Context) error {
 	return nil
 }
 
-// Close removes the container and its network. A second call returns nil
-// without touching the daemon; a failed call may be retried.
+// Close removes the container and its network. It does not wait for a
+// running command: force removal ends the command, whose Exec then
+// returns ErrClosed. A second call returns nil without touching the
+// daemon; a failed call may be retried.
 func (s *Sandbox) Close(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.life.Lock()
+	defer s.life.Unlock()
 	if s.closed {
 		return nil
 	}
+	// Mark before removing, so a command the removal interrupts reports
+	// ErrClosed rather than a made-up exit status.
+	s.closing = true
 	if s.id != "" {
 		_, err := s.cli.ContainerRemove(ctx, s.id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
 		if err != nil && !cerrdefs.IsNotFound(err) {
+			s.closing = false
 			return fmt.Errorf("removing container for sandbox %s: %w", s.name, err)
 		}
 	}
@@ -206,4 +258,10 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	return nil
+}
+
+func (s *Sandbox) isClosed() bool {
+	s.life.Lock()
+	defer s.life.Unlock()
+	return s.closed || s.closing
 }

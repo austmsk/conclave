@@ -39,6 +39,12 @@ func TestPrepareTreeStripsEveryTraceOfTheRemote(t *testing.T) {
 	if out := sandboxtest.Git(t, dir, "for-each-ref", "refs/remotes"); strings.TrimSpace(out) != "" {
 		t.Errorf("remote-tracking refs remain: %q", out)
 	}
+	if out := sandboxtest.Git(t, filepath.Join(dir, "lib"), "remote"); strings.TrimSpace(out) != "" {
+		t.Errorf("submodule remotes remain: %q", out)
+	}
+	if out := sandboxtest.Git(t, filepath.Join(dir, "lib"), "status", "--porcelain"); out != "" {
+		t.Errorf("submodule still works but is dirty: %q", out)
+	}
 	if got := strings.TrimSpace(sandboxtest.Git(t, dir, "rev-parse", "HEAD")); got != head {
 		t.Errorf("HEAD moved: got %s want %s", got, head)
 	}
@@ -101,6 +107,26 @@ var unpreparedTrees = []struct {
 	{"alternates", func(t *testing.T, dir string) {
 		mustPrepare(t, dir)
 		sandboxtest.WriteFile(t, dir, ".git/objects/info/alternates", "/elsewhere/objects")
+	}},
+	{"http alternates", func(t *testing.T, dir string) {
+		mustPrepare(t, dir)
+		sandboxtest.WriteFile(t, dir, ".git/objects/info/http-alternates", sandboxtest.RemoteURL+"/objects")
+	}},
+	{"submodule remote", func(t *testing.T, dir string) {
+		mustPrepare(t, dir)
+		sandboxtest.Git(t, filepath.Join(dir, "lib"), "remote", "add", "origin", sandboxtest.RemoteURL)
+	}},
+	{"submodule reflog", func(t *testing.T, dir string) {
+		mustPrepare(t, dir)
+		sandboxtest.WriteFile(t, dir, ".git/modules/lib/logs/HEAD", "clone: from "+sandboxtest.RemoteURL)
+	}},
+	{"submodule http alternates", func(t *testing.T, dir string) {
+		mustPrepare(t, dir)
+		sandboxtest.WriteFile(t, dir, ".git/modules/lib/objects/info/http-alternates", sandboxtest.RemoteURL)
+	}},
+	{"user section", func(t *testing.T, dir string) {
+		mustPrepare(t, dir)
+		sandboxtest.Git(t, dir, "config", "user.name", "Someone")
 	}},
 	{"git file (worktree)", func(t *testing.T, dir string) {
 		mustPrepare(t, dir)
@@ -191,6 +217,14 @@ func TestHeadCommit(t *testing.T) {
 		sandboxtest.WriteFile(t, dir, ".git/HEAD", "ref: refs/heads/nope\n")
 		if _, err := sandbox.HeadCommit(dir); err == nil {
 			t.Fatal("expected an error for a dangling HEAD")
+		}
+	})
+	t.Run("ref outside refs", func(t *testing.T) {
+		for _, ref := range []string{"../../etc/passwd", "refs/../config", "config", "/etc/passwd"} {
+			sandboxtest.WriteFile(t, dir, ".git/HEAD", "ref: "+ref+"\n")
+			if _, err := sandbox.HeadCommit(dir); err == nil || !strings.Contains(err.Error(), "not a ref") {
+				t.Errorf("HeadCommit with HEAD -> %q = %v, want a ref error", ref, err)
+			}
 		}
 	})
 }

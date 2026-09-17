@@ -89,6 +89,12 @@ func validateLimits(l contracts.ResourceLimits) error {
 	if l.DiskBytes < minDiskBytes {
 		return fmt.Errorf("%w: DiskBytes below %d", ErrInvalidSpec, minDiskBytes)
 	}
+	// The disk is tmpfs, and tmpfs pages are charged to the memory cgroup.
+	// A disk the memory limit cannot hold turns a full disk into an OOM
+	// kill at an arbitrary point instead of a clean ENOSPC.
+	if l.DiskBytes >= l.MemoryBytes {
+		return fmt.Errorf("%w: DiskBytes (%d) must be below MemoryBytes (%d): the disk is memory-backed", ErrInvalidSpec, l.DiskBytes, l.MemoryBytes)
+	}
 	// The init loop holds two pids; the agent needs some of its own.
 	if l.MaxProcs < 8 {
 		return fmt.Errorf("%w: MaxProcs below 8", ErrInvalidSpec)
@@ -134,9 +140,14 @@ func diskSplit(disk int64) (workspace, home, tmp int64) {
 	return workspace, home, tmp
 }
 
+// tmpfsOption renders a writable mount. Docker adds noexec to every tmpfs
+// unless told otherwise; a build-and-test sandbox has to run what it
+// builds, so exec is requested explicitly (docs/decisions/0004). nosuid
+// and nodev stay: no capability is available to make either matter, and
+// nothing legitimate needs them.
 func tmpfsOption(size int64, mode string, uid, gid int) string {
 	return "size=" + strconv.FormatInt(size, 10) + ",mode=" + mode +
-		",uid=" + strconv.Itoa(uid) + ",gid=" + strconv.Itoa(gid)
+		",uid=" + strconv.Itoa(uid) + ",gid=" + strconv.Itoa(gid) + ",exec,nosuid,nodev"
 }
 
 func (p *Provider) containerConfig(spec contracts.SandboxSpec) *container.Config {

@@ -16,19 +16,28 @@ import (
 	"github.com/austmsk/conclave/internal/sandbox"
 )
 
+// ErrInstallFailed reports an install command that exited non-zero. The
+// sandbox has been closed; the results carry its output.
+var ErrInstallFailed = errors.New("install command failed")
+
 // Config tunes a Provider. The zero value is usable.
 type Config struct {
-	// Namespace scopes Reap: it only removes sandboxes created with the
-	// same namespace. Defaults to "default".
+	// Namespace scopes Reap's first sweep: it removes sandboxes created
+	// with the same namespace at the requested age. Defaults to "default".
 	Namespace string
+
+	// StaleAge is the age past which Reap removes any Conclave sandbox
+	// regardless of namespace, so a namespace change cannot strand
+	// containers. Defaults to 24 hours.
+	StaleAge time.Duration
 
 	// UID and GID are the identity every process in the sandbox runs as.
 	// Both default to 1000 and neither may be 0.
 	UID, GID int
 
-	// MaxOutputBytes caps each of stdout and stderr per exec. A command
-	// that exceeds it is killed and Exec returns ErrOutputTooLarge.
-	// Defaults to 32 MiB.
+	// MaxOutputBytes caps each of stdout and stderr per exec, and the size
+	// of a file ReadFile will return. A command that exceeds it is killed
+	// and Exec returns ErrOutputTooLarge. Defaults to 32 MiB.
 	MaxOutputBytes int64
 
 	// Client, when set, is used instead of one built from the environment.
@@ -38,6 +47,9 @@ type Config struct {
 func (c Config) withDefaults() Config {
 	if c.Namespace == "" {
 		c.Namespace = "default"
+	}
+	if c.StaleAge <= 0 {
+		c.StaleAge = 24 * time.Hour
 	}
 	if c.UID == 0 {
 		c.UID = 1000
@@ -87,10 +99,57 @@ func (p *Provider) Close() error {
 	return p.cli.Close()
 }
 
-// Create builds a hardened container, streams the prepared working tree
-// into its workspace, and returns the running sandbox. Any failure after a
-// resource was allocated releases it before returning.
+// Create builds a hardened container with no network, streams the
+// prepared working tree into its workspace, and returns the running
+// sandbox. A spec asking for NetworkRegistries is refused here: nothing
+// on contracts.Sandbox can cut a network, so a networked sandbox must not
+// leave this package. Use CreateWithInstall, which runs the install phase
+// and disconnects before returning.
 func (p *Provider) Create(ctx context.Context, spec contracts.SandboxSpec) (contracts.Sandbox, error) {
+	if spec.Network == contracts.NetworkRegistries {
+		return nil, fmt.Errorf("%w: NetworkRegistries requires CreateWithInstall, so the network is cut before the sandbox is returned", ErrInvalidSpec)
+	}
+	return p.create(ctx, spec)
+}
+
+// CreateWithInstall creates the sandbox, runs the install commands in
+// order under the spec's network mode, cuts the network, and returns the
+// sandbox ready for the agent phase. The results of every command run are
+// returned in both outcomes. A command that exits non-zero, or a failure
+// at any step, closes the sandbox and returns ErrInstallFailed or the
+// step's error; the caller never receives a sandbox with a network.
+func (p *Provider) CreateWithInstall(ctx context.Context, spec contracts.SandboxSpec, install []contracts.ExecRequest) (contracts.Sandbox, []contracts.ExecResult, error) {
+	sb, err := p.create(ctx, spec)
+	if err != nil {
+		return nil, nil, err
+	}
+	results, err := p.installPhase(ctx, sb, install)
+	if err != nil {
+		_ = sb.Close(context.WithoutCancel(ctx))
+		return nil, results, err
+	}
+	return sb, results, nil
+}
+
+func (p *Provider) installPhase(ctx context.Context, sb *Sandbox, install []contracts.ExecRequest) ([]contracts.ExecResult, error) {
+	results := make([]contracts.ExecResult, 0, len(install))
+	for i, req := range install {
+		res, err := sb.Exec(ctx, req)
+		results = append(results, res)
+		if err != nil {
+			return results, fmt.Errorf("install step %d: %w", i+1, err)
+		}
+		if res.ExitCode != 0 {
+			return results, fmt.Errorf("%w: step %d exited %d", ErrInstallFailed, i+1, res.ExitCode)
+		}
+	}
+	if err := sb.disconnectNetwork(ctx); err != nil {
+		return results, err
+	}
+	return results, nil
+}
+
+func (p *Provider) create(ctx context.Context, spec contracts.SandboxSpec) (*Sandbox, error) {
 	if err := validateSpec(spec); err != nil {
 		return nil, err
 	}
@@ -193,50 +252,80 @@ func (p *Provider) verifyNoMounts(ctx context.Context, sb *Sandbox) error {
 	if err != nil {
 		return fmt.Errorf("inspecting container for sandbox %s: %w", sb.name, err)
 	}
-	for _, m := range info.Container.Mounts {
+	if len(info.Container.Mounts) > 0 {
+		m := info.Container.Mounts[0]
 		return fmt.Errorf("%w: image gives the container a %s mount at %s", ErrInvalidSpec, m.Type, m.Destination)
 	}
 	return nil
 }
 
-// Reap removes every container and network in the provider's namespace
-// created more than olderThan ago, whatever state it is in, and returns
-// the number of containers removed (NFR-R3). It relies on labels rather
-// than in-memory state, so it also finds sandboxes created by a worker
-// that has since died.
+// Reap removes orphaned sandboxes and returns how many containers it
+// removed (NFR-R3). It sweeps twice: containers and networks in the
+// provider's namespace older than olderThan, then any Conclave sandbox in
+// any namespace older than Config.StaleAge, so a namespace change cannot
+// strand containers. It relies on labels rather than in-memory state, so
+// it also finds sandboxes created by a worker that has since died. A
+// removal that fails is reported and does not stop the sweep, so one
+// wedged container cannot shield every orphan behind it.
 func (p *Provider) Reap(ctx context.Context, olderThan time.Duration) (int, error) {
-	cutoff := time.Now().Add(-olderThan)
-	filters := make(client.Filters).Add("label", labelNamespace+"="+p.cfg.Namespace)
+	now := time.Now()
+	sweeps := []struct {
+		filter string
+		cutoff time.Time
+	}{
+		{labelNamespace + "=" + p.cfg.Namespace, now.Add(-olderThan)},
+		{labelSandbox + "=true", now.Add(-max(olderThan, p.cfg.StaleAge))},
+	}
+	removed := 0
+	var errs []error
+	for _, sweep := range sweeps {
+		filters := make(client.Filters).Add("label", sweep.filter)
+		n, err := p.reapContainers(ctx, filters, sweep.cutoff)
+		removed += n
+		errs = append(errs, err, p.reapNetworks(ctx, filters, sweep.cutoff))
+	}
+	return removed, errors.Join(errs...)
+}
 
+func (p *Provider) reapContainers(ctx context.Context, filters client.Filters, cutoff time.Time) (int, error) {
 	containers, err := p.cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
 	if err != nil {
 		return 0, fmt.Errorf("listing sandbox containers: %w", err)
 	}
 	removed := 0
+	var errs []error
 	for _, c := range containers.Items {
 		if time.Unix(c.Created, 0).After(cutoff) {
 			continue
 		}
 		_, err := p.cli.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
-		if err != nil && !cerrdefs.IsNotFound(err) {
-			return removed, fmt.Errorf("removing orphaned container %s: %w", c.ID, err)
+		switch {
+		case err == nil:
+			removed++
+		case cerrdefs.IsNotFound(err):
+			// Already gone: not ours to count.
+		default:
+			errs = append(errs, fmt.Errorf("removing orphaned container %s: %w", c.ID, err))
 		}
-		removed++
 	}
+	return removed, errors.Join(errs...)
+}
 
+func (p *Provider) reapNetworks(ctx context.Context, filters client.Filters, cutoff time.Time) error {
 	networks, err := p.cli.NetworkList(ctx, client.NetworkListOptions{Filters: filters})
 	if err != nil {
-		return removed, fmt.Errorf("listing sandbox networks: %w", err)
+		return fmt.Errorf("listing sandbox networks: %w", err)
 	}
+	var errs []error
 	for _, n := range networks.Items {
 		if n.Created.After(cutoff) {
 			continue
 		}
 		if _, err := p.cli.NetworkRemove(ctx, n.ID, client.NetworkRemoveOptions{}); err != nil && !cerrdefs.IsNotFound(err) {
-			return removed, fmt.Errorf("removing orphaned network %s: %w", n.ID, err)
+			errs = append(errs, fmt.Errorf("removing orphaned network %s: %w", n.ID, err))
 		}
 	}
-	return removed, nil
+	return errors.Join(errs...)
 }
 
 func randomSuffix() string {

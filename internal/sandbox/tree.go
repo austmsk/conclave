@@ -17,34 +17,33 @@ import (
 // pointer to git state outside the tree. Create refuses such a tree.
 var ErrTreeNotPrepared = errors.New("working tree not prepared for a sandbox")
 
-// minimalConfig replaces .git/config wholesale. Rewriting rather than
-// editing means nothing survives that we did not think of: remotes,
-// credential helpers, extra headers, includes, external commands.
-const minimalConfig = "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = false\n"
-
-// strippedPaths are removed from .git outright. Reflogs record the clone
-// URL, which is where an installation token ends up when a clone uses an
-// authenticated URL; FETCH_HEAD holds the same URL; refs/remotes, remotes
-// and branches describe the remote; hooks are executable content nobody
+// strippedPaths are removed from every git directory in the tree, the
+// superproject's and each submodule's under .git/modules. Reflogs record
+// the clone URL; FETCH_HEAD holds it too; refs/remotes, remotes and
+// branches describe the remote; hooks are executable content nobody
 // reviewed.
 var strippedPaths = []string{
 	"logs", "FETCH_HEAD", "ORIG_HEAD", "refs/remotes", "remotes", "branches", "hooks", "config.worktree",
 }
 
-// forbiddenPaths may not exist in a prepared tree. Alternates and commondir
-// point at objects or state outside the tree, which a sandbox cannot reach
-// and must not be given.
+// forbiddenPaths may not exist in a prepared tree. Alternates point at
+// objects outside the tree, which a sandbox cannot reach and must not be
+// given; http-alternates can carry a credentialed URL as well.
 var forbiddenPaths = []string{
-	"objects/info/alternates", "commondir", "gitdir",
+	"objects/info/alternates", "objects/info/http-alternates", "commondir", "gitdir",
 }
 
+// keptSections are the only config sections a prepared tree may hold.
+// core carries the repository format and, for a submodule, its worktree;
+// extensions carries the object format. Everything else, remotes and
+// credentials included, is dropped.
+var keptSections = map[string]bool{"core": true, "extensions": true}
+
 var (
-	// forbiddenSection matches config sections that name a remote,
-	// credential source, URL rewrite, include, or transport.
-	forbiddenSection = regexp.MustCompile(`(?i)^\s*\[\s*(remote|credential|url|include|includeif|http|https|ssh|branch|submodule)\b`)
-	// forbiddenKey matches keys that run commands or carry credentials
-	// regardless of section.
-	forbiddenKey = regexp.MustCompile(`(?i)^\s*(sshcommand|askpass|hookspath|fsmonitor|helper|extraheader|proxy|insteadof|pushinsteadof|gitproxy|editor|pager|external|textconv)\s*=`)
+	sectionHeader = regexp.MustCompile(`^\s*\[\s*([^\s\]"]+)`)
+	// forbiddenKey matches keys that run commands or carry credentials in
+	// any section, including the ones that are kept.
+	forbiddenKey = regexp.MustCompile(`(?i)^\s*(sshcommand|askpass|hookspath|fsmonitor|helper|extraheader|proxy|insteadof|pushinsteadof|gitproxy|editor|pager|external|textconv|worktreeconfig)\s*=`)
 	// packedRemoteRef matches packed-refs lines for remote-tracking refs.
 	packedRemoteRef = regexp.MustCompile(`^[0-9a-f]{40,64} refs/remotes/`)
 )
@@ -53,41 +52,60 @@ var (
 // operates in place: the caller owns the directory and has already cloned
 // at the base commit. It is idempotent, so a retried activity can call it
 // again on an already prepared tree.
+//
+// Clone keeps the installation token out of git entirely, so this is
+// defence in depth: it removes what a differently made clone might have
+// left, and VerifyTree then proves nothing of the kind remains.
 func PrepareTree(treePath string) error {
-	gitDir, err := gitDirectory(treePath)
+	dirs, err := gitDirectories(treePath)
 	if err != nil {
 		return err
 	}
+	for _, gitDir := range dirs {
+		if err := prepareGitDir(gitDir); err != nil {
+			return fmt.Errorf("preparing %s: %w", gitDir, err)
+		}
+	}
+	return VerifyTree(treePath)
+}
+
+func prepareGitDir(gitDir string) error {
 	for _, rel := range forbiddenPaths {
 		if _, err := os.Lstat(filepath.Join(gitDir, rel)); err == nil {
-			return fmt.Errorf("%w: %s/%s exists", ErrTreeNotPrepared, ".git", rel)
+			return fmt.Errorf("%w: %s exists", ErrTreeNotPrepared, rel)
 		}
 	}
 	for _, rel := range strippedPaths {
 		if err := os.RemoveAll(filepath.Join(gitDir, rel)); err != nil {
-			return fmt.Errorf("removing .git/%s: %w", rel, err)
+			return fmt.Errorf("removing %s: %w", rel, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(minimalConfig), 0o644); err != nil {
-		return fmt.Errorf("writing .git/config: %w", err)
-	}
-	if err := stripPackedRemoteRefs(filepath.Join(gitDir, "packed-refs")); err != nil {
+	if err := scrubConfig(filepath.Join(gitDir, "config")); err != nil {
 		return err
 	}
-	return VerifyTree(treePath)
+	return stripPackedRemoteRefs(filepath.Join(gitDir, "packed-refs"))
 }
 
 // VerifyTree reports whether a tree is safe to hand to a sandbox. Providers
 // call it in Create as a second line of defence, so a caller that skipped
 // PrepareTree cannot leak a remote or a token into a container.
 func VerifyTree(treePath string) error {
-	gitDir, err := gitDirectory(treePath)
+	dirs, err := gitDirectories(treePath)
 	if err != nil {
 		return err
 	}
+	for _, gitDir := range dirs {
+		if err := verifyGitDir(gitDir); err != nil {
+			return fmt.Errorf("%s: %w", gitDir, err)
+		}
+	}
+	return nil
+}
+
+func verifyGitDir(gitDir string) error {
 	for _, rel := range append(append([]string{}, forbiddenPaths...), strippedPaths...) {
 		if _, err := os.Lstat(filepath.Join(gitDir, rel)); err == nil {
-			return fmt.Errorf("%w: .git/%s exists", ErrTreeNotPrepared, rel)
+			return fmt.Errorf("%w: %s exists", ErrTreeNotPrepared, rel)
 		}
 	}
 	if err := verifyConfig(filepath.Join(gitDir, "config")); err != nil {
@@ -96,31 +114,103 @@ func VerifyTree(treePath string) error {
 	return verifyPackedRefs(filepath.Join(gitDir, "packed-refs"))
 }
 
-// gitDirectory returns treePath/.git, insisting it is a real directory. A
-// .git file means a worktree or submodule whose state lives elsewhere; a
-// symlink could point anywhere.
-func gitDirectory(treePath string) (string, error) {
+// gitDirectories returns the tree's git directory followed by every
+// submodule git directory nested under .git/modules, however deep. The
+// root must be a real directory: a .git file means a worktree or
+// submodule whose state lives elsewhere; a symlink could point anywhere.
+func gitDirectories(treePath string) ([]string, error) {
 	gitDir := filepath.Join(treePath, ".git")
 	info, err := os.Lstat(gitDir)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrTreeNotPrepared, err)
+		return nil, fmt.Errorf("%w: %w", ErrTreeNotPrepared, err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("%w: .git is not a directory", ErrTreeNotPrepared)
+		return nil, fmt.Errorf("%w: .git is not a directory", ErrTreeNotPrepared)
 	}
-	return gitDir, nil
+	dirs := []string{gitDir}
+	if err := collectModules(gitDir, &dirs); err != nil {
+		return nil, err
+	}
+	return dirs, nil
+}
+
+// collectModules walks gitDir/modules. A directory holding HEAD and
+// objects is a submodule's git directory; its own modules are walked in
+// turn, and its objects are not.
+func collectModules(gitDir string, dirs *[]string) error {
+	modules := filepath.Join(gitDir, "modules")
+	if _, err := os.Lstat(modules); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return filepath.WalkDir(modules, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() || path == modules || !isGitDir(path) {
+			return nil
+		}
+		*dirs = append(*dirs, path)
+		if err := collectModules(path, dirs); err != nil {
+			return err
+		}
+		return fs.SkipDir
+	})
+}
+
+func isGitDir(path string) bool {
+	head, err := os.Lstat(filepath.Join(path, "HEAD"))
+	if err != nil || !head.Mode().IsRegular() {
+		return false
+	}
+	objects, err := os.Lstat(filepath.Join(path, "objects"))
+	return err == nil && objects.IsDir()
+}
+
+// scrubConfig rewrites a git config keeping only the core and extensions
+// sections, minus any key that runs a command or carries a credential.
+// Rewriting from what is kept, rather than deleting what is known, means
+// nothing survives that was not thought of.
+func scrubConfig(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		data = nil
+	} else if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	var out bytes.Buffer
+	keep := false
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if m := sectionHeader.FindStringSubmatch(line); m != nil {
+			keep = keptSections[strings.ToLower(m[1])]
+		}
+		if keep && !forbiddenKey.MatchString(line) {
+			out.WriteString(line + "\n")
+		}
+	}
+	if out.Len() == 0 {
+		out.WriteString("[core]\n\trepositoryformatversion = 0\n\tbare = false\n")
+	}
+	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	return nil
 }
 
 func verifyConfig(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("%w: reading .git/config: %w", ErrTreeNotPrepared, err)
+		return fmt.Errorf("%w: reading config: %w", ErrTreeNotPrepared, err)
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for line := 1; scanner.Scan(); line++ {
 		text := scanner.Text()
-		if forbiddenSection.MatchString(text) || forbiddenKey.MatchString(text) {
-			return fmt.Errorf("%w: .git/config line %d", ErrTreeNotPrepared, line)
+		if m := sectionHeader.FindStringSubmatch(text); m != nil && !keptSections[strings.ToLower(m[1])] {
+			return fmt.Errorf("%w: config line %d: section %q", ErrTreeNotPrepared, line, m[1])
+		}
+		if forbiddenKey.MatchString(text) {
+			return fmt.Errorf("%w: config line %d", ErrTreeNotPrepared, line)
 		}
 	}
 	return nil
@@ -176,10 +266,11 @@ func stripPackedRemoteRefs(path string) error {
 // code. A detached HEAD is returned as is; a symbolic HEAD is followed
 // through the loose ref or packed-refs.
 func HeadCommit(treePath string) (string, error) {
-	gitDir, err := gitDirectory(treePath)
+	dirs, err := gitDirectories(treePath)
 	if err != nil {
 		return "", err
 	}
+	gitDir := dirs[0]
 	head, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
 	if err != nil {
 		return "", fmt.Errorf("reading HEAD: %w", err)
@@ -188,6 +279,9 @@ func HeadCommit(treePath string) (string, error) {
 	ref, symbolic := strings.CutPrefix(target, "ref: ")
 	if !symbolic {
 		return validSHA(target)
+	}
+	if !strings.HasPrefix(ref, "refs/") || strings.Contains(ref, "..") {
+		return "", fmt.Errorf("resolving HEAD: %q is not a ref", ref)
 	}
 	if loose, err := os.ReadFile(filepath.Join(gitDir, filepath.FromSlash(ref))); err == nil {
 		return validSHA(strings.TrimSpace(string(loose)))

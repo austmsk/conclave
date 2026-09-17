@@ -26,13 +26,13 @@ func (s *Sandbox) copyTreeIn(ctx context.Context, treePath string) error {
 		_ = pw.CloseWithError(err)
 		errc <- err
 	}()
-	s.mu.Lock()
+	s.ops.Lock()
 	res, err := s.run(ctx, execSpec{
 		cmd:     []string{"tar", "-x", "-f", "-", "-C", workspaceDir},
 		workDir: workspaceDir,
 		stdin:   pr,
 	})
-	s.mu.Unlock()
+	s.ops.Unlock()
 	_ = pr.Close()
 	if werr := <-errc; werr != nil {
 		return fmt.Errorf("archiving %s: %w", treePath, werr)

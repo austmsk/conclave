@@ -53,6 +53,8 @@ func TestValidateSpecRejectsUnsafeSpecs(t *testing.T) {
 		{"zero cpu", func(s *contracts.SandboxSpec) { s.Limits.CPUShares = 0 }, ErrInvalidSpec},
 		{"zero disk", func(s *contracts.SandboxSpec) { s.Limits.DiskBytes = 0 }, ErrInvalidSpec},
 		{"tiny disk", func(s *contracts.SandboxSpec) { s.Limits.DiskBytes = 1 << 20 }, ErrInvalidSpec},
+		{"disk equal to memory", func(s *contracts.SandboxSpec) { s.Limits.DiskBytes = s.Limits.MemoryBytes }, ErrInvalidSpec},
+		{"disk above memory", func(s *contracts.SandboxSpec) { s.Limits.DiskBytes = s.Limits.MemoryBytes + 1 }, ErrInvalidSpec},
 		{"zero procs", func(s *contracts.SandboxSpec) { s.Limits.MaxProcs = 0 }, ErrInvalidSpec},
 		{"too few procs", func(s *contracts.SandboxSpec) { s.Limits.MaxProcs = 4 }, ErrInvalidSpec},
 		{"zero timeout", func(s *contracts.SandboxSpec) { s.Limits.Timeout = 0 }, ErrInvalidSpec},
@@ -123,6 +125,7 @@ func TestHostConfigIsHardened(t *testing.T) {
 		{"network none", hc.NetworkMode == "none"},
 		{"private ipc", hc.IpcMode == container.IPCModePrivate},
 		{"image volume covered read-only", hc.Tmpfs["/data"] == "size=4k,mode=0755,ro"},
+		{"writable mounts allow exec without suid", strings.Contains(hc.Tmpfs[workspaceDir], ",exec,nosuid,nodev") && strings.Contains(hc.Tmpfs[tmpDir], ",exec,") && strings.Contains(hc.Tmpfs[homeDir], ",exec,")},
 		{"workspace mount wins over an image volume", strings.HasPrefix(hc.Tmpfs[workspaceDir], "size="+strconv.FormatInt(spec.Limits.DiskBytes/2, 10)+",")},
 		{"home and tmp mounted", hc.Tmpfs[homeDir] != "" && hc.Tmpfs[tmpDir] != ""},
 	}

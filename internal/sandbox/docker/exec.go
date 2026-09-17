@@ -22,7 +22,7 @@ type execSpec struct {
 	timeout time.Duration
 }
 
-// run executes one command and captures its output. Callers hold s.mu.
+// run executes one command and captures its output. Callers hold s.ops.
 func (s *Sandbox) run(ctx context.Context, spec execSpec) (contracts.ExecResult, error) {
 	timeout, err := s.effectiveTimeout(spec.timeout)
 	if err != nil {
@@ -37,70 +37,72 @@ func (s *Sandbox) run(ctx context.Context, spec execSpec) (contracts.ExecResult,
 		Cmd:          spec.cmd,
 	})
 	if err != nil {
-		return contracts.ExecResult{}, fmt.Errorf("creating exec: %w", err)
+		return contracts.ExecResult{}, s.closedOr(fmt.Errorf("creating exec: %w", err))
 	}
 	attach, err := s.cli.ExecAttach(ctx, execID.ID, client.ExecAttachOptions{})
 	if err != nil {
-		return contracts.ExecResult{}, fmt.Errorf("attaching exec: %w", err)
+		return contracts.ExecResult{}, s.closedOr(fmt.Errorf("attaching exec: %w", err))
 	}
-	defer attach.Close()
 
 	start := time.Now()
-	cap := newCapture(s.maxOutput)
+	output := newCapture(s.maxOutput)
 	done := make(chan error, 1)
-	go func() { done <- cap.consume(attach, spec.stdin) }()
+	go func() { done <- output.consume(attach, spec.stdin) }()
 
-	res, err := s.await(ctx, done, timeout)
-	res.Duration = time.Since(start)
-	res.Stdout, res.Stderr = cap.stdout.Bytes(), cap.stderr.Bytes()
+	timedOut, err := s.await(ctx, done, timeout)
+	// Whatever path await took, close the stream and wait for the reader
+	// before touching the buffers: nothing may still be writing to them.
+	attach.Close()
+	readErr := <-done
+
+	res := contracts.ExecResult{
+		Stdout:   output.stdout.Bytes(),
+		Stderr:   output.stderr.Bytes(),
+		TimedOut: timedOut,
+		Duration: time.Since(start),
+	}
 	if err != nil {
 		return res, err
 	}
+	if readErr != nil && !timedOut {
+		return res, fmt.Errorf("reading output: %w", readErr)
+	}
 	res.ExitCode, err = s.exitCode(ctx, execID.ID)
-	return res, err
+	if err == nil && s.isClosed() {
+		err = ErrClosed
+	}
+	return res, s.closedOr(err)
 }
 
-// await waits for the stream to end, the timeout to fire, the caller to
-// give up, or the output cap to be hit; in every case but the first it
-// kills the sandbox's processes before returning.
-func (s *Sandbox) await(ctx context.Context, done <-chan error, timeout time.Duration) (contracts.ExecResult, error) {
+// await waits for the stream to end, the timeout to fire, or the caller
+// to give up. In the last two cases, and when the output cap is hit, it
+// kills the sandbox's processes before returning. It consumes at most one
+// value from done and leaves the final one for run.
+func (s *Sandbox) await(ctx context.Context, done chan error, timeout time.Duration) (timedOut bool, err error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case err := <-done:
-		if errors.Is(err, ErrOutputTooLarge) {
-			return contracts.ExecResult{}, errors.Join(err, s.killAll(ctx))
+	case readErr := <-done:
+		done <- readErr
+		if errors.Is(readErr, ErrOutputTooLarge) {
+			return false, errors.Join(readErr, s.killAll(ctx))
 		}
-		if err != nil {
-			return contracts.ExecResult{}, fmt.Errorf("reading output: %w", err)
-		}
-		return contracts.ExecResult{}, nil
+		return false, nil
 	case <-timer.C:
-		if err := s.killAll(ctx); err != nil {
-			return contracts.ExecResult{TimedOut: true}, err
-		}
-		s.drain(done)
-		return contracts.ExecResult{TimedOut: true}, nil
+		return true, s.killAll(ctx)
 	case <-ctx.Done():
-		return contracts.ExecResult{}, errors.Join(ctx.Err(), s.killAll(context.WithoutCancel(ctx)))
-	}
-}
-
-// drain gives the reader a moment to observe EOF after a kill so the exit
-// code is settled; a reader that does not finish is abandoned with the
-// connection, which the deferred Close tears down.
-func (s *Sandbox) drain(done <-chan error) {
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
+		return false, errors.Join(ctx.Err(), s.killAll(context.WithoutCancel(ctx)))
 	}
 }
 
 func (s *Sandbox) effectiveTimeout(requested time.Duration) (time.Duration, error) {
-	if s.closed {
+	s.life.Lock()
+	closed, killed := s.closed, s.killed
+	s.life.Unlock()
+	if closed {
 		return 0, ErrClosed
 	}
-	if s.killed {
+	if killed {
 		return 0, ErrKilled
 	}
 	remaining := time.Until(s.deadline)
@@ -112,6 +114,15 @@ func (s *Sandbox) effectiveTimeout(requested time.Duration) (time.Duration, erro
 		timeout = s.limits.Timeout
 	}
 	return min(timeout, remaining), nil
+}
+
+// closedOr reports ErrClosed for a daemon error that arrived because Close
+// removed the container under a running command.
+func (s *Sandbox) closedOr(err error) error {
+	if err != nil && s.isClosed() {
+		return ErrClosed
+	}
+	return err
 }
 
 // exitCode polls until the daemon reports the exec finished. The stream
@@ -148,7 +159,7 @@ const initProcesses = 2
 func (s *Sandbox) killAll(ctx context.Context) error {
 	for attempt := 1; attempt <= 6; attempt++ {
 		if _, err := s.cli.ContainerKill(ctx, s.id, client.ContainerKillOptions{Signal: "SIGUSR1"}); err != nil {
-			return fmt.Errorf("signalling sandbox init: %w", err)
+			return s.closedOr(fmt.Errorf("signalling sandbox init: %w", err))
 		}
 		select {
 		case <-ctx.Done():
@@ -157,13 +168,15 @@ func (s *Sandbox) killAll(ctx context.Context) error {
 		}
 		top, err := s.cli.ContainerTop(ctx, s.id, client.ContainerTopOptions{})
 		if err != nil {
-			return fmt.Errorf("listing sandbox processes: %w", err)
+			return s.closedOr(fmt.Errorf("listing sandbox processes: %w", err))
 		}
 		if len(top.Processes) <= initProcesses {
 			return nil
 		}
 	}
+	s.life.Lock()
 	s.killed = true
+	s.life.Unlock()
 	if _, err := s.cli.ContainerKill(ctx, s.id, client.ContainerKillOptions{Signal: "SIGKILL"}); err != nil {
 		return fmt.Errorf("%w: and killing the container failed: %w", ErrKilled, err)
 	}
