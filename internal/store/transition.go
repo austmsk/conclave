@@ -10,6 +10,11 @@ import (
 	"github.com/austmsk/conclave/internal/contracts"
 )
 
+// SQLStateUnattributedStateChange is raised by the record_state_transition
+// trigger when a state column changes without an actor set on the
+// transaction. It is what a direct UPDATE that bypasses Transition sees.
+const SQLStateUnattributedStateChange = "CO001"
+
 // Sentinel errors returned by Transition. A caller retrying after a crash
 // checks ErrAlreadyApplied and carries on; a caller that hits a
 // WrongStateError has lost a race (a cancellation arrived first, say) and
@@ -22,6 +27,12 @@ var (
 
 	// ErrNotFound means no record with the given id exists.
 	ErrNotFound = errors.New("record not found")
+
+	// ErrApprovalNeedsBaseSHA means a plan was sent to Transition with
+	// PlanApproved as the target. Approval pins a base commit (FR-S19) and
+	// the schema refuses an approved plan without one, so it has its own
+	// entry point, ApprovePlan.
+	ErrApprovalNeedsBaseSHA = errors.New("approving a plan requires a base SHA: use ApprovePlan")
 )
 
 // WrongStateError means the record exists but is in neither the expected
@@ -62,7 +73,9 @@ type TransitionRequest struct {
 	// Actor is who caused the change, for the audit log (FR-SEC10). Required.
 	Actor string
 
-	// Reason is stored on the record and in the audit row. Optional.
+	// Reason is stored on the record and in the audit row. It replaces
+	// whatever reason the record had: a reason explains the state it was
+	// recorded with, so it does not survive leaving that state.
 	Reason string
 }
 
@@ -76,23 +89,75 @@ var tables = map[contracts.EntityKind]string{
 	contracts.EntityAttempt:        "attempts",
 }
 
-// Transition moves a record from one state to another with compare-and-set,
-// and records the move in state_transitions. Both writes happen in tx, so
-// the audit row exists if and only if the state change was committed.
+// Transition moves a record from one state to another with compare-and-set.
+// The record_state_transition trigger writes the audit row in the same
+// statement, so the row exists if and only if the change is committed.
 //
 // A zero-row update is classified by re-reading the record: ErrNotFound,
 // ErrAlreadyApplied, or a WrongStateError. Telling the last two apart is the
 // point of the pattern (RL-13): a retry after a successful-but-unreported
 // update must not be treated as a conflict.
+//
+// tx must run at READ COMMITTED, Postgres's default. Under that level an
+// UPDATE that blocks on a row another transaction is changing re-evaluates
+// its WHERE clause after the other commit, and the re-read sees the
+// committed state, which is what makes the classification correct under
+// real concurrency. At REPEATABLE READ or SERIALIZABLE the same collision
+// surfaces as a serialization failure (SQLSTATE 40001) instead.
 func Transition(ctx context.Context, tx pgx.Tx, req TransitionRequest) error {
+	if err := validate(req); err != nil {
+		return err
+	}
+	if req.Kind == contracts.EntityPlan && req.To == string(contracts.PlanApproved) {
+		return ErrApprovalNeedsBaseSHA
+	}
+	return transition(ctx, tx, req)
+}
+
+// ApprovePlan moves a proposed plan to approved and pins the base commit
+// every task will run against (FR-S19). Retry and race semantics are those
+// of Transition.
+func ApprovePlan(ctx context.Context, tx pgx.Tx, planID, baseSHA, actor string) error {
+	if baseSHA == "" {
+		return ErrApprovalNeedsBaseSHA
+	}
+	req := TransitionRequest{
+		Kind: contracts.EntityPlan, ID: planID,
+		From: string(contracts.PlanProposed), To: string(contracts.PlanApproved),
+		Actor: actor,
+	}
+	if err := validate(req); err != nil {
+		return err
+	}
+	// Conditional on the state so a retry against an already-approved plan
+	// cannot overwrite the SHA that was pinned the first time.
+	const pin = `UPDATE plans SET base_sha = $1, approved_at = now()
+		WHERE id = $2 AND state = $3`
+	if _, err := tx.Exec(ctx, pin, baseSHA, planID, req.From); err != nil {
+		return fmt.Errorf("pinning base sha on plan %s: %w", planID, err)
+	}
+	return transition(ctx, tx, req)
+}
+
+func validate(req TransitionRequest) error {
 	if req.Actor == "" {
 		return errors.New("transition requires an actor")
 	}
 	if !contracts.CanTransition(req.Kind, req.From, req.To) {
 		return &IllegalTransitionError{Kind: req.Kind, From: req.From, To: req.To}
 	}
-	table := tables[req.Kind] // present: CanTransition rejected unknown kinds
+	return nil
+}
 
+func transition(ctx context.Context, tx pgx.Tx, req TransitionRequest) error {
+	table := tables[req.Kind] // present: validate rejected unknown kinds
+
+	// The trigger reads the actor from this transaction-local setting and
+	// refuses the update without it. It is cleared again below so nothing
+	// else in the transaction inherits the attribution.
+	if _, err := tx.Exec(ctx, `SELECT set_config('conclave.actor', $1, true)`, req.Actor); err != nil {
+		return fmt.Errorf("setting actor for %s %s: %w", req.Kind, req.ID, err)
+	}
 	update := fmt.Sprintf(
 		`UPDATE %s SET state = $1, reason = NULLIF($2, ''), updated_at = now()
 		 WHERE id = $3 AND state = $4`, table)
@@ -100,16 +165,11 @@ func Transition(ctx context.Context, tx pgx.Tx, req TransitionRequest) error {
 	if err != nil {
 		return fmt.Errorf("updating %s %s: %w", req.Kind, req.ID, err)
 	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('conclave.actor', '', true)`); err != nil {
+		return fmt.Errorf("clearing actor for %s %s: %w", req.Kind, req.ID, err)
+	}
 	if tag.RowsAffected() == 0 {
 		return classifyMiss(ctx, tx, table, req)
-	}
-
-	const audit = `INSERT INTO state_transitions
-		(entity_kind, entity_id, from_state, to_state, actor, reason)
-		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`
-	_, err = tx.Exec(ctx, audit, req.Kind, req.ID, req.From, req.To, req.Actor, req.Reason)
-	if err != nil {
-		return fmt.Errorf("recording transition of %s %s: %w", req.Kind, req.ID, err)
 	}
 	return nil
 }

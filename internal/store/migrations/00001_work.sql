@@ -10,6 +10,11 @@
 --     ALTER; legality of moves between values lives in the Go transition
 --     table, not here.
 --   * updated_at is maintained by application code, not triggers.
+--   * Every table with a state column also has a `reason` column, so the
+--     transition helper's UPDATE is identical for all of them.
+--   * Changing a state column fires record_state_transition (00003), which
+--     writes the audit row itself and refuses the change when no actor is
+--     set. The audit trail does not depend on callers remembering the helper.
 
 -- +goose Up
 
@@ -49,7 +54,11 @@ CREATE TABLE plans (
     feature_request_id uuid        NOT NULL REFERENCES feature_requests (id),
     version            integer     NOT NULL CHECK (version > 0),
     state              text        NOT NULL CHECK (state IN ('proposed', 'approved', 'superseded', 'rejected')),
-    -- Pinned at approval (FR-S19); an approved plan must carry one.
+    -- Set when state is rejected or superseded; why.
+    reason             text,
+    -- Pinned at approval (FR-S19); an approved plan must carry one, which is
+    -- why plans are approved through store.ApprovePlan rather than the
+    -- generic transition helper.
     base_sha           text,
     -- The plan document: task specs and risk flags, as JSON.
     body               jsonb       NOT NULL,

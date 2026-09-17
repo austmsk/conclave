@@ -161,3 +161,10 @@ func sortedKeys[K ~string, V any](m map[K]V) []string {
 	slices.Sort(keys)
 	return keys
 }
+
+// EntityKinds returns every kind the transition table governs, in sorted
+// order. Tests range over it so a kind cannot be added without being
+// exercised end to end.
+func EntityKinds() []EntityKind {
+	return []EntityKind{EntityAttempt, EntityFeatureRequest, EntityPlan, EntityTask}
+}

@@ -31,11 +31,22 @@ func publicTables(t *testing.T, ctx context.Context) []string {
 	return names
 }
 
+func exists(t *testing.T, ctx context.Context, query string) bool {
+	t.Helper()
+	var ok bool
+	if err := pool.QueryRow(ctx, query).Scan(&ok); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	return ok
+}
+
 // TestMigrationsApplyAndRollBack runs the full down path and then the full up
-// path again, so a down migration that forgets a table or an up migration
+// path again, so a down migration that forgets an object or an up migration
 // that is not repeatable fails here rather than in an emergency.
 func TestMigrationsApplyAndRollBack(t *testing.T) {
-	ctx, _ := testTx(t)
+	ctx := requireDB(t)
+	const roleExists = `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'conclave_app')`
+	const triggerFnExists = `SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'record_state_transition')`
 
 	if got := publicTables(t, ctx); !slices.Equal(got, wantTables) {
 		t.Fatalf("after up: tables = %v, want %v", got, wantTables)
@@ -47,13 +58,11 @@ func TestMigrationsApplyAndRollBack(t *testing.T) {
 	if got := publicTables(t, ctx); !slices.Equal(got, []string{"goose_db_version"}) {
 		t.Fatalf("after down: tables = %v, want only goose_db_version", got)
 	}
-	var roleExists bool
-	err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'conclave_app')`).Scan(&roleExists)
-	if err != nil {
-		t.Fatalf("checking role: %v", err)
-	}
-	if roleExists {
+	if exists(t, ctx, roleExists) {
 		t.Error("after down: conclave_app role still exists")
+	}
+	if exists(t, ctx, triggerFnExists) {
+		t.Error("after down: record_state_transition still exists")
 	}
 
 	if err := store.Migrate(ctx, sqlDB); err != nil {
@@ -61,6 +70,9 @@ func TestMigrationsApplyAndRollBack(t *testing.T) {
 	}
 	if got := publicTables(t, ctx); !slices.Equal(got, wantTables) {
 		t.Fatalf("after second up: tables = %v, want %v", got, wantTables)
+	}
+	if !exists(t, ctx, roleExists) || !exists(t, ctx, triggerFnExists) {
+		t.Error("after second up: role or trigger function missing")
 	}
 	if err := store.Migrate(ctx, sqlDB); err != nil {
 		t.Fatalf("migrate on up-to-date schema: %v", err)

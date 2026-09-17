@@ -45,7 +45,62 @@ CREATE TABLE state_transitions (
 
 CREATE INDEX state_transitions_entity ON state_transitions (entity_kind, entity_id, occurred_at);
 
+-- record_state_transition makes the audit log structural rather than a
+-- convention (FR-SEC10). It fires on any change to a state column, writes
+-- the audit row itself, and refuses the change unless the transaction has
+-- named an actor through set_config('conclave.actor', ..., true). The
+-- application role therefore cannot move a record without leaving a row
+-- here, whether or not it went through store.Transition. Legality of the
+-- move is not checked here; that lives in the Go transition table, which
+-- is the single source of truth.
+--
+-- SQLSTATE CO001 is Conclave's own code for an unattributed state change.
+-- +goose StatementBegin
+CREATE FUNCTION record_state_transition() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    actor text := current_setting('conclave.actor', true);
+    kind  text;
+BEGIN
+    IF NEW.state IS NOT DISTINCT FROM OLD.state THEN
+        RETURN NEW;
+    END IF;
+    IF actor IS NULL OR actor = '' THEN
+        RAISE EXCEPTION 'state change on % without an actor: use store.Transition', TG_TABLE_NAME
+            USING ERRCODE = 'CO001';
+    END IF;
+    kind := CASE TG_TABLE_NAME
+        WHEN 'feature_requests' THEN 'feature_request'
+        WHEN 'plans'            THEN 'plan'
+        WHEN 'tasks'            THEN 'task'
+        WHEN 'attempts'         THEN 'attempt'
+    END;
+    INSERT INTO state_transitions (entity_kind, entity_id, from_state, to_state, actor, reason)
+    VALUES (kind, NEW.id, OLD.state, NEW.state, actor, NEW.reason);
+    RETURN NEW;
+END
+$$;
+-- +goose StatementEnd
+
+CREATE TRIGGER feature_requests_state_transition
+    BEFORE UPDATE OF state ON feature_requests
+    FOR EACH ROW EXECUTE FUNCTION record_state_transition();
+CREATE TRIGGER plans_state_transition
+    BEFORE UPDATE OF state ON plans
+    FOR EACH ROW EXECUTE FUNCTION record_state_transition();
+CREATE TRIGGER tasks_state_transition
+    BEFORE UPDATE OF state ON tasks
+    FOR EACH ROW EXECUTE FUNCTION record_state_transition();
+CREATE TRIGGER attempts_state_transition
+    BEFORE UPDATE OF state ON attempts
+    FOR EACH ROW EXECUTE FUNCTION record_state_transition();
+
 -- +goose Down
 
+DROP TRIGGER attempts_state_transition ON attempts;
+DROP TRIGGER tasks_state_transition ON tasks;
+DROP TRIGGER plans_state_transition ON plans;
+DROP TRIGGER feature_requests_state_transition ON feature_requests;
+DROP FUNCTION record_state_transition();
 DROP TABLE state_transitions;
 DROP TABLE cost_events;
