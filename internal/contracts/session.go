@@ -12,11 +12,11 @@ import "context"
 // commit. Encoding those exclusions now means competition can be added in
 // Milestone 3 without changing this contract.
 type SessionInput struct {
-	RepoID   string
-	Spec     RoleSpec
-	Profile  RepoProfile
-	Task     TaskSpec
-	Limits   Constraints
+	RepoID  string
+	Spec    RoleSpec
+	Profile RepoProfile
+	Task    TaskSpec
+	Limits  Constraints
 
 	// IssueText is untrusted and arrives already quarantined.
 	IssueText string

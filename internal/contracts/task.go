@@ -45,8 +45,8 @@ type Constraints struct {
 // RepoProfile is the minimal repository understanding available in Milestone 1.
 // Milestone 3 replaces it with a generated codebase brief.
 type RepoProfile struct {
-	FullName  string `json:"full_name"`
-	Language  string `json:"language"`
+	FullName   string `json:"full_name"`
+	Language   string `json:"language"`
 	LayoutHint string `json:"layout_hint"`
 
 	// Conventions is a short prose note on naming, error handling, and test
