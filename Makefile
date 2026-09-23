@@ -6,7 +6,7 @@ GOOSE_VERSION := v3.28.0
 MIGRATIONS_DIR := internal/store/migrations
 DATABASE_URL ?= postgres://conclave:conclave@localhost:5432/conclave?sslmode=disable
 
-.PHONY: build test vet lint workflowcheck govulncheck check migrate dev down
+.PHONY: build test vet lint workflowcheck govulncheck check check-ci migrate dev down
 
 build:
 	go build ./...
@@ -27,6 +27,11 @@ govulncheck:
 	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 check: vet lint test workflowcheck govulncheck
+
+# Everything in `check` whose result depends on the diff. CI runs govulncheck
+# separately, on main and on a schedule, because it tracks an external
+# database rather than this repository.
+check-ci: vet lint test workflowcheck
 
 migrate:
 	go run github.com/pressly/goose/v3/cmd/goose@$(GOOSE_VERSION) -dir $(MIGRATIONS_DIR) postgres "$(DATABASE_URL)" up

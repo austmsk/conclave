@@ -3,20 +3,68 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.idea/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.idea/**'
+  schedule:
+    # Weekly govulncheck against the vulnerability database, which moves
+    # independently of this repository.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Supersede in-flight runs for a pull request branch; a new push makes the
+# previous run's result irrelevant, and letting it finish burns billed minutes.
+# Pushes to main are left to complete so every commit there has a result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    # The Actions default is 360 minutes. A hung `go test -race` would bill all
+    # of them before anyone noticed.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          # Cached below instead. setup-go keys on go.sum alone and skips the
+          # save on an exact key hit, so the build cache freezes at whatever the
+          # first run produced and every later run recompiles changed packages.
+          cache: false
 
-      - run: make check
+      - name: Cache Go build and module caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          # The sha suffix makes every run miss and therefore save, refreshing
+          # the cache; restore-keys still seeds it from the closest prior run.
+          # Makefile is in the key because it pins the tool versions that
+          # `make lint`, `workflowcheck` and `govulncheck` build via `go run`.
+          key: go-${{ runner.os }}-${{ hashFiles('go.sum', 'Makefile') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ hashFiles('go.sum', 'Makefile') }}-
+            go-${{ runner.os }}-
+
+      - run: make check-ci
+
+      # govulncheck downloads the vulnerability database on every invocation.
+      # Its result depends on that database rather than on the diff, so it runs
+      # on main and on the weekly schedule instead of on every pull request.
+      - name: govulncheck
+        if: github.event_name != 'pull_request'
+        run: make govulncheck
