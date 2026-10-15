@@ -1,7 +1,9 @@
 package llm_test
 
 import (
+	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -88,5 +90,27 @@ func TestLoadConfigRejects(t *testing.T) {
 func TestConfigNeedsRoles(t *testing.T) {
 	if err := (llm.Config{}).Validate(); !errors.Is(err, llm.ErrInvalidConfig) {
 		t.Fatalf("got %v, want ErrInvalidConfig", err)
+	}
+}
+
+// TestDeployedConfig keeps deploy/router.yaml loadable. It must fail as
+// shipped, because its placeholders are meant to stop startup, and must
+// load once the placeholders are replaced with real values.
+func TestDeployedConfig(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/router.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := llm.LoadConfig(bytes.NewReader(raw)); !errors.Is(err, llm.ErrInvalidConfig) {
+		t.Fatalf("shipped config with placeholders: got %v, want ErrInvalidConfig", err)
+	}
+	filled := strings.ReplaceAll(string(raw), ": -1\n", ": 1\n")
+	filled = strings.ReplaceAll(filled, "max_output_tokens: 0\n", "max_output_tokens: 1000\n")
+	cfg, err := llm.LoadConfig(strings.NewReader(filled))
+	if err != nil {
+		t.Fatalf("config with placeholders filled: %v", err)
+	}
+	if cfg.Roles[contracts.RoleImplementer].Model != "claude-fable-5-1" {
+		t.Fatalf("implementer route %+v", cfg.Roles[contracts.RoleImplementer])
 	}
 }

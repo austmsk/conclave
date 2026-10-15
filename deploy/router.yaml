@@ -1,0 +1,83 @@
+# Router configuration: role-to-model routes, prices, and rate limits.
+# Loaded and validated at startup by llm.LoadConfig (internal/llm/config.go).
+#
+# Placeholders fail validation on purpose, so the router refuses to start
+# until real values are filled in:
+#   -1 prices      copy from the provider's current price list, in USD per
+#                  million tokens.
+#   0 output caps  copy the model's maximum output tokens from its model card.
+# A price left at 0 would record every call as free, which defeats the caps.
+#
+# Model IDs are pinned. Never use a "latest" alias; validation rejects it.
+#
+# Every provider named here needs an adapter registered with llm.New, or
+# startup fails. Only the Anthropic adapter exists in Milestone 1, so other
+# providers' entries are commented out until their adapters land.
+
+models:
+  claude-opus-5:
+    provider: anthropic
+    input_usd_per_mtok: -1
+    output_usd_per_mtok: -1
+    cache_write_usd_per_mtok: -1
+    cache_read_usd_per_mtok: -1
+    max_output_tokens: 0
+
+  claude-fable-5-1:
+    provider: anthropic
+    input_usd_per_mtok: -1
+    output_usd_per_mtok: -1
+    cache_write_usd_per_mtok: -1
+    cache_read_usd_per_mtok: -1
+    max_output_tokens: 0
+
+  # Milestone 3: the implementer pool's other providers.
+  # gpt-5.6-sol:
+  #   provider: openai
+  #   input_usd_per_mtok: -1
+  #   output_usd_per_mtok: -1
+  #   max_output_tokens: 0
+  # gemini-3.8-flash:
+  #   provider: google
+  #   input_usd_per_mtok: -1
+  #   output_usd_per_mtok: -1
+  #   max_output_tokens: 0
+
+  # Milestone 2: local embeddings. 1024 dimensions, within pgvector's
+  # index limit (RL-4). Local models cost nothing, so 0 is the real price.
+  # qwen3-embedding:0.6b:
+  #   provider: ollama
+  #   input_usd_per_mtok: 0
+  #   output_usd_per_mtok: 0
+  #   max_output_tokens: 1
+
+# Routes from ARCHITECTURE.md (Model Routing). Fallbacks are checked
+# against each repository's tier when reached; none are configured until a
+# second provider's adapter exists.
+roles:
+  planner:
+    model: claude-opus-5
+  # Milestone 1 runs one implementer; the pool arrives in Milestone 3.
+  implementer:
+    model: claude-fable-5-1
+  test_writer:
+    model: claude-opus-5
+  pr_writer:
+    model: claude-opus-5
+  discussion:
+    model: claude-opus-5
+  # ARCHITECTURE.md routes the brief to gemini-3.8-flash. Until the Google
+  # adapter exists it uses claude-opus-5.
+  brief:
+    model: claude-opus-5
+  # judge follows the outside-provider rule (Milestone 3) and is not a
+  # static route.
+
+# embedding:
+#   model: qwen3-embedding:0.6b
+
+# Per worker process. Bounds how fast money is spent; per-attempt budgets
+# bound how much. These are the defaults, written out so they are visible.
+rate_limit:
+  requests_per_minute: 20
+  tokens_per_minute: 300000
