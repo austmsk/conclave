@@ -5,5 +5,10 @@
 // repository's sensitivity tier before the request reaches a provider. A
 // repository with no tier, or a fallback whose provider the tier
 // disallows, is an error and never a silent downgrade to something
-// permissive.
+// permissive. Which providers each tier allows is a table in code, not
+// configuration, so configuration cannot widen a tier.
+//
+// Requests are served by a Scoped router, which carries a token budget and
+// an idempotency key prefix: every call is charged to the budget and
+// recorded as a cost event, and neither can be skipped.
 package llm
