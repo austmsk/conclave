@@ -53,6 +53,12 @@ type Request struct {
 	RepoID string
 	Role   Role
 
+	// PromptVersion identifies the static instructions in System, from the
+	// role's RoleSpec. It is required, and the router copies it into the
+	// response's Provenance, so every output can be traced to the exact
+	// prompt that produced it.
+	PromptVersion string
+
 	System   string
 	Messages []Message
 	Tools    []ToolSchema

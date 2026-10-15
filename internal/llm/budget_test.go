@@ -61,7 +61,7 @@ func TestInFlightCallHoldsItsReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")}
+	req := contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")}
 
 	first := make(chan error, 1)
 	go func() {
@@ -86,7 +86,7 @@ func TestInFlightCallHoldsItsReservation(t *testing.T) {
 
 	// The first call settled at 10 tokens, so the headroom is back.
 	gate.release <- struct{}{}
-	if _, err := s.Complete(context.Background(), contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 100}); err != nil {
+	if _, err := s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 100}); err != nil {
 		t.Fatalf("call after settling: %v", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestConcurrentCallsStayInBudget(t *testing.T) {
 	for range fits + 1 {
 		wg.Go(func() {
 			_, err := h.scoped.Complete(context.Background(), contracts.Request{
-				RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 100,
+				RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 100,
 			})
 			errs <- err
 		})
@@ -144,7 +144,7 @@ func TestRateLimitHoldsRequests(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := h.scoped.Complete(ctx, contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")})
+	_, err := h.scoped.Complete(ctx, contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("got %v, want DeadlineExceeded", err)
 	}
@@ -249,7 +249,7 @@ func TestRouterKeepsItsOwnConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := s.Complete(context.Background(), contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")})
+	resp, err := s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 	if err != nil || resp.Provenance.Model != "m2" {
 		t.Fatalf("got %+v, %v", resp.Provenance, err)
 	}

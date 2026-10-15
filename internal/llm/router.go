@@ -148,7 +148,12 @@ func (s *Scoped) Complete(ctx context.Context, req contracts.Request) (contracts
 		return contracts.Response{}, err
 	}
 	return contracts.Response{
-		Provenance: contracts.Provenance{Role: req.Role, Model: modelID, Provider: model.Provider},
+		Provenance: contracts.Provenance{
+			Role:          req.Role,
+			PromptVersion: req.PromptVersion,
+			Model:         modelID,
+			Provider:      model.Provider,
+		},
 		Usage:      usage,
 		Text:       resp.Text,
 		ToolCalls:  resp.ToolCalls,
@@ -180,6 +185,9 @@ func validateRequest(req contracts.Request) error {
 	switch {
 	case req.Role == "":
 		return fmt.Errorf("%w: no role", ErrInvalidRequest)
+	case req.PromptVersion == "":
+		// Without it, outputs cannot be compared across prompt changes.
+		return fmt.Errorf("%w: no prompt version", ErrInvalidRequest)
 	case len(req.Messages) == 0:
 		return fmt.Errorf("%w: no messages", ErrInvalidRequest)
 	case req.MaxTokens < 0:

@@ -91,7 +91,7 @@ func newHarness(t *testing.T, cfg llm.Config, f map[string]*faketest.Provider, r
 }
 
 func complete(h harness, role contracts.Role) (contracts.Response, error) {
-	return h.scoped.Complete(context.Background(), contracts.Request{RepoID: repoID, Role: role, Messages: userMessage("hi")})
+	return h.scoped.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: role, Messages: userMessage("hi")})
 }
 
 // TestPolicyMatrix sends one request for every tier, role, and provider. A
@@ -123,7 +123,7 @@ func policyCase(t *testing.T, tier contracts.SensitivityTier, role contracts.Rol
 	assertTierOutcome(t, allowed, err)
 	sent := len(f[provider].Requests())
 	if allowed {
-		if sent != 1 || resp.Provenance.Provider != provider {
+		if sent != 1 || resp.Provenance.Provider != provider || resp.Provenance.PromptVersion != "test-v1" {
 			t.Fatalf("sent %d requests, provenance %+v", sent, resp.Provenance)
 		}
 		return
@@ -198,7 +198,7 @@ func TestRepoPolicyFailsClosed(t *testing.T) {
 				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 			}
 			h := newHarness(t, cfg, f, tc.repos, 100000)
-			_, err := h.scoped.Complete(context.Background(), contracts.Request{RepoID: tc.repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")})
+			_, err := h.scoped.Complete(context.Background(), contracts.Request{RepoID: tc.repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Complete: got %v, want %v", err, tc.want)
 			}
@@ -408,7 +408,7 @@ func TestRetriedScopeKeepsBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Complete(context.Background(), contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")})
+	_, err = s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 	if !errors.Is(err, llm.ErrBudgetExceeded) {
 		t.Fatalf("got %v, want ErrBudgetExceeded", err)
 	}
@@ -436,7 +436,7 @@ func TestMaxTokensClamp(t *testing.T) {
 				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 			}
 			h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, tc.budget)
-			req := contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: tc.requested}
+			req := contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: tc.requested}
 			if _, err := h.scoped.Complete(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
@@ -565,7 +565,7 @@ func TestRetriedActivityRecordsItsOwnSpend(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Complete(context.Background(), contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")}); err != nil {
+		if _, err := s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -616,7 +616,7 @@ func TestCostRecordingFailureFailsTheCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Complete(context.Background(), contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")})
+	_, err = s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 	if !errors.Is(err, boom) {
 		t.Fatalf("got %v, want the recorder's error", err)
 	}
@@ -633,10 +633,11 @@ func TestInvalidRequests(t *testing.T) {
 		req  contracts.Request
 		want error
 	}{
-		{"no role", contracts.Request{RepoID: repoID, Messages: userMessage("hi")}, llm.ErrInvalidRequest},
-		{"no messages", contracts.Request{RepoID: repoID, Role: contracts.RolePlanner}, llm.ErrInvalidRequest},
-		{"negative max tokens", contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: -1}, llm.ErrInvalidRequest},
-		{"allowed role with no route", contracts.Request{RepoID: repoID, Role: contracts.RoleBrief, Messages: userMessage("hi")}, llm.ErrNoRoute},
+		{"no role", contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Messages: userMessage("hi")}, llm.ErrInvalidRequest},
+		{"no prompt version", contracts.Request{RepoID: repoID, Role: contracts.RolePlanner, Messages: userMessage("hi")}, llm.ErrInvalidRequest},
+		{"no messages", contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner}, llm.ErrInvalidRequest},
+		{"negative max tokens", contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: -1}, llm.ErrInvalidRequest},
+		{"allowed role with no route", contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RoleBrief, Messages: userMessage("hi")}, llm.ErrNoRoute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -678,7 +679,7 @@ func TestReplayMultiTurnThroughRouter(t *testing.T) {
 	msgs := userMessage("Fix issue #12")
 	var finished bool
 	for step := 0; step < 5 && !finished; step++ {
-		resp, err := h.scoped.Complete(context.Background(), contracts.Request{RepoID: repoID, Role: contracts.RoleImplementer, Messages: msgs})
+		resp, err := h.scoped.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RoleImplementer, Messages: msgs})
 		if err != nil {
 			t.Fatalf("step %d: %v", step, err)
 		}
