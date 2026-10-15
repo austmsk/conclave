@@ -56,14 +56,17 @@ func conversation() llm.ProviderRequest {
 			{Role: contracts.MessageAssistant, Text: "Reading.", ToolCalls: []contracts.ToolCall{
 				{ID: "toolu_1", Name: contracts.ToolReadFile, Arguments: json.RawMessage(`{"path":"a.go"}`)},
 				{ID: "toolu_2", Name: contracts.ToolRunTests},
+				{ID: "toolu_3", Name: contracts.ToolWriteFile, Arguments: json.RawMessage(`{"path":"b.go"}`)},
 			}},
 			{Role: contracts.MessageUser, ToolResults: []contracts.ToolResult{
 				{CallID: "toolu_1", Output: "package a"},
 				{CallID: "toolu_2", Output: "partial", Error: "tests failed"},
+				{CallID: "toolu_3"},
 			}},
 		},
 		Tools: []contracts.ToolSchema{
 			{Name: contracts.ToolReadFile, Description: "Read a file.", Parameters: json.RawMessage(`{"type":"object"}`)},
+			{Name: contracts.ToolRunTests, Description: "Run the tests."},
 		},
 		MaxTokens: 1024,
 	}
@@ -106,6 +109,7 @@ func jsonEqual(t *testing.T, a, b []byte) bool {
 
 func TestResponseDecoding(t *testing.T) {
 	body := `{
+	  "id": "msg_01XYZ",
 	  "content": [
 	    {"type": "text", "text": "Running "},
 	    {"type": "text", "text": "both."},
@@ -127,8 +131,11 @@ func TestResponseDecoding(t *testing.T) {
 		string(resp.ToolCalls[1].Arguments) != `{"path": "b.go"}` {
 		t.Fatalf("tool calls %+v", resp.ToolCalls)
 	}
-	if resp.InputTokens != 112 || resp.OutputTokens != 20 {
-		t.Fatalf("tokens %d/%d, want 112/20", resp.InputTokens, resp.OutputTokens)
+	if resp.ID != "msg_01XYZ" {
+		t.Fatalf("ID %q", resp.ID)
+	}
+	if resp.InputTokens != 100 || resp.CacheWriteTokens != 5 || resp.CacheReadTokens != 7 || resp.OutputTokens != 20 {
+		t.Fatalf("tokens %+v", resp)
 	}
 }
 
@@ -246,6 +253,35 @@ func TestCancelledContextIsNotUnavailable(t *testing.T) {
 	_, err := client(t, srv.URL).Complete(ctx, conversation())
 	if !errors.Is(err, context.Canceled) || errors.Is(err, llm.ErrUnavailable) {
 		t.Fatalf("got %v, want context.Canceled and not ErrUnavailable", err)
+	}
+}
+
+func TestBaseURLMustBeHTTPS(t *testing.T) {
+	cases := []struct {
+		url string
+		ok  bool
+	}{
+		{"", true},
+		{"https://api.anthropic.com", true},
+		{"http://127.0.0.1:8080", true},
+		{"http://[::1]:8080", true},
+		{"http://localhost:8080", true},
+		{"http://api.anthropic.com", false},
+		{"http://10.0.0.5", false},
+		{"ftp://api.anthropic.com", false},
+		{"api.anthropic.com", false},
+		{"https://", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.url, func(t *testing.T) {
+			_, err := anthropic.New(canaryKey, tc.url, nil)
+			if tc.ok != (err == nil) {
+				t.Fatalf("err = %v, want ok=%v", err, tc.ok)
+			}
+			if err != nil && strings.Contains(err.Error(), canaryKey) {
+				t.Fatalf("error leaks the key: %v", err)
+			}
+		})
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/llm"
@@ -40,14 +41,22 @@ type Expect struct {
 	Messages int    `json:"messages,omitempty"`
 }
 
-// Response is the recorded reply.
+// Response is the recorded reply. A reply without an ID gets a unique one,
+// as a real provider's would have.
 type Response struct {
+	ID           string               `json:"id,omitempty"`
 	Text         string               `json:"text,omitempty"`
 	ToolCalls    []contracts.ToolCall `json:"tool_calls,omitempty"`
 	StopReason   contracts.StopReason `json:"stop_reason"`
 	InputTokens  int                  `json:"input_tokens"`
 	OutputTokens int                  `json:"output_tokens"`
+
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 }
+
+// replyIDs numbers generated reply IDs across every fake in the process.
+var replyIDs atomic.Int64
 
 // Provider replays a Script. It is safe for concurrent use, though a
 // recording only makes sense for one conversation at a time.
@@ -107,12 +116,19 @@ func (p *Provider) Complete(ctx context.Context, req llm.ProviderRequest) (llm.P
 		return llm.ProviderResponse{}, fmt.Errorf("fake: unknown scripted error %q", turn.Error)
 	}
 	r := turn.Response
+	id := r.ID
+	if id == "" {
+		id = fmt.Sprintf("fake_msg_%d", replyIDs.Add(1))
+	}
 	return llm.ProviderResponse{
-		Text:         r.Text,
-		ToolCalls:    r.ToolCalls,
-		StopReason:   r.StopReason,
-		InputTokens:  r.InputTokens,
-		OutputTokens: r.OutputTokens,
+		ID:               id,
+		Text:             r.Text,
+		ToolCalls:        r.ToolCalls,
+		StopReason:       r.StopReason,
+		InputTokens:      r.InputTokens,
+		CacheWriteTokens: r.CacheWriteTokens,
+		CacheReadTokens:  r.CacheReadTokens,
+		OutputTokens:     r.OutputTokens,
 	}, nil
 }
 

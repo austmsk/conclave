@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -21,6 +22,8 @@ import (
 //	    provider: anthropic
 //	    input_usd_per_mtok: 15
 //	    output_usd_per_mtok: 75
+//	    cache_write_usd_per_mtok: 18.75
+//	    cache_read_usd_per_mtok: 1.5
 //	    max_output_tokens: 32000
 //	roles:
 //	  planner:
@@ -28,18 +31,46 @@ import (
 //	    fallbacks: [gpt-5.6-sol]
 //	embedding:
 //	  model: qwen3-embedding
+//	rate_limit:
+//	  requests_per_minute: 20
+//	  tokens_per_minute: 300000
+//
+// Prices are per million tokens and must be copied from the provider's
+// current price list.
 type Config struct {
 	Models    map[string]ModelConfig       `yaml:"models"`
 	Roles     map[contracts.Role]RoleRoute `yaml:"roles"`
 	Embedding *EmbeddingRoute              `yaml:"embedding"`
+	RateLimit RateLimit                    `yaml:"rate_limit"`
 }
 
-// ModelConfig describes one pinned model ID.
+// RateLimit caps how fast one router, and so one worker process, sends
+// work to providers. A zero field takes its default.
+type RateLimit struct {
+	RequestsPerMinute int `yaml:"requests_per_minute"`
+	TokensPerMinute   int `yaml:"tokens_per_minute"`
+}
+
+// withDefaults fills unset fields.
+func (r RateLimit) withDefaults() RateLimit {
+	if r.RequestsPerMinute == 0 {
+		r.RequestsPerMinute = DefaultRequestsPerMinute
+	}
+	if r.TokensPerMinute == 0 {
+		r.TokensPerMinute = DefaultTokensPerMinute
+	}
+	return r
+}
+
+// ModelConfig describes one pinned model ID. Cache prices left at zero are
+// charged at the input price.
 type ModelConfig struct {
-	Provider         string  `yaml:"provider"`
-	InputUSDPerMTok  float64 `yaml:"input_usd_per_mtok"`
-	OutputUSDPerMTok float64 `yaml:"output_usd_per_mtok"`
-	MaxOutputTokens  int     `yaml:"max_output_tokens"`
+	Provider             string  `yaml:"provider"`
+	InputUSDPerMTok      float64 `yaml:"input_usd_per_mtok"`
+	OutputUSDPerMTok     float64 `yaml:"output_usd_per_mtok"`
+	CacheWriteUSDPerMTok float64 `yaml:"cache_write_usd_per_mtok"`
+	CacheReadUSDPerMTok  float64 `yaml:"cache_read_usd_per_mtok"`
+	MaxOutputTokens      int     `yaml:"max_output_tokens"`
 }
 
 // RoleRoute is a role's primary model and its ordered fallbacks. Every model
@@ -107,6 +138,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%w: role %q: %w", ErrInvalidConfig, role, err)
 		}
 	}
+	if c.RateLimit.RequestsPerMinute < 0 || c.RateLimit.TokensPerMinute < 0 {
+		return fmt.Errorf("%w: rate limits must not be negative", ErrInvalidConfig)
+	}
 	if c.Embedding != nil {
 		if _, ok := c.Models[c.Embedding.Model]; !ok {
 			return fmt.Errorf("%w: embedding model %q is not configured", ErrInvalidConfig, c.Embedding.Model)
@@ -127,7 +161,7 @@ func validateModel(id string, m ModelConfig) error {
 	if !slices.Contains(knownProviders, m.Provider) {
 		return fmt.Errorf("unknown provider %q", m.Provider)
 	}
-	if m.InputUSDPerMTok < 0 || m.OutputUSDPerMTok < 0 {
+	if m.InputUSDPerMTok < 0 || m.OutputUSDPerMTok < 0 || m.CacheWriteUSDPerMTok < 0 || m.CacheReadUSDPerMTok < 0 {
 		return errors.New("prices must not be negative")
 	}
 	if m.MaxOutputTokens <= 0 {
@@ -155,6 +189,23 @@ func (c Config) validateRoute(role contracts.Role, r RoleRoute) error {
 // chain is the primary model followed by its fallbacks.
 func (r RoleRoute) chain() []string {
 	return append([]string{r.Model}, r.Fallbacks...)
+}
+
+// clone copies every map and slice, so a caller that keeps and later
+// changes its Config cannot undo what Validate checked.
+func (c Config) clone() Config {
+	out := c
+	out.Models = maps.Clone(c.Models)
+	out.Roles = make(map[contracts.Role]RoleRoute, len(c.Roles))
+	for role, r := range c.Roles {
+		r.Fallbacks = slices.Clone(r.Fallbacks)
+		out.Roles[role] = r
+	}
+	if c.Embedding != nil {
+		e := *c.Embedding
+		out.Embedding = &e
+	}
+	return out
 }
 
 func sortedKeys[K ~string, V any](m map[K]V) []K {

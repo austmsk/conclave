@@ -7,14 +7,17 @@
     {"role": "assistant", "content": [
       {"type": "text", "text": "Reading."},
       {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "a.go"}},
-      {"type": "tool_use", "id": "toolu_2", "name": "run_tests", "input": {}}
+      {"type": "tool_use", "id": "toolu_2", "name": "run_tests", "input": {}},
+      {"type": "tool_use", "id": "toolu_3", "name": "write_file", "input": {"path": "b.go"}}
     ]},
     {"role": "user", "content": [
       {"type": "tool_result", "tool_use_id": "toolu_1", "content": "package a"},
-      {"type": "tool_result", "tool_use_id": "toolu_2", "content": "tests failed\npartial", "is_error": true}
+      {"type": "tool_result", "tool_use_id": "toolu_2", "content": "tests failed\npartial", "is_error": true},
+      {"type": "tool_result", "tool_use_id": "toolu_3"}
     ]}
   ],
   "tools": [
-    {"name": "read_file", "description": "Read a file.", "input_schema": {"type": "object"}}
+    {"name": "read_file", "description": "Read a file.", "input_schema": {"type": "object"}},
+    {"name": "run_tests", "description": "Run the tests.", "input_schema": {"type": "object"}}
   ]
 }

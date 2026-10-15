@@ -32,6 +32,9 @@ roles:
     model: claude-opus-5
 embedding:
   model: qwen3-embedding
+rate_limit:
+  requests_per_minute: 20
+  tokens_per_minute: 300000
 `
 
 func TestLoadConfigValid(t *testing.T) {
@@ -45,6 +48,9 @@ func TestLoadConfigValid(t *testing.T) {
 	}
 	if m := cfg.Models["claude-opus-5"]; m.Provider != "anthropic" || m.OutputUSDPerMTok != 75 {
 		t.Fatalf("model %+v", m)
+	}
+	if cfg.RateLimit.RequestsPerMinute != 20 || cfg.RateLimit.TokensPerMinute != 300000 {
+		t.Fatalf("rate limit %+v", cfg.RateLimit)
 	}
 }
 
@@ -62,6 +68,8 @@ func TestLoadConfigRejects(t *testing.T) {
 		{"unconfigured embedding model", [2]string{"model: qwen3-embedding", "model: nomic"}},
 		{"negative price", [2]string{"input_usd_per_mtok: 5", "input_usd_per_mtok: -5"}},
 		{"zero output limit", [2]string{"max_output_tokens: 16000", "max_output_tokens: 0"}},
+		{"negative rate limit", [2]string{"requests_per_minute: 20", "requests_per_minute: -1"}},
+		{"negative cache price", [2]string{"input_usd_per_mtok: 15", "input_usd_per_mtok: 15\n    cache_read_usd_per_mtok: -1"}},
 		{"empty primary", [2]string{"model: claude-opus-5\n    fallbacks", "model: \"\"\n    fallbacks"}},
 	}
 	for _, tc := range cases {

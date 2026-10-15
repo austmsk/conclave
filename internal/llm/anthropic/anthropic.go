@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/austmsk/conclave/internal/contracts"
@@ -33,8 +35,10 @@ type Client struct {
 
 var _ llm.Provider = (*Client)(nil)
 
-// New returns a client. baseURL may be empty for DefaultBaseURL; tests pass
-// an httptest server. httpClient may be nil for http.DefaultClient.
+// New returns a client. baseURL may be empty for DefaultBaseURL. It must be
+// https, except on a loopback host, where tests run an httptest server: the
+// key travels in a header, and plain http to anywhere else would send it in
+// the clear. httpClient may be nil for http.DefaultClient.
 func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 	if apiKey == "" {
 		return nil, errors.New("anthropic: no API key")
@@ -42,10 +46,35 @@ func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	if err := checkBaseURL(baseURL); err != nil {
+		return nil, err
+	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 	return &Client{key: apiKey, baseURL: baseURL, http: httpClient}, nil
+}
+
+func checkBaseURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("anthropic: parsing base URL: %w", err)
+	}
+	if u.Scheme == "https" && u.Host != "" {
+		return nil
+	}
+	if u.Scheme == "http" && isLoopback(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("anthropic: base URL %q must be https", u.Redacted())
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Complete sends one Messages API request.
@@ -150,6 +179,7 @@ type tool struct {
 }
 
 type response struct {
+	ID         string  `json:"id"`
 	Content    []block `json:"content"`
 	StopReason string  `json:"stop_reason"`
 	Usage      struct {
@@ -166,7 +196,13 @@ func encodeRequest(req llm.ProviderRequest) request {
 		out.Messages = append(out.Messages, encodeMessage(m))
 	}
 	for _, t := range req.Tools {
-		out.Tools = append(out.Tools, tool{Name: string(t.Name), Description: t.Description, InputSchema: t.Parameters})
+		schema := t.Parameters
+		if len(schema) == 0 || string(schema) == "null" {
+			// The API requires an object schema; a tool without
+			// parameters takes an empty object.
+			schema = json.RawMessage(`{"type":"object"}`)
+		}
+		out.Tools = append(out.Tools, tool{Name: string(t.Name), Description: t.Description, InputSchema: schema})
 	}
 	return out
 }
@@ -192,7 +228,8 @@ func encodeMessage(m contracts.Message) message {
 }
 
 // toolResultBlock reports a refusal or failure as an error result, with the
-// error first so the model sees why before any partial output.
+// error first so the model sees why before any partial output. A tool that
+// succeeds silently sends no content, which the API accepts.
 func toolResultBlock(r contracts.ToolResult) block {
 	b := block{Type: "tool_result", ToolUseID: r.CallID, Content: r.Output}
 	if r.Error != "" {
@@ -211,9 +248,12 @@ func decodeResponse(w response) (llm.ProviderResponse, error) {
 		return llm.ProviderResponse{}, err
 	}
 	out := llm.ProviderResponse{
-		StopReason:   stop,
-		InputTokens:  w.Usage.InputTokens + w.Usage.CacheCreationInputTokens + w.Usage.CacheReadInputTokens,
-		OutputTokens: w.Usage.OutputTokens,
+		ID:               w.ID,
+		StopReason:       stop,
+		InputTokens:      w.Usage.InputTokens,
+		CacheWriteTokens: w.Usage.CacheCreationInputTokens,
+		CacheReadTokens:  w.Usage.CacheReadInputTokens,
+		OutputTokens:     w.Usage.OutputTokens,
 	}
 	for _, b := range w.Content {
 		switch b.Type {

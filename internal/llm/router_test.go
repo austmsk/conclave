@@ -333,9 +333,9 @@ type stubEmbedder struct {
 	calls int
 }
 
-func (s *stubEmbedder) Embed(_ context.Context, _ string, texts []string) ([][]float32, error) {
+func (s *stubEmbedder) Embed(_ context.Context, _ string, texts []string) (llm.EmbedResponse, error) {
 	s.calls++
-	return make([][]float32, len(texts)), nil
+	return llm.EmbedResponse{ID: fmt.Sprintf("emb_%d", s.calls), Vectors: make([][]float32, len(texts)), InputTokens: 100}, nil
 }
 
 // TestEmbedTierMatrix: embeddings pass the same tier check as completions.
@@ -355,7 +355,7 @@ func TestEmbedTierMatrix(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 1})
+				s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 1000})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -423,8 +423,9 @@ func TestMaxTokensClamp(t *testing.T) {
 	}{
 		{"model maximum", 100000, 0, 4096},
 		{"caller limit", 100000, 100, 100},
-		{"remaining budget", 500, 0, 500},
-		{"budget below caller limit", 500, 2000, 500},
+		// The budget also holds the input estimate, one token for "hi".
+		{"remaining budget", 500, 0, 499},
+		{"budget below caller limit", 500, 2000, 499},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -468,10 +469,15 @@ func TestScopeRequiresKeyAndBudget(t *testing.T) {
 
 func TestCostRecording(t *testing.T) {
 	f := fakes()
-	f[llm.ProviderAnthropic] = faketest.New(endTurn(1_000_000, 200_000), endTurn(10, 10))
+	first := endTurn(1_000_000, 200_000)
+	first.Response.ID = "msg_a"
+	second := endTurn(10, 10)
+	second.Response.ID = "msg_b"
+	f[llm.ProviderAnthropic] = faketest.New(first, second)
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Models:    map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:     map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		RateLimit: llm.RateLimit{TokensPerMinute: 10_000_000},
 	}
 	h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, 10_000_000)
 	resp, err := complete(h, contracts.RolePlanner)
@@ -489,32 +495,73 @@ func TestCostRecording(t *testing.T) {
 	if len(evs) != 2 {
 		t.Fatalf("%d events, want 2", len(evs))
 	}
-	first := evs[0]
-	if first.IdempotencyKey != "wf/act/1" || evs[1].IdempotencyKey != "wf/act/2" {
-		t.Fatalf("keys %q, %q", first.IdempotencyKey, evs[1].IdempotencyKey)
+	ev := evs[0]
+	if ev.IdempotencyKey != "wf/act/anthropic/msg_a" || evs[1].IdempotencyKey != "wf/act/anthropic/msg_b" {
+		t.Fatalf("keys %q, %q", ev.IdempotencyKey, evs[1].IdempotencyKey)
 	}
-	if first.RepoID != repoID || first.AttemptID != "attempt-1" || first.Role != contracts.RolePlanner ||
-		first.Provider != llm.ProviderAnthropic || first.Model != "m" || first.CostUSD != 6 || first.OccurredAt.IsZero() {
-		t.Fatalf("event %+v", first)
+	if ev.RepoID != repoID || ev.AttemptID != "attempt-1" || ev.Role != contracts.RolePlanner ||
+		ev.Provider != llm.ProviderAnthropic || ev.Model != "m" || ev.CostUSD != 6 || ev.OccurredAt.IsZero() {
+		t.Fatalf("event %+v", ev)
 	}
 }
 
-// TestRetriedActivityRecordsCostOnce: a retry builds a new scope with the
-// same key prefix and replays the same keys, which the recorder ignores.
-func TestRetriedActivityRecordsCostOnce(t *testing.T) {
+// TestCachePricing: cache traffic is priced at its own rate when one is
+// configured, and at the input rate otherwise.
+func TestCachePricing(t *testing.T) {
+	cases := []struct {
+		name  string
+		write float64
+		read  float64
+		want  float64
+	}{
+		// 1M input, 1M cache write, 1M cache read, no output.
+		{"configured rates", 3.75, 0.3, 3 + 3.75 + 0.3},
+		{"unset rates fall back to input", 0, 0, 9},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := model(llm.ProviderAnthropic)
+			m.CacheWriteUSDPerMTok, m.CacheReadUSDPerMTok = tc.write, tc.read
+			turn := endTurn(1_000_000, 0)
+			turn.Response.CacheWriteTokens, turn.Response.CacheReadTokens = 1_000_000, 1_000_000
+			f := fakes()
+			f[llm.ProviderAnthropic] = faketest.New(turn)
+			cfg := llm.Config{
+				Models: map[string]llm.ModelConfig{"m": m},
+				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+			}
+			h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, 10_000_000)
+			resp, err := complete(h, contracts.RolePlanner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diff := resp.Usage.CostUSD - tc.want; diff > 1e-9 || diff < -1e-9 {
+				t.Fatalf("CostUSD = %v, want %v", resp.Usage.CostUSD, tc.want)
+			}
+			if resp.Usage.InputTokens != 3_000_000 || h.scoped.TokensUsed() != 3_000_000 {
+				t.Fatalf("input %d, used %d: cache tokens must count", resp.Usage.InputTokens, h.scoped.TokensUsed())
+			}
+		})
+	}
+}
+
+// TestRetriedActivityRecordsItsOwnSpend: a retry makes new calls whose
+// replies differ from the first run's. Their spend is real and must be
+// recorded in full, not swallowed as a duplicate of the first run's keys.
+func TestRetriedActivityRecordsItsOwnSpend(t *testing.T) {
 	cfg := llm.Config{
 		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
 		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	f := fakes()
-	f[llm.ProviderAnthropic] = faketest.New(endTurn(5, 5), endTurn(5, 5))
+	f[llm.ProviderAnthropic] = faketest.New(endTurn(5, 5), endTurn(500, 500))
 	costs := &faketest.Costs{}
 	r, err := llm.New(cfg, providers(f), llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, costs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		s, err := r.Scope(llm.Scope{KeyPrefix: "wf/act", TokenBudget: 1000})
+		s, err := r.Scope(llm.Scope{KeyPrefix: "wf/act", TokenBudget: 10_000})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -522,7 +569,33 @@ func TestRetriedActivityRecordsCostOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := len(costs.Events()); n != 1 {
+	total := 0
+	for _, ev := range costs.Events() {
+		total += ev.InputTokens + ev.OutputTokens
+	}
+	if total != 1010 {
+		t.Fatalf("recorded %d tokens across %d events, want 1010", total, len(costs.Events()))
+	}
+}
+
+// TestSameReplyRecordedOnce: recording the same provider reply twice, as a
+// retried write would, counts it once.
+func TestSameReplyRecordedOnce(t *testing.T) {
+	cfg := llm.Config{
+		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+	}
+	turn := endTurn(5, 5)
+	turn.Response.ID = "msg_same"
+	f := fakes()
+	f[llm.ProviderAnthropic] = faketest.New(turn, turn)
+	h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, 10_000)
+	for range 2 {
+		if _, err := complete(h, contracts.RolePlanner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(h.costs.Events()); n != 1 {
 		t.Fatalf("%d cost events, want 1", n)
 	}
 }

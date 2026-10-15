@@ -20,7 +20,14 @@ type Provider interface {
 
 // Embedder is implemented by providers that serve embedding models.
 type Embedder interface {
-	Embed(ctx context.Context, model string, texts []string) ([][]float32, error)
+	Embed(ctx context.Context, model string, texts []string) (EmbedResponse, error)
+}
+
+// EmbedResponse carries the vectors and the usage needed to charge for them.
+type EmbedResponse struct {
+	ID          string
+	Vectors     [][]float32
+	InputTokens int
 }
 
 // ProviderRequest is a model call after routing: the model is chosen and
@@ -33,15 +40,28 @@ type ProviderRequest struct {
 	MaxTokens int
 }
 
-// ProviderResponse is a normalized reply. InputTokens includes any tokens
-// the vendor bills separately for cache reads or writes.
+// ProviderResponse is a normalized reply.
 type ProviderResponse struct {
+	// ID is the provider's identifier for this reply. The router keys the
+	// cost event on it, so it must be unique per call.
+	ID string
+
 	Text       string
 	ToolCalls  []contracts.ToolCall
 	StopReason contracts.StopReason
 
-	InputTokens  int
-	OutputTokens int
+	// InputTokens excludes cache traffic, which vendors bill at different
+	// rates and report separately.
+	InputTokens      int
+	CacheWriteTokens int
+	CacheReadTokens  int
+	OutputTokens     int
+}
+
+// totalTokens is everything the call consumed, which is what budgets and
+// rate limits count.
+func (r ProviderResponse) totalTokens() int {
+	return r.InputTokens + r.CacheWriteTokens + r.CacheReadTokens + r.OutputTokens
 }
 
 // Errors adapters wrap so the router can decide what to do without knowing

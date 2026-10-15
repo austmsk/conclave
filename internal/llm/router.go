@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -19,19 +20,26 @@ var (
 	ErrInvalidScope    = errors.New("invalid router scope")
 )
 
-// Router holds the validated configuration, the provider adapters, and the
-// repository policies. It does not serve requests itself: callers obtain a
-// Scoped router, which carries the budget and the idempotency key prefix
-// every request needs.
+// embeddingCostRole labels embedding spend in cost events. It is not an
+// agent role and appears in no allowlist.
+const embeddingCostRole contracts.Role = "embedding"
+
+// Router holds the validated configuration, the provider adapters, the
+// repository policies, and the rate limiter every scope shares. It does not
+// serve requests itself: callers obtain a Scoped router, which carries the
+// budget and the idempotency key prefix every request needs.
 type Router struct {
 	cfg       Config
 	providers map[string]Provider
 	repos     Repos
 	costs     CostRecorder
+	limit     *limiter
 }
 
 // New validates cfg and checks that every provider it routes to has an
-// adapter, so a missing adapter fails at startup rather than mid-run.
+// adapter, so a missing adapter fails at startup rather than mid-run. It
+// keeps copies of cfg and providers, so later changes by the caller cannot
+// undo the validation.
 func New(cfg Config, providers map[string]Provider, repos Repos, costs CostRecorder) (*Router, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -39,13 +47,17 @@ func New(cfg Config, providers map[string]Provider, repos Repos, costs CostRecor
 	if repos == nil || costs == nil {
 		return nil, errors.New("router needs repository policies and a cost recorder")
 	}
+	cfg = cfg.clone()
+	providers = maps.Clone(providers)
 	for _, id := range sortedKeys(cfg.Models) {
 		name := cfg.Models[id].Provider
 		if providers[name] == nil {
 			return nil, fmt.Errorf("model %q routes to provider %q: %w", id, name, ErrMissingProvider)
 		}
 	}
-	return &Router{cfg: cfg, providers: providers, repos: repos, costs: costs}, nil
+	r := &Router{cfg: cfg, providers: providers, repos: repos, costs: costs}
+	r.limit = newLimiter(cfg.RateLimit.withDefaults())
+	return r, nil
 }
 
 // Scope bounds a run of model calls, normally one attempt.
@@ -53,9 +65,8 @@ type Scope struct {
 	FeatureRequestID string
 	AttemptID        string
 
-	// KeyPrefix makes cost events idempotent. It must be stable across
-	// retries of the same activity, for example derived from the workflow
-	// and activity IDs, so a retry replays the same keys.
+	// KeyPrefix namespaces this scope's cost events, for example the
+	// workflow and activity IDs.
 	KeyPrefix string
 
 	// TokenBudget caps combined input and output tokens for the scope
@@ -66,14 +77,15 @@ type Scope struct {
 }
 
 // Scoped is a contracts.Router bound to one Scope. It is safe for
-// concurrent use.
+// concurrent use: each call reserves its estimated tokens before it is
+// sent, so concurrent calls cannot all spend the same headroom.
 type Scoped struct {
 	r     *Router
 	scope Scope
 
-	mu   sync.Mutex
-	used int
-	seq  int
+	mu       sync.Mutex
+	used     int
+	reserved int
 }
 
 var _ contracts.Router = (*Scoped)(nil)
@@ -91,56 +103,77 @@ func (r *Router) Scope(s Scope) (*Scoped, error) {
 	return &Scoped{r: r, scope: s, used: s.TokensUsed}, nil
 }
 
-// TokensUsed reports the scope's spend so far.
+// TokensUsed reports the scope's settled spend so far.
 func (s *Scoped) TokensUsed() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.used
 }
 
-// Complete routes req to the role's model, checking the repository's tier
-// for every model in the chain as it is reached. A fallback is tried only
+// Complete routes req to the role's model. The repository's tier is checked
+// for every model in the chain as it is reached; a fallback is tried only
 // when the previous model was unavailable, and a fallback the tier
-// disallows ends the request with ErrTierDenied: it is never skipped in
+// disallows ends the request with ErrTierDenied. It is never skipped in
 // favour of something further down the chain (RL-17).
 func (s *Scoped) Complete(ctx context.Context, req contracts.Request) (contracts.Response, error) {
-	if err := validateRequest(req); err != nil {
-		return contracts.Response{}, err
-	}
-	policy, err := lookupPolicy(ctx, s.r.repos, req.RepoID)
+	policy, route, err := s.r.authorize(ctx, req)
 	if err != nil {
 		return contracts.Response{}, err
+	}
+	estimate := estimateInputTokens(req)
+	wantOutput := s.r.maxOutput(route)
+	if req.MaxTokens > 0 {
+		wantOutput = min(wantOutput, req.MaxTokens)
+	}
+	output, err := s.reserve(estimate, wantOutput)
+	if err != nil {
+		return contracts.Response{}, err
+	}
+	reserved := estimate + output
+
+	modelID, resp, err := s.callChain(ctx, req, policy, route, output, reserved)
+	if err != nil {
+		s.settle(reserved, 0)
+		return contracts.Response{}, err
+	}
+	s.settle(reserved, resp.totalTokens())
+
+	model := s.r.cfg.Models[modelID]
+	usage := contracts.Usage{
+		InputTokens:  resp.InputTokens + resp.CacheWriteTokens + resp.CacheReadTokens,
+		OutputTokens: resp.OutputTokens,
+		CostUSD:      costUSD(model, resp),
+	}
+	if err := s.record(ctx, req.RepoID, req.Role, modelID, model.Provider, resp.ID, usage); err != nil {
+		return contracts.Response{}, err
+	}
+	return contracts.Response{
+		Provenance: contracts.Provenance{Role: req.Role, Model: modelID, Provider: model.Provider},
+		Usage:      usage,
+		Text:       resp.Text,
+		ToolCalls:  resp.ToolCalls,
+		StopReason: resp.StopReason,
+	}, nil
+}
+
+// authorize validates the request and checks the repository's policy and
+// the role's route, all before any provider is involved.
+func (r *Router) authorize(ctx context.Context, req contracts.Request) (RepoPolicy, RoleRoute, error) {
+	if err := validateRequest(req); err != nil {
+		return RepoPolicy{}, RoleRoute{}, err
+	}
+	policy, err := lookupPolicy(ctx, r.repos, req.RepoID)
+	if err != nil {
+		return RepoPolicy{}, RoleRoute{}, err
 	}
 	if !policy.allowsRole(req.Role) {
-		return contracts.Response{}, fmt.Errorf("role %q on repository %q: %w", req.Role, req.RepoID, ErrRoleDenied)
+		return RepoPolicy{}, RoleRoute{}, fmt.Errorf("role %q on repository %q: %w", req.Role, req.RepoID, ErrRoleDenied)
 	}
-	route, ok := s.r.cfg.Roles[req.Role]
+	route, ok := r.cfg.Roles[req.Role]
 	if !ok {
-		return contracts.Response{}, fmt.Errorf("role %q: %w", req.Role, ErrNoRoute)
+		return RepoPolicy{}, RoleRoute{}, fmt.Errorf("role %q: %w", req.Role, ErrNoRoute)
 	}
-	remaining, err := s.remaining()
-	if err != nil {
-		return contracts.Response{}, err
-	}
-
-	var lastErr error
-	for _, modelID := range route.chain() {
-		model := s.r.cfg.Models[modelID]
-		if !policy.allowsProvider(model.Provider) {
-			return contracts.Response{}, fmt.Errorf("model %q on provider %q for %s repository %q: %w",
-				modelID, model.Provider, policy.Tier, req.RepoID, ErrTierDenied)
-		}
-		resp, err := s.r.providers[model.Provider].Complete(ctx, providerRequest(req, modelID, model, remaining))
-		if errors.Is(err, ErrUnavailable) {
-			lastErr = fmt.Errorf("model %q: %w", modelID, err)
-			continue
-		}
-		if err != nil {
-			return contracts.Response{}, fmt.Errorf("model %q: %w", modelID, err)
-		}
-		return s.account(ctx, req, modelID, model, resp)
-	}
-	return contracts.Response{}, fmt.Errorf("every model for role %q was unavailable: %w", req.Role, lastErr)
+	return policy, route, nil
 }
 
 func validateRequest(req contracts.Request) error {
@@ -155,57 +188,85 @@ func validateRequest(req contracts.Request) error {
 	return nil
 }
 
-// remaining returns the tokens left in the budget, refusing the call when
-// none are.
-func (s *Scoped) remaining() (int, error) {
+// maxOutput is the largest output limit of any model in the chain.
+func (r *Router) maxOutput(route RoleRoute) int {
+	most := 0
+	for _, id := range route.chain() {
+		most = max(most, r.cfg.Models[id].MaxOutputTokens)
+	}
+	return most
+}
+
+// callChain tries each model in turn until one replies, the tier denies
+// one, or an error other than unavailability occurs.
+func (s *Scoped) callChain(ctx context.Context, req contracts.Request, policy RepoPolicy, route RoleRoute, output, reserved int) (string, ProviderResponse, error) {
+	var lastErr error
+	for _, modelID := range route.chain() {
+		model := s.r.cfg.Models[modelID]
+		if !policy.allowsProvider(model.Provider) {
+			return "", ProviderResponse{}, fmt.Errorf("model %q on provider %q for %s repository %q: %w",
+				modelID, model.Provider, policy.Tier, req.RepoID, ErrTierDenied)
+		}
+		if err := s.r.limit.acquire(ctx, reserved); err != nil {
+			return "", ProviderResponse{}, err
+		}
+		resp, err := s.r.providers[model.Provider].Complete(ctx, ProviderRequest{
+			Model:     modelID,
+			System:    req.System,
+			Messages:  req.Messages,
+			Tools:     req.Tools,
+			MaxTokens: min(output, model.MaxOutputTokens),
+		})
+		s.r.limit.settle(reserved, resp.totalTokens())
+		if errors.Is(err, ErrUnavailable) {
+			lastErr = fmt.Errorf("model %q: %w", modelID, err)
+			continue
+		}
+		if err != nil {
+			return "", ProviderResponse{}, fmt.Errorf("model %q: %w", modelID, err)
+		}
+		return modelID, resp, nil
+	}
+	return "", ProviderResponse{}, fmt.Errorf("every model for role %q was unavailable: %w", req.Role, lastErr)
+}
+
+// reserve claims input tokens and up to wantOutput output tokens from the
+// budget for a call about to be sent, and returns the output granted. The
+// call is refused when the estimated input alone does not fit, or when an
+// output limit is wanted and no room for output is left. Input is an
+// estimate, so a call can still overshoot by the estimate's error; the
+// next call is then refused.
+func (s *Scoped) reserve(input, wantOutput int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	left := s.scope.TokenBudget - s.used
-	if left <= 0 {
-		return 0, fmt.Errorf("%d of %d tokens used: %w", s.used, s.scope.TokenBudget, ErrBudgetExceeded)
+	left := s.scope.TokenBudget - s.used - s.reserved
+	output := min(wantOutput, left-input)
+	if left <= 0 || input > left || (wantOutput > 0 && output <= 0) {
+		return 0, fmt.Errorf("%d used and %d reserved of %d tokens, call needs about %d: %w",
+			s.used, s.reserved, s.scope.TokenBudget, input, ErrBudgetExceeded)
 	}
-	return left, nil
+	s.reserved += input + output
+	return output, nil
 }
 
-// providerRequest clamps the output limit to the smallest of what the caller
-// asked for, the model's maximum, and the remaining budget. Input tokens are
-// not known until the provider replies, so a single call can overshoot the
-// budget by its input; the next call is then refused.
-func providerRequest(req contracts.Request, modelID string, m ModelConfig, remaining int) ProviderRequest {
-	limit := min(m.MaxOutputTokens, remaining)
-	if req.MaxTokens > 0 {
-		limit = min(limit, req.MaxTokens)
-	}
-	return ProviderRequest{
-		Model:     modelID,
-		System:    req.System,
-		Messages:  req.Messages,
-		Tools:     req.Tools,
-		MaxTokens: limit,
-	}
-}
-
-// account charges the call to the budget and records its cost. A failure to
-// record fails the call: spend that is not recorded cannot be capped.
-func (s *Scoped) account(ctx context.Context, req contracts.Request, modelID string, m ModelConfig, resp ProviderResponse) (contracts.Response, error) {
+// settle releases a reservation and charges what the call actually used.
+func (s *Scoped) settle(reserved, used int) {
 	s.mu.Lock()
-	s.seq++
-	seq := s.seq
-	s.used += resp.InputTokens + resp.OutputTokens
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.reserved -= reserved
+	s.used += used
+}
 
-	usage := contracts.Usage{
-		InputTokens:  resp.InputTokens,
-		OutputTokens: resp.OutputTokens,
-		CostUSD:      costUSD(m, resp.InputTokens, resp.OutputTokens),
-	}
+// record writes the cost event for one reply. A failure fails the call:
+// spend that is not recorded cannot be capped.
+func (s *Scoped) record(ctx context.Context, repoID string, role contracts.Role, modelID, provider, replyID string, usage contracts.Usage) error {
 	ev := contracts.CostEvent{
-		IdempotencyKey:   fmt.Sprintf("%s/%d", s.scope.KeyPrefix, seq),
-		RepoID:           req.RepoID,
+		IdempotencyKey:   costKey(s.scope.KeyPrefix, provider, replyID),
+		RepoID:           repoID,
 		FeatureRequestID: s.scope.FeatureRequestID,
 		AttemptID:        s.scope.AttemptID,
-		Role:             req.Role,
-		Provider:         m.Provider,
+		Role:             role,
+		Provider:         provider,
 		Model:            modelID,
 		InputTokens:      usage.InputTokens,
 		OutputTokens:     usage.OutputTokens,
@@ -213,20 +274,14 @@ func (s *Scoped) account(ctx context.Context, req contracts.Request, modelID str
 		OccurredAt:       time.Now().UTC(),
 	}
 	if err := s.r.costs.RecordCost(ctx, ev); err != nil {
-		return contracts.Response{}, fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
+		return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
 	}
-	return contracts.Response{
-		Provenance: contracts.Provenance{Role: req.Role, Model: modelID, Provider: m.Provider},
-		Usage:      usage,
-		Text:       resp.Text,
-		ToolCalls:  resp.ToolCalls,
-		StopReason: resp.StopReason,
-	}, nil
+	return nil
 }
 
 // Embed produces vectors with the configured embedding model, under the same
-// tier check as Complete. Embedding calls are not role-scoped and are not
-// charged to the token budget.
+// tier check, budget, rate limit, and cost recording as Complete. Embedding
+// calls are not role-scoped.
 func (s *Scoped) Embed(ctx context.Context, repoID string, texts []string) ([][]float32, error) {
 	policy, err := lookupPolicy(ctx, s.r.repos, repoID)
 	if err != nil {
@@ -243,11 +298,42 @@ func (s *Scoped) Embed(ctx context.Context, repoID string, texts []string) ([][]
 	}
 	emb, ok := s.r.providers[model.Provider].(Embedder)
 	if !ok {
-		return nil, fmt.Errorf("provider %q does not serve embeddings", model.Provider)
+		return nil, fmt.Errorf("provider %q: %w", model.Provider, ErrNoEmbeddingModel)
 	}
-	vecs, err := emb.Embed(ctx, modelID, texts)
+	resp, err := s.embed(ctx, emb, modelID, texts)
 	if err != nil {
-		return nil, fmt.Errorf("embedding with %q: %w", modelID, err)
+		return nil, err
 	}
-	return vecs, nil
+	usage := contracts.Usage{
+		InputTokens: resp.InputTokens,
+		CostUSD:     costUSD(model, ProviderResponse{InputTokens: resp.InputTokens}),
+	}
+	if err := s.record(ctx, repoID, embeddingCostRole, modelID, model.Provider, resp.ID, usage); err != nil {
+		return nil, err
+	}
+	return resp.Vectors, nil
+}
+
+// embed reserves, rate-limits, calls, and settles one embedding request.
+// A provider that reports no usage is charged the estimate.
+func (s *Scoped) embed(ctx context.Context, emb Embedder, modelID string, texts []string) (EmbedResponse, error) {
+	estimate := estimateTextTokens(texts...)
+	if _, err := s.reserve(estimate, 0); err != nil {
+		return EmbedResponse{}, err
+	}
+	if err := s.r.limit.acquire(ctx, estimate); err != nil {
+		s.settle(estimate, 0)
+		return EmbedResponse{}, err
+	}
+	resp, err := emb.Embed(ctx, modelID, texts)
+	used := resp.InputTokens
+	if err == nil && used == 0 {
+		used = estimate
+	}
+	s.r.limit.settle(estimate, used)
+	s.settle(estimate, used)
+	if err != nil {
+		return EmbedResponse{}, fmt.Errorf("embedding with %q: %w", modelID, err)
+	}
+	return resp, nil
 }
