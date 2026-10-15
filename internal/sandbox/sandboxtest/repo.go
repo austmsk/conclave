@@ -89,7 +89,9 @@ func NewBareRemotes(t *testing.T) (string, string) {
 }
 
 // Git runs git in dir with a scrubbed environment and fails the test on
-// error. It returns stdout.
+// error. It returns stdout. The identity comes from the environment rather
+// than repository config because PrepareTree strips the user section, and
+// without one git refuses to commit on hosts whose hostname has no domain.
 func Git(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
@@ -99,6 +101,10 @@ func Git(t *testing.T, dir string, args ...string) string {
 		"HOME=" + t.TempDir(),
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_AUTHOR_NAME=Fixture",
+		"GIT_AUTHOR_EMAIL=fixture@example.invalid",
+		"GIT_COMMITTER_NAME=Fixture",
+		"GIT_COMMITTER_EMAIL=fixture@example.invalid",
 		"LANG=C",
 	}
 	out, err := cmd.CombinedOutput()
