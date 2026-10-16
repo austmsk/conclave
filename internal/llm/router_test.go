@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/austmsk/conclave/internal/contracts"
@@ -143,6 +144,50 @@ func assertTierOutcome(t *testing.T, allowed bool, err error) {
 	}
 	if !allowed && !errors.Is(err, llm.ErrTierDenied) {
 		t.Fatalf("got %v, want ErrTierDenied", err)
+	}
+}
+
+// TestSensitiveProvidersAreRead: the sensitive tier permits exactly the
+// repository's approved list. Every other fixture approves only anthropic,
+// so these lists differ from it; a router that assumed anthropic instead of
+// reading the list fails here.
+func TestSensitiveProvidersAreRead(t *testing.T) {
+	lists := [][]string{
+		{},
+		{llm.ProviderOpenAI},
+		{llm.ProviderGoogle, llm.ProviderOllama},
+		allProviders,
+	}
+	for _, approved := range lists {
+		for _, provider := range allProviders {
+			t.Run(fmt.Sprintf("%v/%s", approved, provider), func(t *testing.T) {
+				sensitiveCase(t, approved, provider)
+			})
+		}
+	}
+}
+
+func sensitiveCase(t *testing.T, approved []string, provider string) {
+	f := fakes()
+	f[provider] = faketest.New(endTurn(10, 5))
+	cfg := llm.Config{
+		Models: map[string]llm.ModelConfig{"m": model(provider)},
+		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+	}
+	repos := llm.StaticRepos{repoID: {
+		Tier: contracts.TierSensitive, Roles: []contracts.Role{contracts.RolePlanner}, SensitiveProviders: approved,
+	}}
+	h := newHarness(t, cfg, f, repos, 100000)
+
+	_, err := complete(h, contracts.RolePlanner)
+	allowed := slices.Contains(approved, provider)
+	assertTierOutcome(t, allowed, err)
+	want := 0
+	if allowed {
+		want = 1
+	}
+	if n := len(f[provider].Requests()); n != want {
+		t.Fatalf("provider received %d requests, want %d", n, want)
 	}
 }
 
