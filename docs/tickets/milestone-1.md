@@ -123,9 +123,11 @@ The feature workflow: analyze, implement, gate, deliver. Activities for every si
 
 Milestone 1 statuses only: feature requests use the six-status model; tasks use `running`, `done`, `needs_attention`, `cancelled`; attempts use `running`, `passed`, `failed`, `errored`.
 
-**Done when:** `workflowcheck` passes; the workflow is tested with `testsuite` without a server; a simulated worker crash mid-attempt resumes on another worker; a cancellation during the agent phase still releases the sandbox; every activity has an idempotency test that runs it twice and asserts one effect; no map is ranged over without sorting.
+Close the per-attempt budget gap left by ticket 4. `llm.Scope` seeds an attempt's spend from the cost ledger once, when the scope is created, and tracks it in memory after that. An activity abandoned after a heartbeat timeout can keep running while its retry opens a second scope for the same attempt; each scope sees only its own calls, so the two together can spend up to twice the token budget. Once activity granularity is settled, make the check hold across scopes, either by re-reading the ledger before each call or by holding a per-attempt lock such as a Postgres advisory lock.
 
-**Requirements:** NFR-R1, NFR-R2, NFR-R3 · **Review list:** RL-1, RL-2, RL-3, RL-9, RL-14, RL-16
+**Done when:** `workflowcheck` passes; the workflow is tested with `testsuite` without a server; a simulated worker crash mid-attempt resumes on another worker; a cancellation during the agent phase still releases the sandbox; every activity has an idempotency test that runs it twice and asserts one effect; no map is ranged over without sorting; two concurrent scopes for the same attempt cannot together spend more than the attempt's budget.
+
+**Requirements:** NFR-R1, NFR-R2, NFR-R3, FR-SEC9 · **Review list:** RL-1, RL-2, RL-3, RL-9, RL-14, RL-16
 
 ---
 
