@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/llm"
@@ -79,7 +80,7 @@ func TestRequestWireFormat(t *testing.T) {
 	}
 	var gotBody []byte
 	var gotHeader http.Header
-	srv := server(t, http.StatusOK, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{}}`,
+	srv := server(t, http.StatusOK, `{"id":"msg_1","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{}}`,
 		func(h http.Header, b []byte) { gotHeader, gotBody = h, b })
 
 	if _, err := client(t, srv.URL).Complete(context.Background(), conversation()); err != nil {
@@ -154,7 +155,7 @@ func TestStopReasons(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.wire, func(t *testing.T) {
-			body := `{"content":[{"type":"text","text":"x"}],"stop_reason":"` + tc.wire + `","usage":{}}`
+			body := `{"id":"msg_1","content":[{"type":"text","text":"x"}],"stop_reason":"` + tc.wire + `","usage":{}}`
 			resp, err := client(t, server(t, http.StatusOK, body, nil).URL).Complete(context.Background(), conversation())
 			if tc.ok != (err == nil) || resp.StopReason != tc.want {
 				t.Fatalf("stop %q err %v", resp.StopReason, err)
@@ -168,8 +169,9 @@ func TestMalformedResponses(t *testing.T) {
 		name string
 		body string
 	}{
-		{"tool_use with no calls", `{"content":[{"type":"text","text":"x"}],"stop_reason":"tool_use","usage":{}}`},
-		{"unknown block", `{"content":[{"type":"image"}],"stop_reason":"end_turn","usage":{}}`},
+		{"tool_use with no calls", `{"id":"msg_1","content":[{"type":"text","text":"x"}],"stop_reason":"tool_use","usage":{}}`},
+		{"unknown block", `{"id":"msg_1","content":[{"type":"image"}],"stop_reason":"end_turn","usage":{}}`},
+		{"no id", `{"content":[{"type":"text","text":"x"}],"stop_reason":"end_turn","usage":{}}`},
 		{"not JSON", `<html>`},
 	}
 	for _, tc := range cases {
@@ -179,6 +181,105 @@ func TestMalformedResponses(t *testing.T) {
 				t.Fatal("accepted a malformed response")
 			}
 		})
+	}
+}
+
+// TestRejectedReplyReportsUsage: a reply the API billed and the adapter
+// refuses still reports its ID and tokens, so the router can charge them.
+func TestRejectedReplyReportsUsage(t *testing.T) {
+	const usage = `"usage":{"input_tokens":120,"output_tokens":30,"cache_creation_input_tokens":5,"cache_read_input_tokens":7}`
+	cases := []struct {
+		name, body, wantID string
+		want               error
+	}{
+		{"refusal", `{"id":"msg_r","content":[{"type":"text","text":"no"}],"stop_reason":"refusal",` + usage + `}`, "msg_r", llm.ErrUnsupportedReply},
+		{"unknown block", `{"id":"msg_u","content":[{"type":"image"}],"stop_reason":"end_turn",` + usage + `}`, "msg_u", llm.ErrUnsupportedReply},
+		{"tool_use with no calls", `{"id":"msg_t","content":[],"stop_reason":"tool_use",` + usage + `}`, "msg_t", llm.ErrMalformedReply},
+		{"no id", `{"content":[{"type":"text","text":"x"}],"stop_reason":"end_turn",` + usage + `}`, "", llm.ErrMalformedReply},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := client(t, server(t, http.StatusOK, tc.body, nil).URL).Complete(context.Background(), conversation())
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+			if resp.ID != tc.wantID || resp.InputTokens != 120 || resp.OutputTokens != 30 ||
+				resp.CacheWriteTokens != 5 || resp.CacheReadTokens != 7 {
+				t.Fatalf("billed %+v", resp)
+			}
+			if resp.Text != "" || resp.ToolCalls != nil || resp.StopReason != "" {
+				t.Fatalf("a rejected reply carried content: %+v", resp)
+			}
+		})
+	}
+}
+
+func TestRetryAfter(t *testing.T) {
+	cases := []struct {
+		header string
+		want   time.Duration
+	}{
+		{"30", 30 * time.Second},
+		{"", 0},
+		{"soon", 0},
+		{"-5", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.header, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("retry-after", tc.header)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+			}))
+			t.Cleanup(srv.Close)
+			_, err := client(t, srv.URL).Complete(context.Background(), conversation())
+			if !errors.Is(err, llm.ErrRateLimited) {
+				t.Fatalf("got %v, want ErrRateLimited", err)
+			}
+			var rl *llm.RateLimitError
+			got := time.Duration(0)
+			if errors.As(err, &rl) {
+				got = rl.RetryAfter
+			}
+			if got != tc.want {
+				t.Fatalf("RetryAfter = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestEmptyMessageIsRefused: a message with no content is caught before it
+// is sent, rather than spending a request on a certain 400.
+func TestEmptyMessageIsRefused(t *testing.T) {
+	sent := false
+	srv := server(t, http.StatusOK, `{}`, func(http.Header, []byte) { sent = true })
+	req := conversation()
+	req.Messages = append(req.Messages, contracts.Message{Role: contracts.MessageAssistant})
+	if _, err := client(t, srv.URL).Complete(context.Background(), req); err == nil {
+		t.Fatal("accepted an empty message")
+	}
+	if sent {
+		t.Fatal("the empty message was sent")
+	}
+}
+
+// TestErrorMessageIsDropped: a validation error quoting the request
+// keeps its status and type but none of its message, so repository content
+// never reaches error strings, history, or traces.
+func TestErrorMessageIsDropped(t *testing.T) {
+	const secret = "canary_repo_content_4b1d"
+	body := `{"type":"error","error":{"type":"invalid_request_error","message":"bad field near ` + secret + `"}}`
+	_, err := client(t, server(t, http.StatusBadRequest, body, nil).URL).Complete(context.Background(), conversation())
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "bad field") {
+		t.Fatalf("error carries the message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "invalid_request_error") {
+		t.Fatalf("error lost its status or type: %v", err)
 	}
 }
 
@@ -195,12 +296,15 @@ func TestStatusMapping(t *testing.T) {
 		{http.StatusInternalServerError, llm.ErrUnavailable},
 		{http.StatusServiceUnavailable, llm.ErrUnavailable},
 		{529, llm.ErrUnavailable},
-		{http.StatusBadRequest, nil},
-		{http.StatusRequestEntityTooLarge, nil},
+		{http.StatusRequestTimeout, llm.ErrUnavailable},
+		{http.StatusBadRequest, llm.ErrInvalidRequest},
+		{http.StatusNotFound, llm.ErrInvalidRequest},
+		{http.StatusRequestEntityTooLarge, llm.ErrInvalidRequest},
+		{http.StatusMultipleChoices, nil},
 	}
 	for _, tc := range cases {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
-			body := `{"type":"error","error":{"type":"some_error","message":"bad key ` + canaryKey + `"}}`
+			body := `{"type":"error","error":{"type":"some_error ` + canaryKey + `","message":"bad key ` + canaryKey + `"}}`
 			_, err := client(t, server(t, tc.status, body, nil).URL).Complete(context.Background(), conversation())
 			assertStatusError(t, err, tc.want)
 			if strings.Contains(err.Error(), canaryKey) {
@@ -226,7 +330,7 @@ func assertStatusError(t *testing.T, err, want error) {
 		}
 		return
 	}
-	for _, typed := range []error{llm.ErrRateLimited, llm.ErrAuth, llm.ErrUnavailable} {
+	for _, typed := range []error{llm.ErrRateLimited, llm.ErrAuth, llm.ErrUnavailable, llm.ErrInvalidRequest} {
 		if errors.Is(err, typed) {
 			t.Fatalf("mapped to %v: %v", typed, err)
 		}

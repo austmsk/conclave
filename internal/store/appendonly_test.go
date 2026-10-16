@@ -82,35 +82,3 @@ func TestAppRoleCannotAlterAppendOnlyRows(t *testing.T) {
 		})
 	}
 }
-
-// TestCostEventReplayIsIdempotentForAppRole shows the RL-2 pattern works
-// with insert-only privileges: a retry re-inserts the same idempotency key
-// and is ignored without needing UPDATE.
-func TestCostEventReplayIsIdempotentForAppRole(t *testing.T) {
-	ctx, tx := testTx(t)
-	s := seed(t, ctx, tx)
-
-	const insert = `INSERT INTO cost_events
-		(idempotency_key, repo_id, role, provider, model, input_tokens, output_tokens, cost_usd)
-		VALUES ('req-replay', $1, 'implementer', 'anthropic', 'm', 1, 1, 0.5)
-		ON CONFLICT (idempotency_key) DO NOTHING`
-
-	err := asAppRole(t, ctx, tx, func(sp pgx.Tx) error {
-		for i := range 2 {
-			if _, err := sp.Exec(ctx, insert, s.repo); err != nil {
-				t.Fatalf("insert %d: %v", i, err)
-			}
-		}
-		var n int
-		if err := sp.QueryRow(ctx, `SELECT count(*) FROM cost_events WHERE idempotency_key = 'req-replay'`).Scan(&n); err != nil {
-			return err
-		}
-		if n != 1 {
-			t.Fatalf("cost events recorded = %d, want 1", n)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}

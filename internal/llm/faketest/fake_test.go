@@ -152,3 +152,38 @@ func TestCostsIgnoresRepeatedKey(t *testing.T) {
 		t.Fatalf("%d events, want 1", n)
 	}
 }
+
+func TestCostsAttemptTokens(t *testing.T) {
+	c := &faketest.Costs{}
+	ctx := context.Background()
+	for _, ev := range []contracts.CostEvent{
+		{IdempotencyKey: "a", AttemptID: "attempt-1", InputTokens: 10, OutputTokens: 5},
+		{IdempotencyKey: "a", AttemptID: "attempt-1", InputTokens: 99, OutputTokens: 99},
+		{IdempotencyKey: "b", AttemptID: "attempt-1", InputTokens: 1, OutputTokens: 1},
+		{IdempotencyKey: "c", AttemptID: "attempt-2", InputTokens: 50},
+	} {
+		if err := c.RecordCost(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := c.AttemptTokens(ctx, "attempt-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 17 {
+		t.Fatalf("AttemptTokens = %d, want 17", got)
+	}
+}
+
+// TestRejectedTurnReportsUsage: a "rejected" turn fails and still carries
+// the billed ID and tokens, as a real adapter's rejection does.
+func TestRejectedTurnReportsUsage(t *testing.T) {
+	p := faketest.New(faketest.Turn{Error: "rejected", Response: faketest.Response{ID: "msg_x", Text: "dropped", InputTokens: 7, OutputTokens: 3}})
+	resp, err := p.Complete(context.Background(), llm.ProviderRequest{Model: "m"})
+	if !errors.Is(err, faketest.ErrRejected) {
+		t.Fatalf("got %v, want ErrRejected", err)
+	}
+	if resp.ID != "msg_x" || resp.InputTokens != 7 || resp.OutputTokens != 3 || resp.Text != "" {
+		t.Fatalf("response %+v", resp)
+	}
+}

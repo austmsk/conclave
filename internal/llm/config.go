@@ -164,6 +164,13 @@ func validateModel(id string, m ModelConfig) error {
 	if m.InputUSDPerMTok < 0 || m.OutputUSDPerMTok < 0 || m.CacheWriteUSDPerMTok < 0 || m.CacheReadUSDPerMTok < 0 {
 		return errors.New("prices must not be negative")
 	}
+	// A hosted model priced at zero would record every call as free, and
+	// a USD cap summing cost_events would never fire. Only models on the
+	// owner's machines may be free. Cache prices may stay zero: they fall
+	// back to the input price.
+	if !slices.Contains(localProviders, m.Provider) && (m.InputUSDPerMTok == 0 || m.OutputUSDPerMTok == 0) {
+		return fmt.Errorf("provider %q is hosted, so input and output prices must be positive", m.Provider)
+	}
 	if m.MaxOutputTokens <= 0 {
 		return errors.New("max_output_tokens must be positive")
 	}

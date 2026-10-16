@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ func publicPlanner() llm.StaticRepos {
 type gateProvider struct {
 	started chan struct{}
 	release chan struct{}
+	ids     atomic.Int64
 }
 
 func newGate() *gateProvider {
@@ -42,7 +44,7 @@ func (g *gateProvider) Complete(ctx context.Context, _ llm.ProviderRequest) (llm
 	case <-ctx.Done():
 		return llm.ProviderResponse{}, ctx.Err()
 	}
-	return llm.ProviderResponse{ID: fmt.Sprintf("gate_%p", &ctx), StopReason: contracts.StopEndTurn, InputTokens: 5, OutputTokens: 5}, nil
+	return llm.ProviderResponse{ID: fmt.Sprintf("gate_%d", g.ids.Add(1)), StopReason: contracts.StopEndTurn, InputTokens: 5, OutputTokens: 5}, nil
 }
 
 // TestInFlightCallHoldsItsReservation: a call that is still waiting on the
@@ -57,7 +59,7 @@ func TestInFlightCallHoldsItsReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	// One token of estimated input for "hi" plus the model's 4096 output.
-	s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 4097})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 4097})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +174,7 @@ func TestEmbedChargesBudgetAndRecordsCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 1000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +199,7 @@ func TestEmbedRefusedOverBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 10})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,12 +247,90 @@ func TestRouterKeepsItsOwnConfig(t *testing.T) {
 	delete(p, llm.ProviderAnthropic)
 	cfg.Roles[contracts.RolePlanner].Fallbacks[0] = "gone"
 
-	s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 10_000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 10_000})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp, err := s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 	if err != nil || resp.Provenance.Model != "m2" {
 		t.Fatalf("got %+v, %v", resp.Provenance, err)
+	}
+}
+
+// TestRejectedReplyIsCharged: the provider bills a reply that the adapter
+// then refuses, a refusal say. The tokens are charged to the budget and
+// recorded, so a model that refuses on every retry still runs the budget
+// out instead of spending without limit.
+func TestRejectedReplyIsCharged(t *testing.T) {
+	rejected := faketest.Turn{Error: "rejected", Response: faketest.Response{ID: "msg_refused", InputTokens: 300, OutputTokens: 200}}
+	f := fakes()
+	f[llm.ProviderAnthropic] = faketest.New(rejected, rejected, rejected)
+	h := newHarness(t, plannerConfig(), f, publicPlanner(), 1000)
+	req := contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 200}
+
+	if _, err := h.scoped.Complete(context.Background(), req); !errors.Is(err, faketest.ErrRejected) {
+		t.Fatalf("first call: got %v, want ErrRejected", err)
+	}
+	if got := h.scoped.TokensUsed(); got != 500 {
+		t.Fatalf("TokensUsed = %d, want 500", got)
+	}
+	evs := h.costs.Events()
+	if len(evs) != 1 || evs[0].IdempotencyKey != "wf/act/anthropic/msg_refused" || evs[0].InputTokens != 300 || evs[0].OutputTokens != 200 {
+		t.Fatalf("events %+v", evs)
+	}
+	if _, err := h.scoped.Complete(context.Background(), req); !errors.Is(err, faketest.ErrRejected) {
+		t.Fatalf("second call: got %v, want ErrRejected", err)
+	}
+	if _, err := h.scoped.Complete(context.Background(), req); !errors.Is(err, llm.ErrBudgetExceeded) {
+		t.Fatalf("third call: got %v, want ErrBudgetExceeded", err)
+	}
+	if f[llm.ProviderAnthropic].Remaining() != 1 {
+		t.Fatal("the call over budget reached the provider")
+	}
+}
+
+// TestRejectedReplyRecordingFailure: when a billed reply cannot be recorded,
+// the ledger's error is what the caller sees, so it is not lost behind the
+// provider's.
+func TestRejectedReplyRecordingFailure(t *testing.T) {
+	f := fakes()
+	f[llm.ProviderAnthropic] = faketest.New(faketest.Turn{Error: "rejected", Response: faketest.Response{InputTokens: 3, OutputTokens: 2}})
+	boom := errors.New("database down")
+	r, err := llm.New(plannerConfig(), providers(f), publicPlanner(), &faketest.Costs{Err: boom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
+	if !errors.Is(err, boom) {
+		t.Fatalf("got %v, want the ledger's error", err)
+	}
+}
+
+func TestIsPermanent(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"budget exhausted", fmt.Errorf("call: %w", llm.ErrBudgetExceeded), true},
+		{"tier denied", fmt.Errorf("call: %w", llm.ErrTierDenied), true},
+		{"repository mismatch", llm.ErrRepoMismatch, true},
+		{"bad credentials", llm.ErrAuth, true},
+		{"unavailable", fmt.Errorf("call: %w", llm.ErrUnavailable), false},
+		{"rate limited", &llm.RateLimitError{RetryAfter: time.Second}, false},
+		{"unsupported reply", faketest.ErrRejected, true},
+		{"malformed reply", fmt.Errorf("call: %w", llm.ErrMalformedReply), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := llm.IsPermanent(tc.err); got != tc.want {
+				t.Fatalf("IsPermanent(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

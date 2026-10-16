@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/llm"
@@ -24,6 +26,14 @@ const (
 
 	// maxErrorBody bounds how much of an error response is read.
 	maxErrorBody = 4 << 10
+
+	// DefaultTimeout bounds a whole request when New is given no client.
+	// A non-streaming reply sends its headers only when generation is
+	// done, so this has to cover the longest generation; ten minutes is
+	// the API's own limit for non-streaming requests. Without it a
+	// connection that stops responding holds a worker until the activity
+	// times out.
+	DefaultTimeout = 10 * time.Minute
 )
 
 // Client is an llm.Provider for Anthropic.
@@ -38,7 +48,7 @@ var _ llm.Provider = (*Client)(nil)
 // New returns a client. baseURL may be empty for DefaultBaseURL. It must be
 // https, except on a loopback host, where tests run an httptest server: the
 // key travels in a header, and plain http to anywhere else would send it in
-// the clear. httpClient may be nil for http.DefaultClient.
+// the clear. httpClient may be nil for a client with DefaultTimeout.
 func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 	if apiKey == "" {
 		return nil, errors.New("anthropic: no API key")
@@ -50,7 +60,7 @@ func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 		return nil, err
 	}
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: DefaultTimeout}
 	}
 	return &Client{key: apiKey, baseURL: baseURL, http: httpClient}, nil
 }
@@ -77,9 +87,15 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// Complete sends one Messages API request.
+// Complete sends one Messages API request. A reply the API billed but this
+// adapter rejects comes back with its ID and usage alongside the error, as
+// llm.Provider requires.
 func (c *Client) Complete(ctx context.Context, req llm.ProviderRequest) (llm.ProviderResponse, error) {
-	body, err := json.Marshal(encodeRequest(req))
+	wire, err := encodeRequest(req)
+	if err != nil {
+		return llm.ProviderResponse{}, err
+	}
+	body, err := json.Marshal(wire)
 	if err != nil {
 		return llm.ProviderResponse{}, fmt.Errorf("anthropic: encoding request: %w", err)
 	}
@@ -105,39 +121,59 @@ func (c *Client) Complete(ctx context.Context, req llm.ProviderRequest) (llm.Pro
 	if resp.StatusCode != http.StatusOK {
 		return llm.ProviderResponse{}, c.statusError(resp)
 	}
-	var wire response
-	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+	var reply response
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
 		return llm.ProviderResponse{}, fmt.Errorf("anthropic: decoding response: %w", err)
 	}
-	return decodeResponse(wire)
+	return decodeResponse(reply)
 }
 
-// statusError maps an HTTP failure to a typed error. Only the API's own
-// error type and message are kept from the body, and the key is redacted
-// from them in case a server ever echoes it.
+// statusError maps an HTTP failure to a typed error. Only the status and
+// the API's error type are kept. The message is dropped: validation
+// messages can quote the request, which is repository content, and this
+// error travels into Temporal history and traces, which for sensitive and
+// local-only repositories must not carry it (FR-SEC13). The type is
+// redacted of the key in case a server ever echoes it.
 func (c *Client) statusError(resp *http.Response) error {
 	var body struct {
 		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
+			Type string `json:"type"`
 		} `json:"error"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 	_ = json.Unmarshal(raw, &body)
-	detail := fmt.Sprintf("anthropic: HTTP %d %s: %s", resp.StatusCode, body.Error.Type, body.Error.Message)
-	detail = strings.ReplaceAll(detail, c.key, "[redacted]")
+	errType := strings.ReplaceAll(body.Error.Type, c.key, "[redacted]")
+	detail := fmt.Sprintf("anthropic: HTTP %d %s", resp.StatusCode, errType)
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
+		if wait := retryAfter(resp.Header.Get("retry-after")); wait > 0 {
+			return &llm.RateLimitError{RetryAfter: wait, Detail: detail}
+		}
 		return fmt.Errorf("%s: %w", detail, llm.ErrRateLimited)
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return fmt.Errorf("%s: %w", detail, llm.ErrAuth)
-	case resp.StatusCode >= 500:
+	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusRequestTimeout:
 		// Includes 529 overloaded.
 		return fmt.Errorf("%s: %w", detail, llm.ErrUnavailable)
+	case resp.StatusCode >= 400:
+		// The API refused this request as made: a bad parameter, an
+		// oversized body, a retired model. Sending it again cannot succeed,
+		// so it is ErrInvalidRequest, which IsPermanent reports.
+		return fmt.Errorf("%s: %w", detail, llm.ErrInvalidRequest)
 	default:
 		return errors.New(detail)
 	}
+}
+
+// retryAfter reads a Retry-After header in seconds, the form the API sends.
+// Anything else is ignored, leaving the interval to the retry policy.
+func retryAfter(v string) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }
 
 // Wire types for the Messages API.
@@ -190,10 +226,16 @@ type response struct {
 	} `json:"usage"`
 }
 
-func encodeRequest(req llm.ProviderRequest) request {
+// encodeRequest refuses a message with nothing in it, which the API would
+// reject with a 400 after the request had already been rate-limited.
+func encodeRequest(req llm.ProviderRequest) (request, error) {
 	out := request{Model: req.Model, System: req.System, MaxTokens: req.MaxTokens}
-	for _, m := range req.Messages {
-		out.Messages = append(out.Messages, encodeMessage(m))
+	for i, m := range req.Messages {
+		msg := encodeMessage(m)
+		if len(msg.Content) == 0 {
+			return request{}, fmt.Errorf("anthropic: message %d (%s) has no text, tool calls, or tool results", i, m.Role)
+		}
+		out.Messages = append(out.Messages, msg)
 	}
 	for _, t := range req.Tools {
 		schema := t.Parameters
@@ -204,7 +246,7 @@ func encodeRequest(req llm.ProviderRequest) request {
 		}
 		out.Tools = append(out.Tools, tool{Name: string(t.Name), Description: t.Description, InputSchema: schema})
 	}
-	return out
+	return out, nil
 }
 
 // encodeMessage puts tool results first in a user turn, as the API requires,
@@ -229,7 +271,8 @@ func encodeMessage(m contracts.Message) message {
 
 // toolResultBlock reports a refusal or failure as an error result, with the
 // error first so the model sees why before any partial output. A tool that
-// succeeds silently sends no content, which the API accepts.
+// succeeds silently sends no content: the Messages API reference lists
+// tool_result content as optional (checked 2026-10-15).
 func toolResultBlock(r contracts.ToolResult) block {
 	b := block{Type: "tool_result", ToolUseID: r.CallID, Content: r.Output}
 	if r.Error != "" {
@@ -242,19 +285,35 @@ func toolResultBlock(r contracts.ToolResult) block {
 	return b
 }
 
+// decodeResponse reads usage before anything that can fail, so a rejected
+// reply still reports what the API billed for it.
 func decodeResponse(w response) (llm.ProviderResponse, error) {
-	stop, err := stopReason(w.StopReason)
-	if err != nil {
-		return llm.ProviderResponse{}, err
-	}
-	out := llm.ProviderResponse{
+	billed := llm.ProviderResponse{
 		ID:               w.ID,
-		StopReason:       stop,
 		InputTokens:      w.Usage.InputTokens,
 		CacheWriteTokens: w.Usage.CacheCreationInputTokens,
 		CacheReadTokens:  w.Usage.CacheReadInputTokens,
 		OutputTokens:     w.Usage.OutputTokens,
 	}
+	out, err := decodeContent(w, billed)
+	if err != nil {
+		return billed, err
+	}
+	return out, nil
+}
+
+// decodeContent fills out from the reply. A reply without an ID is refused:
+// the cost event is keyed on it, and without one a retried write could not
+// be recognised as a duplicate.
+func decodeContent(w response, out llm.ProviderResponse) (llm.ProviderResponse, error) {
+	if w.ID == "" {
+		return out, fmt.Errorf("anthropic: reply has no id: %w", llm.ErrMalformedReply)
+	}
+	stop, err := stopReason(w.StopReason)
+	if err != nil {
+		return out, err
+	}
+	out.StopReason = stop
 	for _, b := range w.Content {
 		switch b.Type {
 		case "text":
@@ -264,11 +323,11 @@ func decodeResponse(w response) (llm.ProviderResponse, error) {
 		case "thinking", "redacted_thinking":
 			// Not surfaced; extended thinking is not requested.
 		default:
-			return llm.ProviderResponse{}, fmt.Errorf("anthropic: unknown content block type %q", b.Type)
+			return out, fmt.Errorf("anthropic: content block type %q: %w", b.Type, llm.ErrUnsupportedReply)
 		}
 	}
 	if stop == contracts.StopToolUse && len(out.ToolCalls) == 0 {
-		return llm.ProviderResponse{}, errors.New("anthropic: stop reason tool_use with no tool calls")
+		return out, fmt.Errorf("anthropic: stop reason tool_use with no tool calls: %w", llm.ErrMalformedReply)
 	}
 	return out, nil
 }
@@ -284,6 +343,6 @@ func stopReason(s string) (contracts.StopReason, error) {
 	case "max_tokens":
 		return contracts.StopMaxTokens, nil
 	default:
-		return "", fmt.Errorf("anthropic: unsupported stop reason %q", s)
+		return "", fmt.Errorf("anthropic: stop reason %q: %w", s, llm.ErrUnsupportedReply)
 	}
 }

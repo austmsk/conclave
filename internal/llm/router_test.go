@@ -13,7 +13,11 @@ import (
 	"github.com/austmsk/conclave/internal/llm/faketest"
 )
 
-const repoID = "repo-1"
+// Scope requires database IDs, which are UUIDs.
+const (
+	repoID    = "0f6b1c2a-5d1e-4c8e-9a4b-1f2e3d4c5b6a"
+	attemptID = "7a1d9e44-2b3c-4f5a-8e6d-0c1b2a3f4e5d"
+)
 
 var allTiers = []contracts.SensitivityTier{
 	contracts.TierPublic, contracts.TierPrivate, contracts.TierSensitive, contracts.TierLocalOnly,
@@ -77,14 +81,14 @@ type harness struct {
 	costs  *faketest.Costs
 }
 
-func newHarness(t *testing.T, cfg llm.Config, f map[string]*faketest.Provider, repos llm.StaticRepos, budget int) harness {
+func newHarness(t *testing.T, cfg llm.Config, f map[string]*faketest.Provider, repos llm.Repos, budget int) harness {
 	t.Helper()
 	costs := &faketest.Costs{}
 	r, err := llm.New(cfg, providers(f), repos, costs)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	s, err := r.Scope(llm.Scope{AttemptID: "attempt-1", KeyPrefix: "wf/act", TokenBudget: budget})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, AttemptID: attemptID, KeyPrefix: "wf/act", TokenBudget: budget})
 	if err != nil {
 		t.Fatalf("Scope: %v", err)
 	}
@@ -219,21 +223,37 @@ func TestRoleAllowlistMatrix(t *testing.T) {
 	}
 }
 
+// liveRepos is a Repos whose Validate checks nothing, standing in for
+// policies read per request, which New cannot check up front.
+type liveRepos llm.StaticRepos
+
+func (l liveRepos) Policy(ctx context.Context, id string) (llm.RepoPolicy, error) {
+	return llm.StaticRepos(l).Policy(ctx, id)
+}
+
+func (liveRepos) Validate() error { return nil }
+
+// badPolicies are repository configurations that must not run anything.
+type badPolicy struct {
+	name  string
+	repos llm.StaticRepos
+	want  error
+}
+
+var badPolicies = []badPolicy{
+	{"no tier", llm.StaticRepos{repoID: {Roles: []contracts.Role{contracts.RolePlanner}}}, llm.ErrNoTier},
+	{"unknown tier", llm.StaticRepos{repoID: policy("internal", contracts.RolePlanner)}, llm.ErrUnknownTier},
+	{"no role allowlist", llm.StaticRepos{repoID: {Tier: contracts.TierPublic}}, llm.ErrNoRoleAllowlist},
+	{"misspelt sensitive provider", llm.StaticRepos{repoID: {
+		Tier: contracts.TierSensitive, Roles: []contracts.Role{contracts.RolePlanner}, SensitiveProviders: []string{"anthropc"},
+	}}, llm.ErrUnknownProvider},
+}
+
 // TestRepoPolicyFailsClosed: a repository with no tier, an unknown tier, no
-// role allowlist, or no configuration at all cannot make a request.
+// role allowlist, a misspelt provider, or no configuration at all cannot
+// make a request, even when its policy is only seen at request time.
 func TestRepoPolicyFailsClosed(t *testing.T) {
-	cases := []struct {
-		name   string
-		repos  llm.StaticRepos
-		repoID string
-		want   error
-	}{
-		{"no tier", llm.StaticRepos{repoID: {Roles: []contracts.Role{contracts.RolePlanner}}}, repoID, llm.ErrNoTier},
-		{"unknown tier", llm.StaticRepos{repoID: policy("internal", contracts.RolePlanner)}, repoID, llm.ErrUnknownTier},
-		{"no role allowlist", llm.StaticRepos{repoID: {Tier: contracts.TierPublic}}, repoID, llm.ErrNoRoleAllowlist},
-		{"unconfigured repository", llm.StaticRepos{}, repoID, llm.ErrUnknownRepo},
-		{"empty repository ID", llm.StaticRepos{"": policy(contracts.TierPublic, contracts.RolePlanner)}, "", llm.ErrUnknownRepo},
-	}
+	cases := append(slices.Clone(badPolicies), badPolicy{"unconfigured repository", llm.StaticRepos{}, llm.ErrUnknownRepo})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := fakes()
@@ -242,18 +262,63 @@ func TestRepoPolicyFailsClosed(t *testing.T) {
 				Models: map[string]llm.ModelConfig{"m": model(llm.ProviderOllama)},
 				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 			}
-			h := newHarness(t, cfg, f, tc.repos, 100000)
-			_, err := h.scoped.Complete(context.Background(), contracts.Request{RepoID: tc.repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
+			h := newHarness(t, cfg, f, liveRepos(tc.repos), 100000)
+			_, err := h.scoped.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Complete: got %v, want %v", err, tc.want)
 			}
-			if _, err := h.scoped.Embed(context.Background(), tc.repoID, []string{"x"}); !errors.Is(err, tc.want) {
+			if _, err := h.scoped.Embed(context.Background(), repoID, []string{"x"}); !errors.Is(err, tc.want) {
 				t.Fatalf("Embed: got %v, want %v", err, tc.want)
 			}
 			if n := len(f[llm.ProviderOllama].Requests()); n != 0 {
 				t.Fatalf("provider received %d requests", n)
 			}
 		})
+	}
+}
+
+// TestNewRejectsBadStaticRepos: the same mistakes in a StaticRepos stop
+// the router starting.
+func TestNewRejectsBadStaticRepos(t *testing.T) {
+	cases := append(slices.Clone(badPolicies), badPolicy{"empty repository ID", llm.StaticRepos{"": policy(contracts.TierPublic, contracts.RolePlanner)}, llm.ErrUnknownRepo})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := llm.New(plannerConfig(), providers(fakes()), tc.repos, &faketest.Costs{})
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("New: got %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestRequestForAnotherRepoIsRefused attempts the mix-up a choke point must
+// catch: a scope opened for a sensitive repository receives a request that
+// names a public one, whose tier would allow every provider. The request
+// must fail before any provider sees it.
+func TestRequestForAnotherRepoIsRefused(t *testing.T) {
+	const publicRepo = "3c2b1a09-8f7e-4d6c-b5a4-938271605f4e"
+	repos := llm.StaticRepos{
+		repoID:     policy(contracts.TierSensitive, contracts.RolePlanner),
+		publicRepo: policy(contracts.TierPublic, contracts.RolePlanner),
+	}
+	cfg := llm.Config{
+		Models:    map[string]llm.ModelConfig{"m": model(llm.ProviderOpenAI)},
+		Roles:     map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Embedding: &llm.EmbeddingRoute{Model: "m"},
+	}
+	f := fakes()
+	f[llm.ProviderOpenAI] = faketest.New(endTurn(1, 1))
+	h := newHarness(t, cfg, f, repos, 100000)
+
+	req := contracts.Request{RepoID: publicRepo, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")}
+	if _, err := h.scoped.Complete(context.Background(), req); !errors.Is(err, llm.ErrRepoMismatch) {
+		t.Fatalf("Complete: got %v, want ErrRepoMismatch", err)
+	}
+	if _, err := h.scoped.Embed(context.Background(), publicRepo, []string{"x"}); !errors.Is(err, llm.ErrRepoMismatch) {
+		t.Fatalf("Embed: got %v, want ErrRepoMismatch", err)
+	}
+	if n := len(f[llm.ProviderOpenAI].Requests()); n != 0 {
+		t.Fatalf("provider received %d requests", n)
 	}
 }
 
@@ -400,7 +465,7 @@ func TestEmbedTierMatrix(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 1000})
+				s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -437,25 +502,54 @@ func TestBudget(t *testing.T) {
 	}
 }
 
-// TestRetriedScopeKeepsBudget: a scope seeded with earlier spend does not
-// get a fresh budget.
+// TestRetriedScopeKeepsBudget: an activity spends most of its attempt's
+// budget and is retried. The retry's scope reads the spend back from the
+// ledger, so it is refused rather than handed a fresh budget.
 func TestRetriedScopeKeepsBudget(t *testing.T) {
-	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
-	}
 	f := fakes()
-	r, err := llm.New(cfg, providers(f), llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, &faketest.Costs{})
+	f[llm.ProviderAnthropic] = faketest.New(endTurn(600, 400), endTurn(1, 1))
+	costs := &faketest.Costs{}
+	r, err := llm.New(plannerConfig(), providers(f), publicPlanner(), costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 1000, TokensUsed: 1000})
+	scope := llm.Scope{RepoID: repoID, AttemptID: attemptID, KeyPrefix: "wf/act", TokenBudget: 1000}
+	req := contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 400}
+
+	first, err := r.Scope(context.Background(), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
-	if !errors.Is(err, llm.ErrBudgetExceeded) {
+	if _, err := first.Complete(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	retry, err := r.Scope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := retry.TokensUsed(); got != 1000 {
+		t.Fatalf("retried scope starts at %d tokens, want 1000 from the ledger", got)
+	}
+	if _, err := retry.Complete(context.Background(), req); !errors.Is(err, llm.ErrBudgetExceeded) {
 		t.Fatalf("got %v, want ErrBudgetExceeded", err)
+	}
+	if f[llm.ProviderAnthropic].Remaining() != 1 {
+		t.Fatal("the refused call reached the provider")
+	}
+}
+
+// TestScopeFailsWhenLedgerUnreadable: a scope whose earlier spend cannot be
+// read is refused, rather than assumed to have spent nothing.
+func TestScopeFailsWhenLedgerUnreadable(t *testing.T) {
+	boom := errors.New("database down")
+	r, err := llm.New(plannerConfig(), providers(fakes()), publicPlanner(), &faketest.Costs{Err: boom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Scope(context.Background(), llm.Scope{RepoID: repoID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10})
+	if !errors.Is(err, boom) {
+		t.Fatalf("got %v, want the ledger's error", err)
 	}
 }
 
@@ -502,11 +596,17 @@ func TestScopeRequiresKeyAndBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range []llm.Scope{
-		{TokenBudget: 10},
-		{KeyPrefix: "k"},
-		{KeyPrefix: "k", TokenBudget: 10, TokensUsed: -1},
+		{RepoID: repoID, TokenBudget: 10},
+		{RepoID: repoID, KeyPrefix: "k"},
+		{KeyPrefix: "k", TokenBudget: 10},
+		// IDs that are not UUIDs, which the ledger would refuse only after
+		// a reply had been billed.
+		{RepoID: "repo-1", KeyPrefix: "k", TokenBudget: 10},
+		{RepoID: repoID, FeatureRequestID: "issue-12", KeyPrefix: "k", TokenBudget: 10},
+		{RepoID: repoID, AttemptID: "wf-12/activity-3", KeyPrefix: "k", TokenBudget: 10},
+		{RepoID: repoID, AttemptID: "7a1d9e44x2b3c-4f5a-8e6d-0c1b2a3f4e5d", KeyPrefix: "k", TokenBudget: 10},
 	} {
-		if _, err := r.Scope(s); !errors.Is(err, llm.ErrInvalidScope) {
+		if _, err := r.Scope(context.Background(), s); !errors.Is(err, llm.ErrInvalidScope) {
 			t.Errorf("Scope(%+v): got %v, want ErrInvalidScope", s, err)
 		}
 	}
@@ -540,12 +640,13 @@ func TestCostRecording(t *testing.T) {
 	if len(evs) != 2 {
 		t.Fatalf("%d events, want 2", len(evs))
 	}
+	// OccurredAt is the ledger's to stamp; the router reads no clock.
 	ev := evs[0]
 	if ev.IdempotencyKey != "wf/act/anthropic/msg_a" || evs[1].IdempotencyKey != "wf/act/anthropic/msg_b" {
 		t.Fatalf("keys %q, %q", ev.IdempotencyKey, evs[1].IdempotencyKey)
 	}
-	if ev.RepoID != repoID || ev.AttemptID != "attempt-1" || ev.Role != contracts.RolePlanner ||
-		ev.Provider != llm.ProviderAnthropic || ev.Model != "m" || ev.CostUSD != 6 || ev.OccurredAt.IsZero() {
+	if ev.RepoID != repoID || ev.AttemptID != attemptID || ev.Role != contracts.RolePlanner ||
+		ev.Provider != llm.ProviderAnthropic || ev.Model != "m" || ev.CostUSD != 6 || !ev.OccurredAt.IsZero() {
 		t.Fatalf("event %+v", ev)
 	}
 }
@@ -606,7 +707,7 @@ func TestRetriedActivityRecordsItsOwnSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		s, err := r.Scope(llm.Scope{KeyPrefix: "wf/act", TokenBudget: 10_000})
+		s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "wf/act", TokenBudget: 10_000})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -657,7 +758,7 @@ func TestCostRecordingFailureFailsTheCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(llm.Scope{KeyPrefix: "k", TokenBudget: 1000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}

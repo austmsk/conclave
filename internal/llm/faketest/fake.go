@@ -18,6 +18,7 @@ import (
 var (
 	ErrExhausted         = errors.New("fake provider: script has no more turns")
 	ErrUnexpectedRequest = errors.New("fake provider: request does not match the recording")
+	ErrRejected          = fmt.Errorf("fake provider: scripted rejected reply: %w", llm.ErrUnsupportedReply)
 )
 
 // Script is a recorded conversation, as stored in a fixture file.
@@ -31,7 +32,10 @@ type Turn struct {
 	Response Response `json:"response"`
 
 	// Error, when set to "unavailable" or "rate_limited", makes the turn
-	// fail with the matching llm error instead of replying.
+	// fail with the matching llm error instead of replying. "rejected"
+	// stands for a reply the provider billed and the adapter refused: the
+	// turn fails with ErrRejected, which wraps llm.ErrUnsupportedReply, and returns the response's ID and token
+	// counts, as the llm.Provider contract requires.
 	Error string `json:"error,omitempty"`
 }
 
@@ -55,7 +59,10 @@ type Response struct {
 	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
 }
 
-// replyIDs numbers generated reply IDs across every fake in the process.
+// replyIDs numbers generated reply IDs across every fake in the process, so
+// no two fakes ever issue the same ID and cost events never collide by
+// accident. The numbers depend on test order: a test that asserts on cost
+// keys must set Response.ID itself.
 var replyIDs atomic.Int64
 
 // Provider replays a Script. It is safe for concurrent use, though a
@@ -108,14 +115,24 @@ func (p *Provider) Complete(ctx context.Context, req llm.ProviderRequest) (llm.P
 	p.next++
 	switch turn.Error {
 	case "":
+		return reply(turn.Response), nil
 	case "unavailable":
 		return llm.ProviderResponse{}, fmt.Errorf("fake: %w", llm.ErrUnavailable)
 	case "rate_limited":
 		return llm.ProviderResponse{}, fmt.Errorf("fake: %w", llm.ErrRateLimited)
+	case "rejected":
+		r := reply(turn.Response)
+		billed := llm.ProviderResponse{
+			ID: r.ID, InputTokens: r.InputTokens, OutputTokens: r.OutputTokens,
+			CacheWriteTokens: r.CacheWriteTokens, CacheReadTokens: r.CacheReadTokens,
+		}
+		return billed, ErrRejected
 	default:
 		return llm.ProviderResponse{}, fmt.Errorf("fake: unknown scripted error %q", turn.Error)
 	}
-	r := turn.Response
+}
+
+func reply(r Response) llm.ProviderResponse {
 	id := r.ID
 	if id == "" {
 		id = fmt.Sprintf("fake_msg_%d", replyIDs.Add(1))
@@ -129,7 +146,7 @@ func (p *Provider) Complete(ctx context.Context, req llm.ProviderRequest) (llm.P
 		CacheWriteTokens: r.CacheWriteTokens,
 		CacheReadTokens:  r.CacheReadTokens,
 		OutputTokens:     r.OutputTokens,
-	}, nil
+	}
 }
 
 // check compares req with the turn's expectations and, when the previous
