@@ -18,6 +18,7 @@
 // a retry cannot fix are reported by IsPermanent.
 //
 // In production, DirectoryRepos takes each repository's tier, role
-// allowlist, and sensitive providers from the owner's configuration, and
-// refuses a repository whose database record disagrees on the tier.
+// allowlist, and sensitive providers from the owner's configuration, read
+// by LoadRepoAccess from deploy/repos.yaml, and refuses a repository whose
+// database record disagrees on the tier.
 package llm

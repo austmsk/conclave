@@ -40,6 +40,7 @@ var (
 	ErrUnknownTier      = errors.New("repository has an unknown sensitivity tier")
 	ErrNoRoleAllowlist  = errors.New("repository has no role allowlist")
 	ErrRoleDenied       = errors.New("role is not allowed on this repository")
+	ErrUnknownRole      = errors.New("repository policy names an unknown role")
 	ErrTierDenied       = errors.New("provider is not allowed for the repository's tier")
 	ErrUnknownProvider  = errors.New("repository policy names an unknown provider")
 	ErrTierMismatch     = errors.New("repository's recorded tier differs from its configured tier")
@@ -102,9 +103,9 @@ type RepoDirectory interface {
 // approved providers. The configured tier is the authoritative one
 // (FR-SEC12): only the owner changes it.
 type RepoAccess struct {
-	Tier               contracts.SensitivityTier
-	Roles              []contracts.Role
-	SensitiveProviders []string
+	Tier               contracts.SensitivityTier `yaml:"tier"`
+	Roles              []contracts.Role          `yaml:"roles"`
+	SensitiveProviders []string                  `yaml:"sensitive_providers"`
 }
 
 // DirectoryRepos is the production Repos. Requests name a repository by ID,
@@ -126,14 +127,20 @@ func NewDirectoryRepos(dir RepoDirectory, access map[string]RepoAccess) *Directo
 	return &DirectoryRepos{dir: dir, access: maps.Clone(access)}
 }
 
-// Validate checks every repository's access, in sorted order so the error
-// is stable. Tiers are checked per request, when they are read.
+// Validate checks every repository's access. Tiers in the directory are
+// checked per request, when they are read.
 func (d *DirectoryRepos) Validate() error {
-	for _, name := range sortedKeys(d.access) {
+	return validateAccess(d.access)
+}
+
+// validateAccess checks every repository's access, in sorted order so the
+// error is stable.
+func validateAccess(access map[string]RepoAccess) error {
+	for _, name := range sortedKeys(access) {
 		if name == "" {
 			return fmt.Errorf("access for a repository with an empty name: %w", ErrUnknownRepo)
 		}
-		if err := d.access[name].policy().validate(); err != nil {
+		if err := access[name].policy().validate(); err != nil {
 			return fmt.Errorf("repository %q: %w", name, err)
 		}
 	}
@@ -190,6 +197,11 @@ func (p RepoPolicy) validate() error {
 	}
 	if len(p.Roles) == 0 {
 		return ErrNoRoleAllowlist
+	}
+	for _, role := range p.Roles {
+		if !slices.Contains(knownRoles, role) {
+			return fmt.Errorf("role %q: %w", role, ErrUnknownRole)
+		}
 	}
 	for _, name := range p.SensitiveProviders {
 		if !slices.Contains(knownProviders, name) {

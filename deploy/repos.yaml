@@ -1,0 +1,22 @@
+# Repository access: each repository's sensitivity tier, role allowlist and,
+# for the sensitive tier, the approved providers. Loaded and validated at
+# startup by llm.LoadRepoAccess (internal/llm/repoaccess.go).
+#
+# This file is the authority for a repository's tier (FR-SEC12). The tier
+# recorded in the database must match it, or every request for that
+# repository is refused. Only the owner edits this file; never derive it
+# from the target repository.
+#
+# The placeholder fails validation on purpose, so the router refuses to
+# start until a real entry is filled in:
+#   owner/repo     replace with the repository's full name.
+#   tier: ""       one of public, private, sensitive, local_only.
+#
+# A role absent from roles is denied on that repository. For a sensitive
+# repository, add sensitive_providers with the providers you have approved
+# for it, for example [anthropic]; every other provider is denied.
+
+repositories:
+  owner/repo:
+    tier: ""
+    roles: [planner, implementer, test_writer, pr_writer, discussion, brief]

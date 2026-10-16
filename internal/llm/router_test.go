@@ -244,6 +244,7 @@ var badPolicies = []badPolicy{
 	{"no tier", llm.StaticRepos{repoID: {Roles: []contracts.Role{contracts.RolePlanner}}}, llm.ErrNoTier},
 	{"unknown tier", llm.StaticRepos{repoID: policy("internal", contracts.RolePlanner)}, llm.ErrUnknownTier},
 	{"no role allowlist", llm.StaticRepos{repoID: {Tier: contracts.TierPublic}}, llm.ErrNoRoleAllowlist},
+	{"misspelt role", llm.StaticRepos{repoID: policy(contracts.TierPublic, "implementor")}, llm.ErrUnknownRole},
 	{"misspelt sensitive provider", llm.StaticRepos{repoID: {
 		Tier: contracts.TierSensitive, Roles: []contracts.Role{contracts.RolePlanner}, SensitiveProviders: []string{"anthropc"},
 	}}, llm.ErrUnknownProvider},

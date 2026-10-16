@@ -105,20 +105,30 @@ var knownRoles = []contracts.Role{
 // LoadConfig parses and validates YAML configuration. Unknown fields are an
 // error, so a misspelt key fails at startup instead of being ignored.
 func LoadConfig(r io.Reader) (Config, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return Config{}, fmt.Errorf("reading router configuration: %w", err)
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
 	var cfg Config
-	if err := dec.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("%w: parsing YAML: %w", ErrInvalidConfig, err)
+	if err := decodeStrict(r, &cfg); err != nil {
+		return Config{}, fmt.Errorf("router configuration: %w", err)
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// decodeStrict decodes YAML into v, rejecting unknown keys so a misspelt
+// setting stops startup instead of being ignored. Every configuration file
+// goes through it.
+func decodeStrict(r io.Reader, v any) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("reading: %w", err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("%w: parsing YAML: %w", ErrInvalidConfig, err)
+	}
+	return nil
 }
 
 // Validate checks that every route names a configured, pinned model on a
