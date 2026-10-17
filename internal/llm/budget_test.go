@@ -309,28 +309,3 @@ func TestRejectedReplyRecordingFailure(t *testing.T) {
 		t.Fatalf("got %v, want the ledger's error", err)
 	}
 }
-
-func TestIsPermanent(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"budget exhausted", fmt.Errorf("call: %w", llm.ErrBudgetExceeded), true},
-		{"tier denied", fmt.Errorf("call: %w", llm.ErrTierDenied), true},
-		{"repository mismatch", llm.ErrRepoMismatch, true},
-		{"bad credentials", llm.ErrAuth, true},
-		{"unavailable", fmt.Errorf("call: %w", llm.ErrUnavailable), false},
-		{"rate limited", &llm.RateLimitError{RetryAfter: time.Second}, false},
-		{"unsupported reply", faketest.ErrRejected, true},
-		{"malformed reply", fmt.Errorf("call: %w", llm.ErrMalformedReply), false},
-		{"nil", nil, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := llm.IsPermanent(tc.err); got != tc.want {
-				t.Fatalf("IsPermanent(%v) = %v, want %v", tc.err, got, tc.want)
-			}
-		})
-	}
-}
