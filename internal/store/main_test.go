@@ -20,6 +20,7 @@ import (
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/store"
+	"github.com/austmsk/conclave/internal/testenv"
 )
 
 // The same image as deploy/docker-compose.yml, so tests see the Postgres the
@@ -101,7 +102,7 @@ func run(ctx context.Context, m *testing.M, connString string) (int, error) {
 func requireDB(t *testing.T) context.Context {
 	t.Helper()
 	if pool == nil {
-		t.Skip("no database: run without -short to start one")
+		testenv.Skip(t, "no database: run without -short to start one")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)

@@ -16,6 +16,7 @@ import (
 	"github.com/austmsk/conclave/internal/sandbox"
 	"github.com/austmsk/conclave/internal/sandbox/docker"
 	"github.com/austmsk/conclave/internal/sandbox/sandboxtest"
+	"github.com/austmsk/conclave/internal/testenv"
 )
 
 // testImage is alpine/git v2.49.1, pinned by its multi-platform index
@@ -44,7 +45,7 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("integration test: run without -short")
+		testenv.Skip(t, "integration test: run without -short")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
