@@ -12,6 +12,10 @@
 // helpers. The actor string is self-reported; the trigger also records the
 // authenticated login as db_user. Cost events and state transitions are
 // append-only: the application role has insert-only access to them.
+// CostLedger is the router's ledger over cost_events; a replayed event is
+// absorbed by the idempotency key rather than rejected. RepoDirectory gives the
+// router each repository's record, which it checks against the owner's
+// configured tier.
 //
 // These grants are a control only when the application connects as a
 // non-owner LOGIN role that is a member of conclave_app. SET ROLE

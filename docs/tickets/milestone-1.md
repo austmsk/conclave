@@ -123,9 +123,15 @@ The feature workflow: analyze, implement, gate, deliver. Activities for every si
 
 Milestone 1 statuses only: feature requests use the six-status model; tasks use `running`, `done`, `needs_attention`, `cancelled`; attempts use `running`, `passed`, `failed`, `errored`.
 
-**Done when:** `workflowcheck` passes; the workflow is tested with `testsuite` without a server; a simulated worker crash mid-attempt resumes on another worker; a cancellation during the agent phase still releases the sandbox; every activity has an idempotency test that runs it twice and asserts one effect; no map is ranged over without sorting.
+Close the per-attempt budget gap left by ticket 4. `llm.Scope` seeds an attempt's spend from the cost ledger once, when the scope is created, and tracks it in memory after that. An activity abandoned after a heartbeat timeout can keep running while its retry opens a second scope for the same attempt; each scope sees only its own calls, so the two together can spend up to twice the token budget. Once activity granularity is settled, make the check hold across scopes, either by re-reading the ledger before each call or by holding a per-attempt lock such as a Postgres advisory lock.
 
-**Requirements:** NFR-R1, NFR-R2, NFR-R3 · **Review list:** RL-1, RL-2, RL-3, RL-9, RL-14, RL-16
+Add the other two FR-SEC9 caps. Ticket 4 enforces only the per-attempt token budget. Add a per-feature-request cap in tokens, summed over every attempt of the feature request, and a monthly cap in USD, summed from `cost_usd` across all repositories for the calendar month. Both are read from the cost ledger, which already records `feature_request_id`, `cost_usd`, and `occurred_at`, and are checked before each model call alongside the per-attempt budget. The cap values come from owner configuration, validated at startup. Hitting either cap pauses the feature request rather than failing it (FR-S12): the workflow posts a comment explaining which cap was hit and waits for `/resume`. Work already done is kept.
+
+Make attribution mandatory. `llm.Scope` currently requires only `RepoID`, `KeyPrefix`, and `TokenBudget`. With `AttemptID` empty, the ledger is never read, so a retried activity starts with a fresh full budget. With `FeatureRequestID` empty, cost events are written with a NULL `feature_request_id`, and the per-feature-request cap above cannot see that spend. Require both in any scope that carries a budget. If a call is deliberately unattributed, it gets its own explicitly named constructor.
+
+**Done when:** `workflowcheck` passes; the workflow is tested with `testsuite` without a server; a simulated worker crash mid-attempt resumes on another worker; a cancellation during the agent phase still releases the sandbox; every activity has an idempotency test that runs it twice and asserts one effect; no map is ranged over without sorting; two concurrent scopes for the same attempt cannot together spend more than the attempt's budget; a feature request that reaches its token cap pauses and resumes on `/resume` without losing its attempts; a call that would take the month past its USD cap is refused before reaching a provider; a budgeted scope without an attempt ID or feature request ID is rejected.
+
+**Requirements:** NFR-R1, NFR-R2, NFR-R3, FR-SEC9, FR-S12 · **Review list:** RL-1, RL-2, RL-3, RL-9, RL-14, RL-16
 
 ---
 

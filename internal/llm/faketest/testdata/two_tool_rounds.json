@@ -1,0 +1,39 @@
+{
+  "turns": [
+    {
+      "expect": {"model": "claude-fable-5-1", "messages": 1},
+      "response": {
+        "text": "I'll look at the parser and its tests.",
+        "tool_calls": [
+          {"id": "call_1", "name": "read_file", "arguments": {"path": "src/parser.cpp"}},
+          {"id": "call_2", "name": "list_dir", "arguments": {"path": "tests"}}
+        ],
+        "stop_reason": "tool_use",
+        "input_tokens": 1200,
+        "output_tokens": 80
+      }
+    },
+    {
+      "expect": {"model": "claude-fable-5-1", "messages": 3},
+      "response": {
+        "tool_calls": [
+          {"id": "call_3", "name": "run_tests", "arguments": {}}
+        ],
+        "stop_reason": "tool_use",
+        "input_tokens": 2400,
+        "output_tokens": 40
+      }
+    },
+    {
+      "expect": {"model": "claude-fable-5-1", "messages": 5},
+      "response": {
+        "tool_calls": [
+          {"id": "call_4", "name": "finish", "arguments": {"summary": "Tests pass; no change needed."}}
+        ],
+        "stop_reason": "tool_use",
+        "input_tokens": 2600,
+        "output_tokens": 60
+      }
+    }
+  ]
+}
