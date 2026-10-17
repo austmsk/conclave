@@ -214,6 +214,37 @@ func TestRejectedReplyReportsUsage(t *testing.T) {
 	}
 }
 
+// TestNegativeUsageIsMalformed: a reply reporting a negative token count is
+// refused as malformed. The negative count is dropped, and the counts that
+// are not negative are still reported, so the router charges them.
+func TestNegativeUsageIsMalformed(t *testing.T) {
+	cases := []struct {
+		name  string
+		usage string
+		want  llm.ProviderResponse
+	}{
+		{"input", `{"input_tokens":-120,"output_tokens":30}`, llm.ProviderResponse{ID: "msg_n", OutputTokens: 30}},
+		{"output", `{"input_tokens":120,"output_tokens":-30}`, llm.ProviderResponse{ID: "msg_n", InputTokens: 120}},
+		{"cache write", `{"input_tokens":120,"output_tokens":30,"cache_creation_input_tokens":-5}`,
+			llm.ProviderResponse{ID: "msg_n", InputTokens: 120, OutputTokens: 30}},
+		{"cache read", `{"input_tokens":120,"output_tokens":30,"cache_read_input_tokens":-7}`,
+			llm.ProviderResponse{ID: "msg_n", InputTokens: 120, OutputTokens: 30}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"id":"msg_n","content":[{"type":"text","text":"x"}],"stop_reason":"end_turn","usage":` + tc.usage + `}`
+			resp, err := client(t, server(t, http.StatusOK, body, nil).URL).Complete(context.Background(), conversation())
+			if !errors.Is(err, llm.ErrMalformedReply) {
+				t.Fatalf("got %v, want ErrMalformedReply", err)
+			}
+			if resp.ID != tc.want.ID || resp.InputTokens != tc.want.InputTokens || resp.OutputTokens != tc.want.OutputTokens ||
+				resp.CacheWriteTokens != tc.want.CacheWriteTokens || resp.CacheReadTokens != tc.want.CacheReadTokens {
+				t.Fatalf("billed %+v, want %+v", resp, tc.want)
+			}
+		})
+	}
+}
+
 func TestRetryAfter(t *testing.T) {
 	cases := []struct {
 		header string

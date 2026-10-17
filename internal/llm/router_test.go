@@ -540,6 +540,97 @@ func TestRetriedScopeKeepsBudget(t *testing.T) {
 	}
 }
 
+// plannerRequest is a planner request for "hi", which estimates at one input
+// token, with an output limit of maxTokens.
+func plannerRequest(maxTokens int) contracts.Request {
+	return contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: maxTokens}
+}
+
+// TestZeroUsageReplyIsCharged: a successful reply that reports no usage is
+// charged what was reserved for it, the estimated input and the output
+// limit sent, and the budget and the ledger agree on that number.
+func TestZeroUsageReplyIsCharged(t *testing.T) {
+	silent := endTurn(0, 0)
+	silent.Response.ID = "msg_silent"
+	f := fakes()
+	f[llm.ProviderAnthropic] = faketest.New(silent)
+	h := newHarness(t, plannerConfig(), f, publicPlanner(), 1000)
+
+	if _, err := h.scoped.Complete(context.Background(), plannerRequest(100)); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.scoped.TokensUsed(); got != 101 {
+		t.Fatalf("TokensUsed = %d, want 101: one estimated input token and the 100 output tokens sent", got)
+	}
+	evs := h.costs.Events()
+	if len(evs) != 1 || evs[0].InputTokens != 1 || evs[0].OutputTokens != 100 {
+		t.Fatalf("events %+v, want one event charging 1 input and 100 output tokens", evs)
+	}
+}
+
+// TestZeroUsageRepliesExhaustBudget: a provider that never reports usage
+// still runs the budget out, so it cannot be called without limit.
+func TestZeroUsageRepliesExhaustBudget(t *testing.T) {
+	turns := make([]faketest.Turn, 10)
+	for i := range turns {
+		turns[i] = endTurn(0, 0)
+	}
+	f := fakes()
+	f[llm.ProviderAnthropic] = faketest.New(turns...)
+	h := newHarness(t, plannerConfig(), f, publicPlanner(), 300)
+
+	for i := range turns {
+		_, err := h.scoped.Complete(context.Background(), plannerRequest(100))
+		if errors.Is(err, llm.ErrBudgetExceeded) {
+			if sent := len(turns) - f[llm.ProviderAnthropic].Remaining(); sent != i {
+				t.Fatalf("provider received %d requests, want %d", sent, i)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+	t.Fatalf("%d replies without usage never exhausted a budget of 300", len(turns))
+}
+
+// TestNegativeUsageDoesNotCreditBudget: a reply reporting a negative count
+// in any field leaves the spend where it was or higher, in memory and in the
+// ledger the next scope seeds from.
+func TestNegativeUsageDoesNotCreditBudget(t *testing.T) {
+	cases := []struct {
+		name string
+		resp faketest.Response
+	}{
+		{"input", faketest.Response{StopReason: contracts.StopEndTurn, InputTokens: -1000}},
+		{"output", faketest.Response{StopReason: contracts.StopEndTurn, OutputTokens: -1000}},
+		{"cache write", faketest.Response{StopReason: contracts.StopEndTurn, CacheWriteTokens: -1000}},
+		{"cache read", faketest.Response{StopReason: contracts.StopEndTurn, CacheReadTokens: -1000}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fakes()
+			f[llm.ProviderAnthropic] = faketest.New(endTurn(400, 100), faketest.Turn{Response: tc.resp})
+			h := newHarness(t, plannerConfig(), f, publicPlanner(), 10_000)
+			for range 2 {
+				if _, err := h.scoped.Complete(context.Background(), plannerRequest(100)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := h.scoped.TokensUsed(); got < 500 {
+				t.Fatalf("TokensUsed = %d after 500 were spent", got)
+			}
+			recorded, err := h.costs.AttemptTokens(context.Background(), attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recorded < 500 {
+				t.Fatalf("ledger holds %d tokens after 500 were spent", recorded)
+			}
+		})
+	}
+}
+
 // TestScopeFailsWhenLedgerUnreadable: a scope whose earlier spend cannot be
 // read is refused, rather than assumed to have spent nothing.
 func TestScopeFailsWhenLedgerUnreadable(t *testing.T) {

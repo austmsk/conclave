@@ -33,6 +33,31 @@ func costUSD(m ModelConfig, r ProviderResponse) float64 {
 	return usd / 1e6
 }
 
+// billable is the usage a reply is charged for, worked out once where the
+// router receives it so every place that charges it agrees.
+//
+// A negative count, which no honest provider reports, counts as zero, so it
+// can never credit the budget whatever an adapter lets through. Each field
+// is clamped on its own, so a negative count cannot cancel a real one.
+//
+// A successful reply that reports no usage at all is charged input and
+// output, the input estimate and output limit the call was sent with, which
+// is the most it can have cost. An embedding is charged its estimate the
+// same way. Charging nothing would let a provider that never reports usage
+// be called without limit. A failed reply with no usage is left at zero:
+// the router does not record those, because the request may never have
+// reached the provider.
+func billable(r ProviderResponse, succeeded bool, input, output int) ProviderResponse {
+	r.InputTokens = max(r.InputTokens, 0)
+	r.CacheWriteTokens = max(r.CacheWriteTokens, 0)
+	r.CacheReadTokens = max(r.CacheReadTokens, 0)
+	r.OutputTokens = max(r.OutputTokens, 0)
+	if succeeded && r.totalTokens() == 0 {
+		r.InputTokens, r.OutputTokens = input, output
+	}
+	return r
+}
+
 // usageOf is what a reply is charged as. Cache traffic counts as input.
 func usageOf(m ModelConfig, r ProviderResponse) contracts.Usage {
 	return contracts.Usage{
@@ -48,8 +73,10 @@ func usageOf(m ModelConfig, r ProviderResponse) contracts.Usage {
 // recorded, while recording the same reply twice must not count twice.
 // Without a reply ID the key is random, which records once and never
 // deduplicates, the safe direction for a ledger that enforces caps.
-// Adapters reject a reply with no ID, so this is the path only for
-// providers that never issue one.
+// The path is live: an adapter that refuses a reply for having no ID still
+// returns the usage the provider billed, with ErrMalformedReply, and the
+// router records that usage here. Embedding replies need not carry an ID
+// either. A retried write of such an event is counted twice.
 func costKey(prefix, provider, replyID string) string {
 	if replyID == "" {
 		replyID = "local-" + rand.Text()

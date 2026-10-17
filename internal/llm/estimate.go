@@ -3,9 +3,14 @@ package llm
 import "github.com/austmsk/conclave/internal/contracts"
 
 // bytesPerToken is a deliberately low ratio: English prose averages about
-// four bytes a token and source code fewer, so dividing by three
-// overestimates for most content. Overestimating reserves too much, which
-// is the safe direction for a budget.
+// four bytes a token, so dividing by three overestimates prose, and
+// overestimating reserves too much, the safe direction for a budget. It is
+// not a bound. Dense content tokenizes at fewer bytes a token than three:
+// CJK text, base64, minified code, long runs of digits or punctuation. For
+// those the estimate undercounts, the reservation is too small, and one
+// call can take the scope past its budget on the input side before the
+// real count is charged. The next call is then refused, so the per-attempt
+// cap is soft by at most one call's input.
 const bytesPerToken = 3
 
 // estimateInputTokens guesses a request's input size before it is sent,

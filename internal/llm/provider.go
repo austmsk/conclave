@@ -96,9 +96,9 @@ var (
 	ErrUnsupportedReply = errors.New("provider reply is not supported")
 
 	// ErrMalformedReply means a reply the adapter knows the shape of came
-	// back broken: no ID, or a tool_use stop with no tool calls. That is a
-	// one-off fault, so it is retryable, and the budget bounds the cost of
-	// retrying.
+	// back broken: no ID, a negative token count, or a tool_use stop with no
+	// tool calls. That is a one-off fault, so it is retryable, and the
+	// budget bounds the cost of retrying.
 	ErrMalformedReply = errors.New("provider reply is malformed")
 )
 

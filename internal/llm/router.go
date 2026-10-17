@@ -199,7 +199,8 @@ func (s *Scoped) TokensUsed() int {
 //
 // Every reply the provider bills is charged and recorded, including one the
 // adapter then rejects, so a model that keeps refusing still exhausts the
-// budget.
+// budget. A successful reply that reports no usage is charged what was
+// reserved for it, so a model that reports nothing exhausts it too.
 func (s *Scoped) Complete(ctx context.Context, req contracts.Request) (contracts.Response, error) {
 	if err := s.checkRepo(req.RepoID); err != nil {
 		return contracts.Response{}, err
@@ -217,10 +218,10 @@ func (s *Scoped) Complete(ctx context.Context, req contracts.Request) (contracts
 	if err != nil {
 		return contracts.Response{}, err
 	}
-	reserved := estimate + output
+	claim := reservation{input: estimate, output: output}
 
-	res, err := s.callChain(ctx, req, policy, route, output, reserved)
-	s.settle(reserved, res.spent)
+	res, err := s.callChain(ctx, req, policy, route, claim)
+	s.settle(claim.total(), res.spent)
 	if err != nil {
 		return contracts.Response{}, err
 	}
@@ -284,6 +285,12 @@ func (r *Router) maxOutput(route RoleRoute) int {
 	return most
 }
 
+// reservation is what Complete claimed from the budget for one request: the
+// estimated input and the output tokens granted.
+type reservation struct{ input, output int }
+
+func (r reservation) total() int { return r.input + r.output }
+
 // chainResult is the reply that ended a chain and the tokens billed by
 // every model the chain tried, which may be more than the reply's own.
 type chainResult struct {
@@ -294,7 +301,7 @@ type chainResult struct {
 
 // callChain tries each model in turn until one replies, the tier denies
 // one, or an error other than unavailability occurs.
-func (s *Scoped) callChain(ctx context.Context, req contracts.Request, policy RepoPolicy, route RoleRoute, output, reserved int) (chainResult, error) {
+func (s *Scoped) callChain(ctx context.Context, req contracts.Request, policy RepoPolicy, route RoleRoute, claim reservation) (chainResult, error) {
 	var res chainResult
 	var lastErr error
 	for _, modelID := range route.chain() {
@@ -303,7 +310,7 @@ func (s *Scoped) callChain(ctx context.Context, req contracts.Request, policy Re
 			return res, fmt.Errorf("model %q on provider %q for %s repository %q: %w",
 				modelID, model.Provider, policy.Tier, req.RepoID, ErrTierDenied)
 		}
-		resp, err := s.call(ctx, req, modelID, min(output, model.MaxOutputTokens), reserved)
+		resp, err := s.call(ctx, req, modelID, claim)
 		res.spent += resp.totalTokens()
 		if errors.Is(err, ErrUnavailable) {
 			lastErr = fmt.Errorf("model %q: %w", modelID, err)
@@ -319,14 +326,18 @@ func (s *Scoped) callChain(ctx context.Context, req contracts.Request, policy Re
 }
 
 // call sends one request under the rate limit and records whatever the
-// provider billed for it, whether or not the call succeeded. A recording
+// provider billed for it, whether or not the call succeeded. The usage is
+// normalized by billable as soon as the provider returns, and the response
+// call returns carries that normalized usage, so the rate limiter, the cost
+// event, and the caller's settle all charge the same number. A recording
 // failure replaces the call's own error, so it is never mistaken for
 // unavailability and passed over for a fallback.
-func (s *Scoped) call(ctx context.Context, req contracts.Request, modelID string, maxTokens, reserved int) (ProviderResponse, error) {
-	if err := s.r.limit.acquire(ctx, reserved); err != nil {
+func (s *Scoped) call(ctx context.Context, req contracts.Request, modelID string, claim reservation) (ProviderResponse, error) {
+	if err := s.r.limit.acquire(ctx, claim.total()); err != nil {
 		return ProviderResponse{}, err
 	}
 	model := s.r.cfg.Models[modelID]
+	maxTokens := min(claim.output, model.MaxOutputTokens)
 	resp, err := s.r.providers[model.Provider].Complete(ctx, ProviderRequest{
 		Model:     modelID,
 		System:    req.System,
@@ -334,7 +345,8 @@ func (s *Scoped) call(ctx context.Context, req contracts.Request, modelID string
 		Tools:     req.Tools,
 		MaxTokens: maxTokens,
 	})
-	s.r.limit.settle(reserved, resp.totalTokens())
+	resp = billable(resp, err == nil, claim.input, maxTokens)
+	s.r.limit.settle(claim.total(), resp.totalTokens())
 	if err != nil && resp.totalTokens() == 0 {
 		return resp, err
 	}
@@ -431,8 +443,10 @@ func (s *Scoped) Embed(ctx context.Context, repoID string, texts []string) ([][]
 }
 
 // embed reserves, rate-limits, calls, settles, and records one embedding
-// request. A provider that reports no usage on success is charged the
-// estimate; a failed call is recorded only if the provider reported usage.
+// request. Its usage is normalized by billable, as a completion's is: a
+// negative count is ignored and a provider that reports no usage on success
+// is charged the estimate. A failed call is recorded only if the provider
+// reported usage.
 // Embedding replies need not carry an ID, so their cost events get random
 // keys and a retried write is counted twice. Milestone 2, which brings
 // embeddings into use, should require an ID or derive the key from the
@@ -447,10 +461,7 @@ func (s *Scoped) embed(ctx context.Context, emb Embedder, modelID string, texts 
 		return EmbedResponse{}, err
 	}
 	resp, err := emb.Embed(ctx, modelID, texts)
-	used := resp.InputTokens
-	if err == nil && used == 0 {
-		used = estimate
-	}
+	used := billable(ProviderResponse{InputTokens: resp.InputTokens}, err == nil, estimate, 0).InputTokens
 	s.r.limit.settle(estimate, used)
 	s.settle(estimate, used)
 	if err != nil && used == 0 {

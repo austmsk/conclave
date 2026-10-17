@@ -288,18 +288,36 @@ func toolResultBlock(r contracts.ToolResult) block {
 // decodeResponse reads usage before anything that can fail, so a rejected
 // reply still reports what the API billed for it.
 func decodeResponse(w response) (llm.ProviderResponse, error) {
-	billed := llm.ProviderResponse{
-		ID:               w.ID,
-		InputTokens:      w.Usage.InputTokens,
-		CacheWriteTokens: w.Usage.CacheCreationInputTokens,
-		CacheReadTokens:  w.Usage.CacheReadInputTokens,
-		OutputTokens:     w.Usage.OutputTokens,
+	billed, err := decodeUsage(w)
+	if err != nil {
+		return billed, err
 	}
 	out, err := decodeContent(w, billed)
 	if err != nil {
 		return billed, err
 	}
 	return out, nil
+}
+
+// decodeUsage reads the reply's ID and token counts. A negative count is
+// not a bill anything can be charged: the reply is refused as malformed and
+// that count is dropped, while the counts that are not negative are still
+// reported, so the router charges what the reply can be trusted to have
+// cost.
+func decodeUsage(w response) (llm.ProviderResponse, error) {
+	u := w.Usage
+	billed := llm.ProviderResponse{
+		ID:               w.ID,
+		InputTokens:      max(u.InputTokens, 0),
+		CacheWriteTokens: max(u.CacheCreationInputTokens, 0),
+		CacheReadTokens:  max(u.CacheReadInputTokens, 0),
+		OutputTokens:     max(u.OutputTokens, 0),
+	}
+	if min(u.InputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens, u.OutputTokens) < 0 {
+		return billed, fmt.Errorf("anthropic: reply reports negative usage (input %d, cache write %d, cache read %d, output %d): %w",
+			u.InputTokens, u.CacheCreationInputTokens, u.CacheReadInputTokens, u.OutputTokens, llm.ErrMalformedReply)
+	}
+	return billed, nil
 }
 
 // decodeContent fills out from the reply. A reply without an ID is refused:
