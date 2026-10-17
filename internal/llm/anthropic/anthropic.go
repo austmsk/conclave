@@ -48,7 +48,9 @@ var _ llm.Provider = (*Client)(nil)
 // New returns a client. baseURL may be empty for DefaultBaseURL. It must be
 // https, except on a loopback host, where tests run an httptest server: the
 // key travels in a header, and plain http to anywhere else would send it in
-// the clear. httpClient may be nil for a client with DefaultTimeout.
+// the clear. httpClient may be nil for a client with DefaultTimeout. New
+// keeps a copy of it that never follows a redirect, and leaves the
+// caller's client as it was.
 func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 	if apiKey == "" {
 		return nil, errors.New("anthropic: no API key")
@@ -59,10 +61,21 @@ func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 	if err := checkBaseURL(baseURL); err != nil {
 		return nil, err
 	}
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: DefaultTimeout}
+	hc := http.Client{Timeout: DefaultTimeout}
+	if httpClient != nil {
+		hc = *httpClient
 	}
-	return &Client{key: apiKey, baseURL: baseURL, http: httpClient}, nil
+	hc.CheckRedirect = refuseRedirect
+	return &Client{key: apiKey, baseURL: baseURL, http: &hc}, nil
+}
+
+// refuseRedirect stops at the first redirect and hands back the 3xx
+// response, which statusError reports. Following it would resend the
+// request, key included, to wherever Location points: on a redirect to
+// another host Go strips Authorization and cookies but copies x-api-key,
+// and checkBaseURL's https rule is never applied to the new target.
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 func checkBaseURL(raw string) error {
@@ -161,6 +174,11 @@ func (c *Client) statusError(resp *http.Response) error {
 		// oversized body, a retired model. Sending it again cannot succeed,
 		// so it is ErrInvalidRequest, which IsPermanent reports.
 		return fmt.Errorf("%s: %w", detail, llm.ErrInvalidRequest)
+	case resp.StatusCode >= 300:
+		// A redirect, which is never followed (see refuseRedirect). The
+		// configured endpoint is not the API, and asking it again will
+		// not change that.
+		return fmt.Errorf("%s: redirect not followed: %w", detail, llm.ErrUnsupportedReply)
 	default:
 		return errors.New(detail)
 	}

@@ -331,7 +331,9 @@ func TestStatusMapping(t *testing.T) {
 		{http.StatusBadRequest, llm.ErrInvalidRequest},
 		{http.StatusNotFound, llm.ErrInvalidRequest},
 		{http.StatusRequestEntityTooLarge, llm.ErrInvalidRequest},
-		{http.StatusMultipleChoices, nil},
+		{http.StatusMultipleChoices, llm.ErrUnsupportedReply},
+		{http.StatusTemporaryRedirect, llm.ErrUnsupportedReply},
+		{http.StatusAccepted, nil},
 	}
 	for _, tc := range cases {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
@@ -364,6 +366,51 @@ func assertStatusError(t *testing.T, err, want error) {
 	for _, typed := range []error{llm.ErrRateLimited, llm.ErrAuth, llm.ErrUnavailable, llm.ErrInvalidRequest} {
 		if errors.Is(err, typed) {
 			t.Fatalf("mapped to %v: %v", typed, err)
+		}
+	}
+}
+
+// TestRedirectIsNotFollowed attempts to steal the key with a redirect to
+// another host. Go copies x-api-key across such a redirect, so the attacker
+// would receive it if the client followed one; it must not, whether New
+// built the HTTP client or the caller supplied it.
+func TestRedirectIsNotFollowed(t *testing.T) {
+	statuses := []int{
+		http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect,
+	}
+	clients := []struct {
+		name string
+		http func() *http.Client
+	}{
+		{"default client", func() *http.Client { return nil }},
+		{"caller's client", func() *http.Client { return &http.Client{Timeout: time.Minute} }},
+	}
+	for _, status := range statuses {
+		for _, hc := range clients {
+			t.Run(http.StatusText(status)+"/"+hc.name, func(t *testing.T) {
+				attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					t.Errorf("attacker received a request with x-api-key %q", r.Header.Get("x-api-key"))
+				}))
+				t.Cleanup(attacker.Close)
+				redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Redirect(w, r, attacker.URL+"/v1/messages", status)
+				}))
+				t.Cleanup(redirector.Close)
+
+				caller := hc.http()
+				c, err := anthropic.New(canaryKey, redirector.URL, caller)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = c.Complete(context.Background(), conversation())
+				if !errors.Is(err, llm.ErrUnsupportedReply) || !llm.IsPermanent(err) {
+					t.Fatalf("got %v, want permanent ErrUnsupportedReply", err)
+				}
+				if caller != nil && caller.CheckRedirect != nil {
+					t.Fatal("New changed the caller's client")
+				}
+			})
 		}
 	}
 }

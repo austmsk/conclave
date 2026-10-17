@@ -92,7 +92,10 @@ var (
 	// shape the adapter does not handle: a stop reason or content block it
 	// does not know, a refusal among them. That is a property of the API
 	// or the request, so a retry would pay for another reply of the same
-	// shape; it is permanent until the adapter is updated.
+	// shape; it is permanent until the adapter is updated. A redirect, which
+	// adapters never follow, is reported the same way: the endpoint is
+	// misconfigured, and asking it again sends the request to the same
+	// place.
 	ErrUnsupportedReply = errors.New("provider reply is not supported")
 
 	// ErrMalformedReply means a reply the adapter knows the shape of came
