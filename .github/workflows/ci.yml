@@ -7,11 +7,10 @@ on:
       - '**.md'
       - 'docs/**'
       - '.idea/**'
+  # No path filter on pull requests: `check` is a required status check on
+  # main, and a filtered-out run never reports, which would block a
+  # docs-only pull request forever.
   pull_request:
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.idea/**'
   schedule:
     # Weekly govulncheck against the vulnerability database, which moves
     # independently of this repository.
@@ -22,7 +21,8 @@ permissions:
   contents: read
 
 # Supersede in-flight runs for a pull request branch; a new push makes the
-# previous run's result irrelevant, and letting it finish burns billed minutes.
+# previous run's result irrelevant, and letting it finish only delays the
+# run that matters.
 # Pushes to main are left to complete so every commit there has a result.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,8 +31,8 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # The Actions default is 360 minutes. A hung `go test -race` would bill all
-    # of them before anyone noticed.
+    # The Actions default is 360 minutes. A hung `go test -race` would hold a
+    # runner for all of them before anyone noticed.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

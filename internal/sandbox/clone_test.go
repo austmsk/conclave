@@ -17,6 +17,7 @@ import (
 
 	"github.com/austmsk/conclave/internal/sandbox"
 	"github.com/austmsk/conclave/internal/sandbox/sandboxtest"
+	"github.com/austmsk/conclave/internal/testenv"
 )
 
 // gitServer serves bare repositories over smart HTTP through git's own
@@ -32,11 +33,11 @@ func newGitServer(t *testing.T, root, token string) *gitServer {
 	t.Helper()
 	execPath, err := exec.Command("git", "--exec-path").Output()
 	if err != nil {
-		t.Skipf("git --exec-path: %v", err)
+		testenv.Skip(t, "git --exec-path: %v", err)
 	}
 	backend := filepath.Join(strings.TrimSpace(string(execPath)), "git-http-backend")
 	if _, err := os.Stat(backend); err != nil {
-		t.Skipf("git-http-backend not available: %v", err)
+		testenv.Skip(t, "git-http-backend not available: %v", err)
 	}
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
 	handler := &cgi.Handler{

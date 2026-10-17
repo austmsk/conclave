@@ -20,3 +20,12 @@ linters:
       statements: 50
     nestif:
       min-complexity: 5
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/austmsk/conclave
