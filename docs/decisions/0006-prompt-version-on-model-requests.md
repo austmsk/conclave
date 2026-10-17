@@ -5,7 +5,13 @@
 
 ## Context
 
-Every result is meant to record the model version, prompt version and configuration that produced it (scope-and-requirements.md, evaluation goals). Ticket 2 put `PromptVersion` on `contracts.RoleSpec` and on `contracts.Provenance`, but not on `contracts.Request`, the one value that actually passes through the router. The router builds a response's `Provenance`, and it had no way to learn the prompt version, so the field in `Provenance` could never be filled in. Outputs from before and after a prompt change could not be told apart, and that is the comparison the evaluation work depends on.
+Every result is meant to record the model version, prompt version and configuration that produced it (scope-and-requirements.md, evaluation goals). 
+
+Ticket 2 put `PromptVersion` on `contracts.RoleSpec` and on `contracts.Provenance`, but not on `contracts.Request`, the one value that actually passes through the router.
+
+The router builds a response's `Provenance`, and it had no way to learn the prompt version, so the field in `Provenance` could never be filled in. 
+
+Outputs from before and after a prompt change could not be told apart, and that is the comparison the evaluation work depends on.
 
 Ticket 4 did not ask for a contract change. The gap was found in the ticket's first review, and I approved the change separately, as its own commit (abcc98b), rather than letting it go in as a side effect.
 
