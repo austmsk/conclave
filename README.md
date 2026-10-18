@@ -4,6 +4,7 @@ A single-owner platform that turns GitHub issues into reviewed pull requests: it
 
 Multi-agent coordination, done by deterministic Go rather than by a manager agent.
 
+- [`docs/guide`](docs/guide/) — how the system works, ticket by ticket; start here
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — the system and the decisions behind it
 - [`docs/scope-and-requirements.md`](docs/scope-and-requirements.md) — scope, non-goals, requirements
 - [`docs/security-and-threat-model.md`](docs/security-and-threat-model.md) — threat model and controls
