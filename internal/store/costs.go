@@ -22,32 +22,78 @@ type DBTX interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// CostLedger records model spend in cost_events and reads it back. It
-// implements llm.CostLedger.
+// TxDB is a DBTX that can also open a transaction: a *pgxpool.Pool, a
+// *pgx.Conn, or a pgx.Tx, whose Begin opens a savepoint. The ledger needs
+// one, because reserving and settling each take several statements that
+// must commit together.
+type TxDB interface {
+	DBTX
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// CostLedger records model spend in cost_events, reserves spend for calls
+// in flight in budget_reservations, and enforces the FR-SEC9 caps over
+// both. It implements llm.CostLedger.
 type CostLedger struct {
-	db DBTX
+	db TxDB
 }
 
 // NewCostLedger returns a ledger over db, which should connect as the
-// application role: cost_events is append-only to it (threat T6).
-func NewCostLedger(db DBTX) *CostLedger {
+// application role: cost_events is append-only to it (threat T6). In
+// production db is the pool; the caps hold across connections and
+// processes because every reservation takes the same transaction lock.
+func NewCostLedger(db TxDB) *CostLedger {
 	return &CostLedger{db: db}
 }
 
-// RecordCost inserts ev. A second event with the same idempotency key is
+// Settle inserts ev and deletes its reservation in one transaction, so the
+// spend moves from reserved to recorded without a moment in which it is
+// counted in neither. A second event with the same idempotency key is
 // absorbed by ON CONFLICT DO NOTHING, which needs only INSERT and SELECT,
-// so a retried write succeeds and the spend is counted once (RL-2). The
+// so a retried Settle succeeds and the spend is counted once (RL-2). The
 // first event's values stand: a key names one provider reply, so a second
-// event under it describes the same spend.
+// event under it describes the same spend. A reservation already gone,
+// settled by an earlier try or never taken, is not an error.
 //
 // An event with no OccurredAt takes the database's time.
-func (l *CostLedger) RecordCost(ctx context.Context, ev contracts.CostEvent) error {
+func (l *CostLedger) Settle(ctx context.Context, reservationID string, ev contracts.CostEvent) error {
 	if ev.IdempotencyKey == "" {
 		return errors.New("recording cost: empty idempotency key")
 	}
 	if err := checkEventIDs(ev); err != nil {
 		return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
 	}
+	if err := checkUUID("reservation ID", reservationID); err != nil {
+		return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
+	}
+	err := pgx.BeginFunc(ctx, l.db, func(tx pgx.Tx) error {
+		if err := insertCost(ctx, tx, ev); err != nil {
+			return err
+		}
+		return deleteReservation(ctx, tx, reservationID)
+	})
+	if isInvalidText(err) {
+		return fmt.Errorf("recording cost %s: repository, feature request, or attempt ID: %w: %w", ev.IdempotencyKey, ErrInvalidID, err)
+	}
+	if err != nil {
+		return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
+	}
+	return nil
+}
+
+// Release deletes a reservation whose call billed nothing. Releasing one
+// already gone is not an error.
+func (l *CostLedger) Release(ctx context.Context, reservationID string) error {
+	if err := checkUUID("reservation ID", reservationID); err != nil {
+		return fmt.Errorf("releasing reservation: %w", err)
+	}
+	if err := deleteReservation(ctx, l.db, reservationID); err != nil {
+		return fmt.Errorf("releasing reservation %s: %w", reservationID, err)
+	}
+	return nil
+}
+
+func insertCost(ctx context.Context, db DBTX, ev contracts.CostEvent) error {
 	var occurred *time.Time
 	if !ev.OccurredAt.IsZero() {
 		occurred = &ev.OccurredAt
@@ -57,16 +103,15 @@ func (l *CostLedger) RecordCost(ctx context.Context, ev contracts.CostEvent) err
 		 input_tokens, output_tokens, cost_usd, occurred_at)
 		VALUES ($1, $2, NULLIF($3, '')::uuid, NULLIF($4, '')::uuid, $5, $6, $7, $8, $9, $10, coalesce($11, now()))
 		ON CONFLICT (idempotency_key) DO NOTHING`
-	_, err := l.db.Exec(ctx, insert,
+	_, err := db.Exec(ctx, insert,
 		ev.IdempotencyKey, ev.RepoID, ev.FeatureRequestID, ev.AttemptID, string(ev.Role), ev.Provider, ev.Model,
 		ev.InputTokens, ev.OutputTokens, ev.CostUSD, occurred)
-	if isInvalidText(err) {
-		return fmt.Errorf("recording cost %s: repository, feature request, or attempt ID: %w: %w", ev.IdempotencyKey, ErrInvalidID, err)
-	}
-	if err != nil {
-		return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
-	}
-	return nil
+	return err
+}
+
+func deleteReservation(ctx context.Context, db DBTX, id string) error {
+	_, err := db.Exec(ctx, `DELETE FROM budget_reservations WHERE id = $1`, id)
+	return err
 }
 
 // checkEventIDs requires a repository ID and allows the feature request and
@@ -84,23 +129,4 @@ func checkEventIDs(ev contracts.CostEvent) error {
 		return checkUUID("attempt ID", ev.AttemptID)
 	}
 	return nil
-}
-
-// AttemptTokens is the input plus output tokens recorded for an attempt,
-// zero when nothing has been.
-func (l *CostLedger) AttemptTokens(ctx context.Context, attemptID string) (int, error) {
-	if err := checkUUID("attempt ID", attemptID); err != nil {
-		return 0, err
-	}
-	const sum = `SELECT coalesce(sum(input_tokens + output_tokens), 0)::bigint
-		FROM cost_events WHERE attempt_id = $1`
-	var total int64
-	err := l.db.QueryRow(ctx, sum, attemptID).Scan(&total)
-	if isInvalidText(err) {
-		return 0, fmt.Errorf("summing cost for attempt %q: %w: %w", attemptID, ErrInvalidID, err)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("summing cost for attempt %s: %w", attemptID, err)
-	}
-	return int(total), nil
 }

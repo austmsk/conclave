@@ -42,34 +42,31 @@ func (s *Scoped) Embed(ctx context.Context, repoID string, texts []string) ([][]
 	return resp.Vectors, nil
 }
 
-// embed reserves, rate-limits, calls, settles, and records one embedding
-// request. Its usage is normalized by billable, as a completion's is: a
-// negative count is ignored and a provider that reports no usage on success
-// is charged the estimate. A failed call is recorded only if the provider
-// reported usage.
+// embed rate-limits, reserves, calls, and settles one embedding request,
+// in the order call uses for completions. Its usage is normalized by
+// billable, as a completion's is: a negative count is ignored and a
+// provider that reports no usage on success is charged the estimate. A
+// failed call is recorded only if the provider reported usage.
 // Embedding replies need not carry an ID, so their cost events get random
 // keys and a retried write is counted twice. Milestone 2, which brings
 // embeddings into use, should require an ID or derive the key from the
 // request.
 func (s *Scoped) embed(ctx context.Context, emb Embedder, modelID string, texts []string) (EmbedResponse, error) {
+	model := s.r.cfg.Models[modelID]
 	estimate := estimateTextTokens(texts...)
-	if _, err := s.reserve(estimate, 0); err != nil {
+	if err := s.r.limit.acquire(ctx, estimate); err != nil {
 		return EmbedResponse{}, err
 	}
-	if err := s.r.limit.acquire(ctx, estimate); err != nil {
-		s.settle(estimate, 0)
+	held, _, err := s.reserve(ctx, model, estimate, 0)
+	if err != nil {
+		s.r.limit.settle(estimate, 0)
 		return EmbedResponse{}, err
 	}
 	resp, err := emb.Embed(ctx, modelID, texts)
 	used := billable(ProviderResponse{InputTokens: resp.InputTokens}, err == nil, estimate, 0).InputTokens
 	s.r.limit.settle(estimate, used)
-	s.settle(estimate, used)
-	if err != nil && used == 0 {
-		return EmbedResponse{}, fmt.Errorf("embedding with %q: %w", modelID, err)
-	}
-	model := s.r.cfg.Models[modelID]
 	usage := contracts.Usage{InputTokens: used, CostUSD: costUSD(model, ProviderResponse{InputTokens: used})}
-	if rerr := s.record(ctx, embeddingCostRole, modelID, model.Provider, resp.ID, usage); rerr != nil {
+	if rerr := s.settle(ctx, held, embeddingCostRole, modelID, model.Provider, resp.ID, usage); rerr != nil {
 		return EmbedResponse{}, rerr
 	}
 	if err != nil {

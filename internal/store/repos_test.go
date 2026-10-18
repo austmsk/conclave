@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/llm"
@@ -76,9 +77,22 @@ func TestCostLedgerRejectsNonUUIDs(t *testing.T) {
 	s := seed(t, ctx, tx)
 	ledger := store.NewCostLedger(tx)
 
-	if _, err := ledger.AttemptTokens(ctx, "wf-12/activity-3"); !errors.Is(err, store.ErrInvalidID) {
-		t.Fatalf("AttemptTokens: got %v, want ErrInvalidID", err)
+	reserve := func(attempt, feature string) error {
+		_, err := ledger.Reserve(ctx, attempt, feature, time.Minute, func(llm.Spend) (llm.Claim, error) {
+			return llm.Claim{}, nil
+		})
+		return err
 	}
+	if err := reserve("wf-12/activity-3", s.feature); !errors.Is(err, store.ErrInvalidID) {
+		t.Fatalf("Reserve with a bad attempt: got %v, want ErrInvalidID", err)
+	}
+	if err := reserve(s.attempt, "issue-12"); !errors.Is(err, store.ErrInvalidID) {
+		t.Fatalf("Reserve with a bad feature request: got %v, want ErrInvalidID", err)
+	}
+	if err := ledger.Release(ctx, "reservation-1"); !errors.Is(err, store.ErrInvalidID) {
+		t.Fatalf("Release: got %v, want ErrInvalidID", err)
+	}
+	held := reserveTokens(t, ctx, ledger, s, 1)
 	cases := []struct {
 		name  string
 		apply func(*contracts.CostEvent)
@@ -91,7 +105,7 @@ func TestCostLedgerRejectsNonUUIDs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := costEvent(s, "k/"+tc.name, 1, 1)
 			tc.apply(&ev)
-			if err := ledger.RecordCost(ctx, ev); !errors.Is(err, store.ErrInvalidID) {
+			if err := ledger.Settle(ctx, held, ev); !errors.Is(err, store.ErrInvalidID) {
 				t.Fatalf("got %v, want ErrInvalidID", err)
 			}
 		})

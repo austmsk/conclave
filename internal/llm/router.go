@@ -76,19 +76,12 @@ func (s *Scoped) Complete(ctx context.Context, req contracts.Request) (contracts
 	if err != nil {
 		return contracts.Response{}, err
 	}
-	estimate := estimateInputTokens(req)
-	wantOutput := s.r.maxOutput(route)
+	claim := reservation{input: estimateInputTokens(req), output: s.r.maxOutput(route)}
 	if req.MaxTokens > 0 {
-		wantOutput = min(wantOutput, req.MaxTokens)
+		claim.output = min(claim.output, req.MaxTokens)
 	}
-	output, err := s.reserve(estimate, wantOutput)
-	if err != nil {
-		return contracts.Response{}, err
-	}
-	claim := reservation{input: estimate, output: output}
 
 	res, err := s.callChain(ctx, req, policy, route, claim)
-	s.settle(claim.total(), res.spent)
 	if err != nil {
 		return contracts.Response{}, err
 	}
@@ -152,18 +145,16 @@ func (r *Router) maxOutput(route RoleRoute) int {
 	return most
 }
 
-// reservation is what Complete claimed from the budget for one request: the
-// estimated input and the output tokens granted.
+// reservation is what a request asks of the budgets before any model is
+// chosen: the estimated input and the most output it wants. Each call in
+// the chain reserves it again, capped at that model's output limit, and
+// may be granted less output.
 type reservation struct{ input, output int }
 
-func (r reservation) total() int { return r.input + r.output }
-
-// chainResult is the reply that ended a chain and the tokens billed by
-// every model the chain tried, which may be more than the reply's own.
+// chainResult is the model and reply that ended a chain.
 type chainResult struct {
 	modelID string
 	resp    ProviderResponse
-	spent   int
 }
 
 // callChain tries each model in turn until one replies, the tier denies
@@ -178,7 +169,6 @@ func (s *Scoped) callChain(ctx context.Context, req contracts.Request, policy Re
 				modelID, model.Provider, policy.Tier, req.RepoID, ErrTierDenied)
 		}
 		resp, err := s.call(ctx, req, modelID, claim)
-		res.spent += resp.totalTokens()
 		if errors.Is(err, ErrUnavailable) {
 			lastErr = fmt.Errorf("model %q: %w", modelID, err)
 			continue
@@ -192,32 +182,39 @@ func (s *Scoped) callChain(ctx context.Context, req contracts.Request, policy Re
 	return res, fmt.Errorf("every model for role %q was unavailable: %w", req.Role, lastErr)
 }
 
-// call sends one request under the rate limit and records whatever the
-// provider billed for it, whether or not the call succeeded. The usage is
-// normalized by billable as soon as the provider returns, and the response
-// call returns carries that normalized usage, so the rate limiter, the cost
-// event, and the caller's settle all charge the same number. A recording
+// call sends one request under the rate limit and the budgets, and records
+// whatever the provider billed for it, whether or not the call succeeded.
+//
+// The rate limiter is waited on first, so the reservation is taken just
+// before the provider is reached and its expiry covers the call rather than
+// the queue. A refused reservation hands its rate-limit claim back. The
+// usage is normalized by billable as soon as the provider returns, and the
+// response call returns carries that normalized usage, so the rate limiter,
+// the cost event, and the caller all charge the same number. A recording
 // failure replaces the call's own error, so it is never mistaken for
 // unavailability and passed over for a fallback.
 func (s *Scoped) call(ctx context.Context, req contracts.Request, modelID string, claim reservation) (ProviderResponse, error) {
-	if err := s.r.limit.acquire(ctx, claim.total()); err != nil {
+	model := s.r.cfg.Models[modelID]
+	want := min(claim.output, model.MaxOutputTokens)
+	limited := claim.input + want
+	if err := s.r.limit.acquire(ctx, limited); err != nil {
 		return ProviderResponse{}, err
 	}
-	model := s.r.cfg.Models[modelID]
-	maxTokens := min(claim.output, model.MaxOutputTokens)
+	held, output, err := s.reserve(ctx, model, claim.input, want)
+	if err != nil {
+		s.r.limit.settle(limited, 0)
+		return ProviderResponse{}, err
+	}
 	resp, err := s.r.providers[model.Provider].Complete(ctx, ProviderRequest{
 		Model:     modelID,
 		System:    req.System,
 		Messages:  req.Messages,
 		Tools:     req.Tools,
-		MaxTokens: maxTokens,
+		MaxTokens: output,
 	})
-	resp = billable(resp, err == nil, claim.input, maxTokens)
-	s.r.limit.settle(claim.total(), resp.totalTokens())
-	if err != nil && resp.totalTokens() == 0 {
-		return resp, err
-	}
-	if rerr := s.record(ctx, req.Role, modelID, model.Provider, resp.ID, usageOf(model, resp)); rerr != nil {
+	resp = billable(resp, err == nil, claim.input, output)
+	s.r.limit.settle(limited, resp.totalTokens())
+	if rerr := s.settle(ctx, held, req.Role, modelID, model.Provider, resp.ID, usageOf(model, resp)); rerr != nil {
 		if err != nil {
 			return resp, fmt.Errorf("%w (after the call failed: %v)", rerr, err)
 		}

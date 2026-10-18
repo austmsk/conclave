@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/llm"
@@ -140,38 +141,68 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestCostsIgnoresRepeatedKey(t *testing.T) {
-	c := &faketest.Costs{}
-	ctx := context.Background()
-	for range 2 {
-		if err := c.RecordCost(ctx, contracts.CostEvent{IdempotencyKey: "k"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if n := len(c.Events()); n != 1 {
-		t.Fatalf("%d events, want 1", n)
-	}
-}
-
-func TestCostsAttemptTokens(t *testing.T) {
-	c := &faketest.Costs{}
-	ctx := context.Background()
-	for _, ev := range []contracts.CostEvent{
-		{IdempotencyKey: "a", AttemptID: "attempt-1", InputTokens: 10, OutputTokens: 5},
-		{IdempotencyKey: "a", AttemptID: "attempt-1", InputTokens: 99, OutputTokens: 99},
-		{IdempotencyKey: "b", AttemptID: "attempt-1", InputTokens: 1, OutputTokens: 1},
-		{IdempotencyKey: "c", AttemptID: "attempt-2", InputTokens: 50},
-	} {
-		if err := c.RecordCost(ctx, ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := c.AttemptTokens(ctx, "attempt-1")
+// reserveFor reserves a claim of tokens for an attempt of feature "f".
+func reserveFor(t *testing.T, c *faketest.Costs, attempt string, tokens int) string {
+	t.Helper()
+	id, err := c.Reserve(context.Background(), attempt, "f", time.Minute, func(llm.Spend) (llm.Claim, error) {
+		return llm.Claim{Tokens: tokens}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 17 {
-		t.Fatalf("AttemptTokens = %d, want 17", got)
+	return id
+}
+
+func TestCostsIgnoresRepeatedKey(t *testing.T) {
+	c := &faketest.Costs{}
+	ctx := context.Background()
+	id := reserveFor(t, c, "a", 1)
+	for range 2 {
+		if err := c.Settle(ctx, id, contracts.CostEvent{IdempotencyKey: "k"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, held := len(c.Events()), c.Reservations(); n != 1 || held != 0 {
+		t.Fatalf("%d events and %d reservations, want 1 and 0", n, held)
+	}
+}
+
+// TestCostsSpendCountsReservations: Reserve sees settled events and live
+// reservations, each against the caps they belong to.
+func TestCostsSpendCountsReservations(t *testing.T) {
+	c := &faketest.Costs{}
+	ctx := context.Background()
+	settled := reserveFor(t, c, "attempt-1", 100)
+	if err := c.Settle(ctx, settled, contracts.CostEvent{IdempotencyKey: "a", AttemptID: "attempt-1", FeatureRequestID: "f", InputTokens: 10, OutputTokens: 5, CostUSD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	reserveFor(t, c, "attempt-1", 20)
+	reserveFor(t, c, "attempt-2", 40)
+	released := reserveFor(t, c, "attempt-1", 1000)
+	if err := c.Release(ctx, released); err != nil {
+		t.Fatal(err)
+	}
+
+	var got llm.Spend
+	if _, err := c.Reserve(ctx, "attempt-1", "f", time.Minute, func(sp llm.Spend) (llm.Claim, error) {
+		got = sp
+		return llm.Claim{}, errors.New("refused")
+	}); err == nil {
+		t.Fatal("decide's error was not returned")
+	}
+	want := llm.Spend{AttemptTokens: 35, FeatureRequestTokens: 75, MonthUSD: 1}
+	if got != want {
+		t.Fatalf("spend %+v, want %+v", got, want)
+	}
+	if c.Reservations() != 2 {
+		t.Fatalf("%d reservations, want 2: a refused Reserve must not hold one", c.Reservations())
+	}
+}
+
+func TestCostsRefusesUnknownReservation(t *testing.T) {
+	c := &faketest.Costs{}
+	if err := c.Release(context.Background(), "never-issued"); !errors.Is(err, faketest.ErrUnknownReservation) {
+		t.Fatalf("got %v, want ErrUnknownReservation", err)
 	}
 }
 
