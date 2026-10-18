@@ -16,9 +16,11 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before making design decisions. Requir
 make build        # go build ./...
 make test         # go test -race ./...
 make lint         # golangci-lint run
-make check        # vet + lint + test + workflowcheck + govulncheck
+make check        # vet + lint + tidy + test + workflowcheck + govulncheck
+make check-ci     # what CI runs: check without govulncheck, tests uncached and required
 make migrate      # goose up
 make dev          # docker compose up (Temporal, Postgres, Jaeger)
+make down         # docker compose down
 ```
 
 `make check` must pass before a ticket is complete. Run it yourself; do not report a ticket as done on the basis that the code looks correct.

@@ -48,7 +48,7 @@ Milestone 1 implements a thin vertical slice: one issue, one implementer, one sa
 | Language | Go | Everything |
 | Orchestration | Temporal (Go SDK) | Durable workflows, retries, signals |
 | Database | PostgreSQL + pgvector | Domain records, audit log, embeddings |
-| DB access | `pgx` + `sqlc` + `goose` | Typed queries from visible SQL; migrations |
+| DB access | `pgx` + `sqlc` + `goose` | Typed queries from visible SQL; migrations. The queries so far are hand-written `pgx`; `sqlc` arrives with the first ticket that needs generated queries |
 | HTTP | `net/http` | Webhook receiver; no framework |
 | Logging | `log/slog` | Structured logs |
 | Artifacts | Local disk → Cloudflare R2 | Transcripts, diffs, logs |
@@ -69,12 +69,12 @@ Deferred: tree-sitter (cgo complicates static binaries; language servers are mor
 | planner | `claude-opus-5` | Fallback filtered by tier |
 | implementer | pool: `claude-fable-5-1`, `gpt-5.6-sol`, `gemini-3.8-flash` | One provider per attempt (Milestone 3) |
 | judge | outside-provider rule | Whichever provider is not in the pair being compared |
-| brief | `gemini-3.8-flash` | Large context, low cost |
+| brief | `gemini-3.8-flash` | Large context, low cost. `claude-opus-5` until the Google adapter exists |
 | test_writer, pr_writer, discussion | `claude-opus-5` | Reasoning and writing |
 | utility | local via Ollama | Log summaries, commit messages |
 | embeddings | Qwen3-Embedding, local, ≤1024 dims | Must fit pgvector's index limit (`RL-4`) |
 
-Pin exact model IDs. Never use `latest` aliases — they invalidate benchmark comparability. New releases enter as evaluation candidates, never as direct swaps.
+The live routes are in `deploy/router.yaml`; this table is the target. Pin exact model IDs. Never use `latest` aliases — they invalidate benchmark comparability. New releases enter as evaluation candidates, never as direct swaps.
 
 ## Domain Model
 
@@ -82,6 +82,8 @@ Work: `repos → feature_requests → plans (versioned) → tasks (+dependencies
 Evidence: `gate_results`, `comparisons`, `decisions`.
 Context: `codebase_briefs` (pinned to a commit), `messages`.
 Accounting: `cost_events`, `state_transitions` (append-only, insert-only DB role).
+
+The Milestone 1 schema (`internal/store/migrations`) has the work tables, `gate_results`, `decisions`, and both accounting tables. `comparisons`, `codebase_briefs`, and `messages` arrive with the milestones that use them.
 
 State changes use compare-and-set (`UPDATE … WHERE state = expected`) against one transition table with an exhaustive test (`RL-13`).
 
@@ -139,13 +141,14 @@ internal/contracts/  Shared types and interfaces (reviewed by hand)
 internal/workflow/   Deterministic workflows
 internal/activity/   Side effects: LLM, sandbox, git, GitHub
 internal/agent/      Agent loop and tools
-internal/llm/        Role-based router and provider adapters
+internal/llm/        Role-based router, provider adapters (anthropic/), fake replay provider (faketest/)
 internal/sandbox/    Sandbox interface; docker/ and daytona/
 internal/gate/       Deterministic gates
 internal/github/     App auth, webhooks, PR operations
-internal/store/      Postgres access (sqlc-generated)
+internal/store/      Postgres access: migrations, compare-and-set helpers, cost ledger
 internal/repoindex/  Code intelligence (Milestone 3)
 internal/eval/       Benchmark runner (Milestone 2)
+internal/testenv/    Skip locally, fail in CI, when a test's environment is missing
 docs/                Requirements, threat model, roles, review list, tickets, decisions
-deploy/              Compose files, image definitions
+deploy/              Compose file; owner configuration (router.yaml, repos.yaml)
 ```
