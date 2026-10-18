@@ -19,11 +19,15 @@ Model column: **F** = Fable 5.1 (tickets with review-list items or subtle correc
 | 5 | Agent loop and tools | F | RL-6, RL-11, RL-29* |
 | 6 | GitHub App and webhooks | F | RL-7, RL-8 |
 | 7 | Gates and artifact integrity | F | RL-2 |
-| 8 | Temporal workflow | F | RL-1, RL-2, RL-3, RL-9, RL-14, RL-16 |
+| 8a | Budgets and attribution | F | RL-2 |
+| 8 | Feature workflow core | F | RL-1, RL-2, RL-3, RL-13, RL-14, RL-16 |
+| 8b | Commands and status surface | F | RL-9, RL-13 |
 | 9 | Pull request delivery | F | RL-2, RL-21 |
 | 10 | End-to-end run and hardening | F | RL-18 |
 
 \* Path validation does not yet have its own review-list ID; see `FR-SEC29`.
+
+**Working order:** 1–4, then **8a**, 5, 6, 7, 8, **8b**, 9, 10. Ticket 8 is split three ways (see `Ticket 8 Split — Conclave.md` for the rationale). 8a goes before Ticket 5 because the runner has to tell an attempt budget hit from a platform cap hit, and 8a takes migration 00005.
 
 ---
 
@@ -97,7 +101,9 @@ Webhook receiver on `net/http` with constant-time signature verification. Comman
 
 Webhooks acknowledge within two seconds and dispatch work asynchronously.
 
-**Done when:** invalid signatures are rejected; a command from a non-owner ID is ignored and logged; a command in an App-authored comment triggers nothing; a duplicate webhook delivery does not start a second workflow; an installation token is obtained and used; no token appears in any log or trace.
+Dispatch goes through a small workflow-starter interface. The Temporal SDK arrives in Ticket 8, so this ticket tests against a fake.
+
+**Done when:** invalid signatures are rejected; a command from a non-owner ID is ignored and logged; a command in an App-authored comment triggers nothing; a duplicate webhook delivery maps to the same workflow ID (Ticket 8 proves Temporal rejects the second start); an installation token is obtained and used; no token appears in any log or trace.
 
 **Requirements:** FR-I1, FR-SEC1, FR-SEC2, FR-SEC5, FR-SEC15, FR-SEC28, NFR-P1 · **Review list:** RL-7, RL-8
 
@@ -117,21 +123,71 @@ Freeze first: kill sandbox processes, extract the diff, hash it, then gate that 
 
 ---
 
-## Ticket 8 — Temporal workflow
+## Ticket 8a — Budgets and attribution
 
-The feature workflow: analyze, implement, gate, deliver. Activities for every side effect. Signal handlers for `/approve`, `/cancel`, `/retry`. Workflow ID derived from the issue number. Deferred cleanup using `workflow.NewDisconnectedContext`. Status comment updated in place.
+Runs before Ticket 5. Make every model call attributed and bounded by all three FR-SEC9 caps, with no Temporal code: this is `internal/llm` and `internal/store` work only.
+
+**Mandatory attribution.** `llm.Scope` currently requires only `RepoID`, `KeyPrefix`, and `TokenBudget`:
+- With `AttemptID` empty, the ledger is never read, so a retried activity starts with a fresh full budget.
+- With `FeatureRequestID` empty, cost events get a NULL `feature_request_id`, and the feature request cap can't see that spend.
+
+Require both on any scope that carries a budget. Check once, when the scope is created, that the attempt belongs to the feature request. A call made outside an attempt gets its own explicitly named constructor, which still requires the feature request ID.
+
+**Reservations across scopes.** An activity abandoned after a heartbeat timeout can keep running while its retry opens a second scope, and a ledger re-read doesn't see a call that is still in flight. So, before each model call, one short transaction:
+- takes `pg_advisory_xact_lock` on a single global budget key
+- sums settled spend from `cost_events` plus live reservations, for the attempt, the feature request, and the UTC calendar month
+- refuses if any cap would be passed, otherwise inserts a reservation
+
+After the reply, one transaction records the cost event and deletes the reservation. Reservations expire on the database clock (adapter timeout plus a margin). Migration 00005 adds `budget_reservations` (`conclave_app` gets SELECT, INSERT and DELETE, no UPDATE) and an index on `cost_events (occurred_at)`.
+
+**Caps.**
+- The per-attempt budget stays.
+- A per-feature-request cap in tokens, summed over every attempt of the feature request.
+- A monthly cap in USD, summed from `cost_usd` across all repositories for the calendar month in UTC, computed in SQL.
+
+Cap values come from owner configuration in `deploy/router.yaml`, validated at startup, with placeholders that fail validation. Each refusal is a `BudgetError{Kind}` (`attempt`, `feature_request`, `month`) that unwraps to the existing `ErrBudgetExceeded`, so `IsPermanent` holds and no new sentinel is added.
+
+**Done when:** a budgeted scope without an attempt ID or feature request ID, or with an attempt that doesn't belong to its feature request, is rejected; two concurrent scopes for the same attempt cannot together spend more than its budget, even with one call unsettled; concurrent attempts cannot together pass the feature request or monthly cap; feature request and monthly cap refusals happen before a provider is reached; the month boundary is UTC and tested on both sides; an expired reservation stops counting; each refusal satisfies `errors.Is(err, ErrBudgetExceeded)` and `IsPermanent`, and names its kind; a retried cost-event write records one event; `conclave_app` cannot update a reservation; missing or placeholder cap values fail startup validation.
+
+**Requirements:** FR-SEC9, NFR-M7 · **Review list:** RL-2
+
+**Before starting:** FR-S11, FR-S12, FR-SEC9, FR-SEC31, and threat model D1 now describe a stop as `needs_attention` plus `/retry`, with no `/resume`. See decision record 0009.
+
+---
+
+## Ticket 8 — Feature workflow core
+
+The feature workflow: analyze, implement, gate, deliver. Activities for every side effect; deliver is a stub until Ticket 9. Signal handlers for `/approve`, which pins the base SHA, and `/cancel`. Workflow ID derived from the issue number. Deferred cleanup using `workflow.NewDisconnectedContext`.
+
+Minimal routing to `needs_attention`, so that no problem strands the workflow or leaves an automatic failed status. Every non-retryable error, failed attempt, and budget refusal makes a compare-and-set transition to `needs_attention`, with a reason (`budget_cap` with the cap kind, `attempt_failed`, or `error`) and the phase it left. The workflow then waits; only `/cancel` is handled there in this ticket.
+
+Activities build each `llm.Scope` with the attempt ID and the feature request ID, and copy `PromptVersion` from the `RoleSpec`. An `llm.IsPermanent` error becomes `temporal.NewNonRetryableApplicationError`. A `BudgetError` uses the type `budget_cap:<kind>`, because typed errors don't survive the activity boundary. A `RateLimitError` retries after its `RetryAfter`.
+
+Decide the activity granularity. Set `StartToCloseTimeout` above the 10-minute adapter timeout, with a heartbeat, including while the rate limiter blocks. Wire `LoadConfig`, `LoadRepoAccess`, `DirectoryRepos`, the cost ledger, and 8a's budget store into `cmd/worker`.
 
 Milestone 1 statuses only: feature requests use the six-status model; tasks use `running`, `done`, `needs_attention`, `cancelled`; attempts use `running`, `passed`, `failed`, `errored`.
 
-Close the per-attempt budget gap left by ticket 4. `llm.Scope` seeds an attempt's spend from the cost ledger once, when the scope is created, and tracks it in memory after that. An activity abandoned after a heartbeat timeout can keep running while its retry opens a second scope for the same attempt; each scope sees only its own calls, so the two together can spend up to twice the token budget. Once activity granularity is settled, make the check hold across scopes, either by re-reading the ledger before each call or by holding a per-attempt lock such as a Postgres advisory lock.
+**Done when:** `workflowcheck` passes; no map is ranged over without sorting; the workflow is tested with `testsuite` without a server; a replay test over a history captured mid-attempt finishes without re-running completed activities; a workflow waiting on `/approve` resumes after a long wait using time skipping; a cancellation during the agent phase still releases the sandbox; a `/cancel` during `needs_attention` reaches `cancelled`; a feature request or monthly cap hit moves to `needs_attention` with `reason: budget_cap` naming the cap, keeping its attempts; a non-retryable error moves to `needs_attention` rather than failing the workflow; every activity has an idempotency test that runs it twice and asserts one effect; a permanent router error is not retried.
 
-Add the other two FR-SEC9 caps. Ticket 4 enforces only the per-attempt token budget. Add a per-feature-request cap in tokens, summed over every attempt of the feature request, and a monthly cap in USD, summed from `cost_usd` across all repositories for the calendar month. Both are read from the cost ledger, which already records `feature_request_id`, `cost_usd`, and `occurred_at`, and are checked before each model call alongside the per-attempt budget. The cap values come from owner configuration, validated at startup. Hitting either cap pauses the feature request rather than failing it (FR-S12): the workflow posts a comment explaining which cap was hit and waits for `/resume`. Work already done is kept.
+**Requirements:** NFR-R1, NFR-R2, NFR-R3, FR-S5, FR-S12, FR-S19 (pinning) · **Review list:** RL-1, RL-2, RL-3, RL-13, RL-14, RL-16
 
-Make attribution mandatory. `llm.Scope` currently requires only `RepoID`, `KeyPrefix`, and `TokenBudget`. With `AttemptID` empty, the ledger is never read, so a retried activity starts with a fresh full budget. With `FeatureRequestID` empty, cost events are written with a NULL `feature_request_id`, and the per-feature-request cap above cannot see that spend. Require both in any scope that carries a budget. If a call is deliberately unattributed, it gets its own explicitly named constructor.
+**State per activity, in the PR description:** what recovers a death after the outside action but before the Postgres write, write-ahead intent or idempotent retry.
 
-**Done when:** `workflowcheck` passes; the workflow is tested with `testsuite` without a server; a simulated worker crash mid-attempt resumes on another worker; a cancellation during the agent phase still releases the sandbox; every activity has an idempotency test that runs it twice and asserts one effect; no map is ranged over without sorting; two concurrent scopes for the same attempt cannot together spend more than the attempt's budget; a feature request that reaches its token cap pauses and resumes on `/resume` without losing its attempts; a call that would take the month past its USD cap is refused before reaching a provider; a budgeted scope without an attempt ID or feature request ID is rejected.
+---
 
-**Requirements:** NFR-R1, NFR-R2, NFR-R3, FR-SEC9, FR-S12 · **Review list:** RL-1, RL-2, RL-3, RL-9, RL-14, RL-16
+## Ticket 8b — Commands and status surface
+
+`/retry` from `needs_attention` returns to the phase the feature request left, so a stop during planning still waits for `/approve`. It keeps every attempt and its recorded cost, and re-checks the caps first; while still over a cap it replies naming the cap and changes nothing.
+
+A command not valid in the current status gets a clear reply and changes nothing, following the `ARCHITECTURE.md` command table. Live statuses are checked in the workflow. `delivered` and `cancelled` are checked in Ticket 6's dispatcher, since their workflow has closed.
+
+`/status` replies where the table allows it. Before starting, decide whether `/help` (in FR-S11, missing from the table) goes into the table, and how `/revise` and `/ask` reply in Milestone 1. Every command, accepted or rejected, is recorded with its actor.
+
+One status comment on the issue, edited in place through Ticket 6's client, names the status, the reason, any cap that was hit, and the commands available.
+
+**Done when:** `/retry` after a raised cap continues in the phase it left, with earlier attempts and cost intact; `/retry` while still over a cap stays in `needs_attention`; `/retry` after a planning-phase stop still waits for `/approve`; each live status rejects the commands it doesn't accept (workflow test per status), and each terminal status does too (dispatcher test per status); the status comment is edited in place, and editing it twice leaves one comment; every command has an audit record.
+
+**Requirements:** FR-S11, FR-S12, FR-SEC10 · **Review list:** RL-9, RL-13
 
 ---
 
@@ -151,7 +207,7 @@ Record each PR's base SHA for later restacking. Push refuses any artifact whose 
 
 Run the full path against the Election Tally repository ten times, including two cancellations. Fix what breaks. Add the orphan reaper as a scheduled workflow. Add the kill switch. Add the local append-only alert log and the alert-issue path.
 
-**Done when:** the 7-of-10 success criterion is met; no orphaned containers remain; the kill switch cancels everything in flight; a deliberately triggered alert opens an issue and is written to the local log; a `docs/decisions/` record exists for every non-obvious choice made during the milestone.
+**Done when:** the 7-of-10 success criterion is met; a worker killed mid-attempt resumes on a second worker without repeating completed activities (NFR-R1, moved here from Ticket 8, whose testsuite has no workers); no orphaned containers remain; the kill switch cancels everything in flight; a deliberately triggered alert opens an issue and is written to the local log; a `docs/decisions/` record exists for every non-obvious choice made during the milestone.
 
 **Requirements:** FR-SEC11, FR-SEC31, NFR-R3, NFR-M9 · **Review list:** RL-18
 
