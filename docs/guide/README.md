@@ -22,6 +22,6 @@ A guide page can link to a decision record, but it doesn't replace one.
 
 ## Keeping it current
 
-When a ticket merges, its page is written or updated in the same pull request or the next one. Copy [`tickets/_template.md`](tickets/_template.md), and add the ticket to [`tickets/README.md`](tickets/README.md). If the ticket changed how a request flows, update the matching step in `overview.md`.
+Each ticket writes its page in its own pull request (`CLAUDE.md`, `/implement-ticket`), and review fixes keep it in step with the code. Copy [`tickets/_template.md`](tickets/_template.md), and add the ticket to [`tickets/README.md`](tickets/README.md). If the ticket changed how a request flows, update the matching step in `overview.md`.
 
 A page describes the code on `main`. If the code and a page disagree, the code is right, and the page needs fixing.
