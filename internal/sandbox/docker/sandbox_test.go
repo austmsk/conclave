@@ -291,17 +291,20 @@ func TestReadFileTooLargeIsAPlainError(t *testing.T) {
 	}
 	defer func() { _ = raw.Close(context.Background()) }()
 
-	h.out(t, raw, "dd if=/dev/zero of=big.bin bs=1k count=100 2>/dev/null; echo done")
-	if _, err := raw.ReadFile(h.ctx, "big.bin"); !errors.Is(err, docker.ErrFileTooLarge) {
+	// One byte over the limit is refused before anything is read; exactly
+	// the limit is not.
+	h.out(t, raw, "head -c 65537 /dev/zero > big.bin; head -c 65536 /dev/zero > fits.bin; echo done")
+	_, err = raw.ReadFile(h.ctx, "big.bin")
+	if !errors.Is(err, docker.ErrFileTooLarge) {
 		t.Fatalf("ReadFile = %v, want ErrFileTooLarge", err)
 	}
-	// Nothing was killed: a process started before the read is still there.
-	h.out(t, raw, "sleep 300 >/dev/null 2>&1 & echo started")
-	if _, err := raw.ReadFile(h.ctx, "big.bin"); !errors.Is(err, docker.ErrFileTooLarge) {
-		t.Fatalf("ReadFile = %v, want ErrFileTooLarge", err)
+	// A refusal, not a runaway command: neither the output cap nor a
+	// failed kill is reported, and the sandbox carries on.
+	if errors.Is(err, docker.ErrOutputTooLarge) || errors.Is(err, docker.ErrKilled) {
+		t.Errorf("ReadFile = %v, want only ErrFileTooLarge", err)
 	}
-	if got := h.out(t, raw, "ps -o args | grep -c '^sleep 300' || true"); got != "1" {
-		t.Errorf("an oversized read killed other processes: %s sleeps remain", got)
+	if data, err := raw.ReadFile(h.ctx, "fits.bin"); err != nil || len(data) != 64<<10 {
+		t.Errorf("ReadFile at the limit = %d bytes, %v", len(data), err)
 	}
 }
 

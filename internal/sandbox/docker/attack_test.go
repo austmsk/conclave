@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -319,35 +320,163 @@ func TestAttackFilePathsAreNeverExpanded(t *testing.T) {
 	}
 }
 
-// TestAttackSymlinkSwapRaceStaysInsideTheContainer attempts the
-// check-then-use race the contract mentions: a background loop swaps a
-// directory for a symlink to /tmp while WriteFile targets a file under it.
-// The provider cannot close that race, so the test asserts the damage is
-// bounded instead: every write lands inside the container, the worker's
-// tree is untouched, and the sandbox keeps working.
-func TestAttackSymlinkSwapRaceStaysInsideTheContainer(t *testing.T) {
+// TestAttackSwapBetweenValidationAndWrite attempts the check-then-use
+// race the contract mentions. The file scripts check every component and
+// then open the path, and nothing inside a container can close the gap
+// between the two. What narrows it is that no process outlives a sandbox
+// command and commands are serialized, so nothing is running to make the
+// swap while a file operation is between its check and its use. All a
+// command can leave behind is the symlink already in place, and that is
+// refused. The residuals are a process in another PID namespace, which the
+// sandbox as configured cannot create, and damage that stays inside the
+// container. TestAttackStrayCannotSwapAfterExec covers the loop that would
+// otherwise make the swap.
+func TestAttackSwapBetweenValidationAndWrite(t *testing.T) {
 	h := newHarness(t)
 	spec := h.spec(t, contracts.NetworkNone)
 	sb := h.create(t, spec)
 
-	h.out(t, sb, `mkdir -p swap; (while :; do rm -rf swap; ln -s /tmp swap; rm -f swap; mkdir swap; done) >/dev/null 2>&1 & echo started`)
-	refused := 0
-	for i := 0; i < 60; i++ {
-		if err := sb.WriteFile(h.ctx, "swap/target.txt", []byte("racing")); errors.Is(err, docker.ErrInvalidPath) {
-			refused++
+	h.out(t, sb, "mkdir -p swap; rm -rf swap; ln -s /tmp swap")
+	for range 20 {
+		if err := sb.WriteFile(h.ctx, "swap/target.txt", []byte("racing")); !errors.Is(err, docker.ErrInvalidPath) {
+			t.Fatalf("WriteFile through a swapped-in symlink = %v, want ErrInvalidPath", err)
 		}
-		if data, err := os.ReadFile("/tmp/target.txt"); err == nil && string(data) == "racing" {
-			t.Fatal("a sandbox write reached the worker's /tmp")
+		if data, err := sb.ReadFile(h.ctx, "swap/target.txt"); !errors.Is(err, docker.ErrInvalidPath) {
+			t.Fatalf("ReadFile through a swapped-in symlink = %q, %v, want ErrInvalidPath", data, err)
 		}
 	}
-	res := h.sh(t, sb, "kill -9 -1 2>/dev/null; [ -f /tmp/target.txt ] && echo escaped-inside; echo done")
-	t.Logf("%d writes refused by the check; escaped into the container's /tmp: %v", refused, strings.Contains(string(res.Stdout), "escaped-inside"))
-
+	if got := h.out(t, sb, "ls -A /tmp"); got != "" {
+		t.Errorf("a write landed in the container's /tmp: %q", got)
+	}
 	if data, err := os.ReadFile(filepath.Join(spec.TreePath, "README.md")); err != nil || string(data) != "# Election Tally\n" {
 		t.Errorf("worker tree changed: %q, %v", data, err)
 	}
-	if got := h.out(t, sb, "echo alive"); got != "alive" {
-		t.Errorf("sandbox unusable after the race: %q", got)
+}
+
+// TestAttackStrayCannotSwapAfterExec starts the loop the swap race needs
+// from a command, in the background, and shows it is dead when Exec
+// returns: however many writes follow, none lands in /tmp.
+func TestAttackStrayCannotSwapAfterExec(t *testing.T) {
+	h := newHarness(t)
+	sb := h.create(t, h.spec(t, contracts.NetworkNone))
+
+	h.out(t, sb, `mkdir -p swap; (while :; do rm -rf swap; ln -s /tmp swap; rm -f swap; mkdir swap; done) >/dev/null 2>&1 & echo started`)
+	assertOnlyInit(t, h, sb)
+	for i := range 60 {
+		err := sb.WriteFile(h.ctx, "swap/target.txt", []byte("racing"))
+		if err != nil && !errors.Is(err, docker.ErrInvalidPath) {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if got := h.out(t, sb, "ls -A /tmp"); got != "" {
+		t.Errorf("a write landed in the container's /tmp: %q", got)
+	}
+	if data, err := os.ReadFile("/tmp/target.txt"); err == nil && string(data) == "racing" {
+		t.Error("a sandbox write reached the worker's /tmp")
+	}
+}
+
+// TestAttackNoProcessSurvivesExec starts processes built to outlive the
+// command that started them. None is running once Exec returns, and the
+// sandbox still works.
+func TestAttackNoProcessSurvivesExec(t *testing.T) {
+	cases := []struct {
+		name   string
+		script string
+	}{
+		{"setsid with a double fork", `setsid sh -c 'sh -c "sleep 4001 >/dev/null 2>&1 &" &' >/dev/null 2>&1; echo started`},
+		{"nohup with all fds closed", `nohup sh -c 'exec sleep 4002' <&- >&- 2>&- & echo started`},
+		{"a stray that kills the init's sleep", `(while :; do kill $(pgrep -P 1 -x sleep) 2>/dev/null; done) >/dev/null 2>&1 & sleep 0.2; echo started`},
+	}
+	h := newHarness(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := h.create(t, h.spec(t, contracts.NetworkNone))
+			if got := h.out(t, sb, tc.script); got != "started" {
+				t.Fatalf("setup printed %q", got)
+			}
+			assertOnlyInit(t, h, sb)
+			if got := h.out(t, sb, "echo alive"); got != "alive" {
+				t.Errorf("sandbox unusable after the kill: %q", got)
+			}
+		})
+	}
+}
+
+// TestAttackNoProcessSurvivesDiff plants a core.fsmonitor hook, which
+// git add runs during Diff, that leaves a process behind.
+func TestAttackNoProcessSurvivesDiff(t *testing.T) {
+	h := newHarness(t)
+	sb := h.create(t, h.spec(t, contracts.NetworkNone))
+
+	h.out(t, sb, `printf '#!/bin/sh\ntouch /tmp/hook-ran\nsleep 4003 >/dev/null 2>&1 &\nexit 1\n' > /tmp/hook && chmod +x /tmp/hook && git config core.fsmonitor /tmp/hook`)
+	if _, err := sb.Diff(h.ctx); err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	assertOnlyInit(t, h, sb)
+	if got := h.out(t, sb, "ls /tmp/hook-ran"); got != "/tmp/hook-ran" {
+		t.Fatalf("the fsmonitor hook did not run: %q", got)
+	}
+}
+
+// TestAttackHardlinkRefused tries to reach a file through a second name.
+// Path checks see only the name, so a hard link to .git/config would let
+// a write the checks allow change git's configuration.
+func TestAttackHardlinkRefused(t *testing.T) {
+	cases := []struct {
+		name, target string
+		write        bool
+	}{
+		{"read through a link to .git/config", ".git/config", false},
+		{"write through a link to .git/config", ".git/config", true},
+		{"read through a link to an ordinary file", "README.md", false},
+		{"write through a link to an ordinary file", "README.md", true},
+	}
+	h := newHarness(t)
+	sb := h.create(t, h.spec(t, contracts.NetworkNone))
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			link := "notes" + strconv.Itoa(i) + ".txt"
+			before := h.out(t, sb, "ln "+tc.target+" "+link+" && sha256sum "+tc.target)
+			var err error
+			if tc.write {
+				err = sb.WriteFile(h.ctx, link, []byte("[core]\n\tfsmonitor = /tmp/hook\n"))
+			} else {
+				_, err = sb.ReadFile(h.ctx, link)
+			}
+			if !errors.Is(err, docker.ErrInvalidPath) {
+				t.Errorf("%s = %v, want ErrInvalidPath", tc.name, err)
+			}
+			if after := h.out(t, sb, "sha256sum "+tc.target); after != before {
+				t.Errorf("%s changed", tc.target)
+			}
+		})
+	}
+}
+
+// assertOnlyInit fails if anything but the init and its own sleep is
+// running, reading the process list through the daemon.
+func assertOnlyInit(t *testing.T, h *harness, sb *docker.Sandbox) {
+	t.Helper()
+	initPID := strconv.Itoa(h.inspect(t, sb).State.Pid)
+	top, err := h.cli.ContainerTop(h.ctx, sb.ID(), client.ContainerTopOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, ppid, cmd := slices.Index(top.Titles, "PID"), slices.Index(top.Titles, "PPID"), slices.Index(top.Titles, "CMD")
+	sleeps := 0
+	var others []string
+	for _, p := range top.Processes {
+		switch {
+		case p[pid] == initPID:
+		case p[ppid] == initPID && p[cmd] == "sleep 3600":
+			sleeps++
+		default:
+			others = append(others, p[cmd])
+		}
+	}
+	if len(others) > 0 || sleeps > 1 {
+		t.Errorf("processes survived the command: %q (and %d init sleeps)", others, sleeps)
 	}
 }
 

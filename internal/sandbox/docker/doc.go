@@ -46,25 +46,49 @@
 // # File operations
 //
 // ReadFile and WriteFile run a small shell script inside the container as
-// the sandbox user. The path arrives as a script argument and is only
-// ever expanded quoted with globbing off, so it is used exactly as given;
-// the script refuses any symlink along the way. That check happens before
-// the read or write, so a component swapped for a symlink in between is
-// followed. The contract asks for a root handle that closes that race;
-// none exists inside a container. The consequence is bounded: the write
-// lands somewhere else inside the same container, which the agent could
-// reach with a shell anyway, and the diff simply omits it. Path validation
-// keeps the diff honest; the container is the boundary (FR-SEC29).
+// the sandbox user. Paths are checked lexically first (sandbox.CheckPath).
+// The path then arrives as a script argument and is only ever expanded
+// quoted with globbing off, so it is used exactly as given; the script
+// refuses any symlink along the way, and a regular file with more than
+// one link, which could be another name for .git/config. Those checks
+// happen before the read or write, so a component swapped for a symlink
+// in between would be followed. The contract asks for a root handle that
+// closes that race; none exists inside a container.
+//
+// What narrows the race is that no process survives a sandbox command
+// (see Process lifetime) and commands are serialized, so while a file
+// script runs nothing else in the container is running to make the swap.
+// That narrows the race; it does not close it. The residuals are a
+// process in another PID namespace, which the init's kill cannot reach
+// and which the sandbox as configured cannot create (no capabilities, no
+// new privileges), and, as before, damage that stays inside the
+// container: a misdirected write lands somewhere the agent could reach
+// with a shell anyway, and the diff omits it. This is a different
+// mechanism from FR-SEC29's fallback, which resolves the parent through
+// symlinks and compares relative paths, and so a deviation from it; the
+// decision record is owed.
 //
 // # Process lifetime
 //
 // PID 1 is a shell loop that traps SIGUSR1 and answers it with kill -9 -1,
-// which kills every other process in the container (the caller is exempt).
-// The provider sends that signal through the Engine API when an exec
-// times out or overruns its output limit, so runaway processes are stopped
-// without a new process having to be spawned inside a possibly saturated
-// pids cgroup. If the init does not respond, the container is killed
-// outright and the sandbox reports itself dead.
+// which kills every other process in the container (the caller is exempt),
+// and then starts a fresh sleep. After every sandbox command (Exec,
+// ReadFile, WriteFile, Diff and the tree upload alike) and on every path
+// out of it, errors included, the provider sends that signal through the
+// Engine API while it still holds the command lock. It then confirms
+// through the daemon's process list that only the init and a sleep newer
+// than the signal remain. The signal is always sent: a count taken
+// beforehand can be fooled by a stray that kills the init's sleep. Diff
+// needs this as much as Exec does, because git add honours
+// core.fsmonitor, which the agent can set. Signalling rather than running
+// kill in the container means no new process has to be spawned inside a
+// possibly saturated pids cgroup. If the init does not respond, the
+// container is killed outright and the sandbox reports ErrKilled from
+// then on.
+//
+// Install steps go through Exec as well, so a daemon an install step
+// starts survives neither into the agent phase nor into the next step:
+// each install step must be self-contained.
 //
 // # Cleanup (RL-3, NFR-R3)
 //
