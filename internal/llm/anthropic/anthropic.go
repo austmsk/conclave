@@ -32,8 +32,9 @@ const (
 	// done, so this has to cover the longest generation; ten minutes is
 	// the API's own limit for non-streaming requests. Without it a
 	// connection that stops responding holds a worker until the activity
-	// times out.
-	DefaultTimeout = 10 * time.Minute
+	// times out. It is llm.MaxCallDuration, which budget reservations are
+	// sized to outlast.
+	DefaultTimeout = llm.MaxCallDuration
 )
 
 // Client is an llm.Provider for Anthropic.
@@ -48,9 +49,11 @@ var _ llm.Provider = (*Client)(nil)
 // New returns a client. baseURL may be empty for DefaultBaseURL. It must be
 // https, except on a loopback host, where tests run an httptest server: the
 // key travels in a header, and plain http to anywhere else would send it in
-// the clear. httpClient may be nil for a client with DefaultTimeout. New
-// keeps a copy of it that never follows a redirect, and leaves the
-// caller's client as it was.
+// the clear. httpClient may be nil for a client with DefaultTimeout. A
+// client given must have a timeout no longer than llm.MaxCallDuration: a
+// call that ran longer would outlive its budget reservation and stop
+// counting against the caps while still running. New keeps a copy of it
+// that never follows a redirect, and leaves the caller's client as it was.
 func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 	if apiKey == "" {
 		return nil, errors.New("anthropic: no API key")
@@ -63,6 +66,10 @@ func New(apiKey, baseURL string, httpClient *http.Client) (*Client, error) {
 	}
 	hc := http.Client{Timeout: DefaultTimeout}
 	if httpClient != nil {
+		if httpClient.Timeout <= 0 || httpClient.Timeout > llm.MaxCallDuration {
+			return nil, fmt.Errorf("anthropic: client timeout %s must be positive and at most %s, which budget reservations cover",
+				httpClient.Timeout, llm.MaxCallDuration)
+		}
 		hc = *httpClient
 	}
 	hc.CheckRedirect = refuseRedirect

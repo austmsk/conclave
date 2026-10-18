@@ -41,15 +41,16 @@ func widenCase(t *testing.T, tier contracts.SensitivityTier, provider string) {
 	p := providers(fakes())
 	p[provider] = emb
 	cfg := llm.Config{
+		Budgets:   testBudgets,
 		Models:    map[string]llm.ModelConfig{"m": model(provider)},
 		Roles:     map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 		Embedding: &llm.EmbeddingRoute{Model: "m"},
 	}
-	r, err := llm.New(cfg, p, llm.NewDirectoryRepos(dir, access), &faketest.Costs{})
+	r, err := llm.New(cfg, p, llm.NewDirectoryRepos(dir, access), newCosts())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 100000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 100000})
 	if err != nil {
 		t.Fatalf("Scope: %v", err)
 	}

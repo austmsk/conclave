@@ -472,3 +472,32 @@ func TestNewRequiresKey(t *testing.T) {
 		t.Fatal("New accepted an empty key")
 	}
 }
+
+// TestNewBoundsClientTimeout: a call must not outlive its budget
+// reservation, so an injected client without a timeout, or with one longer
+// than llm.MaxCallDuration, is refused.
+func TestNewBoundsClientTimeout(t *testing.T) {
+	if anthropic.DefaultTimeout > llm.MaxCallDuration || llm.MaxCallDuration >= llm.ReservationTTL {
+		t.Fatalf("default timeout %s, max call %s, reservation TTL %s: a call must end before its reservation does",
+			anthropic.DefaultTimeout, llm.MaxCallDuration, llm.ReservationTTL)
+	}
+	cases := []struct {
+		name string
+		hc   *http.Client
+		ok   bool
+	}{
+		{"default client", nil, true},
+		{"short timeout", &http.Client{Timeout: time.Minute}, true},
+		{"timeout at the bound", &http.Client{Timeout: llm.MaxCallDuration}, true},
+		{"no timeout", &http.Client{}, false},
+		{"timeout past the bound", &http.Client{Timeout: llm.MaxCallDuration + time.Second}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := anthropic.New(canaryKey, "", tc.hc)
+			if tc.ok != (err == nil) {
+				t.Fatalf("err = %v, want ok=%v", err, tc.ok)
+			}
+		})
+	}
+}

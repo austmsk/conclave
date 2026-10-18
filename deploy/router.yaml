@@ -6,6 +6,7 @@
 #   -1 prices      copy from the provider's current price list, in USD per
 #                  million tokens.
 #   0 output caps  copy the model's maximum output tokens from its model card.
+#   -1 budgets     choose the platform caps (FR-SEC9) under budgets below.
 # A price left at 0 would record every call as free, which defeats the caps.
 #
 # Model IDs are pinned. Never use a "latest" alias; validation rejects it.
@@ -81,3 +82,14 @@ roles:
 rate_limit:
   requests_per_minute: 20
   tokens_per_minute: 300000
+
+# Platform caps (FR-SEC9), checked before every model call against settled
+# spend plus calls still in flight, across every worker. Each attempt's own
+# token budget is set per attempt; these bound everything above it. Hitting
+# either moves the feature request to needs_attention (reason budget_cap);
+# raise the value here, restart the worker, and /retry.
+budgets:
+  # Input plus output tokens over every call for one feature request.
+  feature_request_tokens: -1
+  # US dollars across all repositories per calendar month, in UTC.
+  monthly_usd: -1

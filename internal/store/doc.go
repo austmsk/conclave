@@ -12,8 +12,12 @@
 // helpers. The actor string is self-reported; the trigger also records the
 // authenticated login as db_user. Cost events and state transitions are
 // append-only: the application role has insert-only access to them.
-// CostLedger is the router's ledger over cost_events; a replayed event is
-// absorbed by the idempotency key rather than rejected. RepoDirectory gives the
+// CostLedger is the router's ledger over cost_events and
+// budget_reservations: it checks a scope's attribution, reserves each model
+// call against the FR-SEC9 caps under one transaction-level advisory lock,
+// and settles the call by recording its event and deleting its reservation
+// in one transaction. A replayed event is absorbed by the idempotency key
+// rather than rejected. RepoDirectory gives the
 // router each repository's record, which it checks against the owner's
 // configured tier.
 //

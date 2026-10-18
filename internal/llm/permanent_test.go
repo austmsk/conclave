@@ -184,7 +184,7 @@ func TestPolicyErrorsArePermanent(t *testing.T) {
 			if len(tc.repos) == 0 {
 				return
 			}
-			_, err = llm.New(plannerConfig(), providers(fakes()), tc.repos, &faketest.Costs{})
+			_, err = llm.New(plannerConfig(), providers(fakes()), tc.repos, newCosts())
 			assertPermanent(t, "New", err, tc.want)
 		})
 	}

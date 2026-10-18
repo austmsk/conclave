@@ -16,8 +16,9 @@ import (
 
 func plannerConfig() llm.Config {
 	return llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 }
 
@@ -54,12 +55,12 @@ func TestInFlightCallHoldsItsReservation(t *testing.T) {
 	gate := newGate()
 	p := providers(fakes())
 	p[llm.ProviderAnthropic] = gate
-	r, err := llm.New(plannerConfig(), p, publicPlanner(), &faketest.Costs{})
+	r, err := llm.New(plannerConfig(), p, publicPlanner(), newCosts())
 	if err != nil {
 		t.Fatal(err)
 	}
 	// One token of estimated input for "hi" plus the model's 4096 output.
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 4097})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 4097})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,12 +170,12 @@ func TestEmbedChargesBudgetAndRecordsCost(t *testing.T) {
 	emb := &stubEmbedder{Provider: faketest.New()}
 	p := providers(fakes())
 	p[llm.ProviderOllama] = emb
-	costs := &faketest.Costs{}
+	costs := newCosts()
 	r, err := llm.New(embedConfig(), p, publicPlanner(), costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,11 +196,11 @@ func TestEmbedRefusedOverBudget(t *testing.T) {
 	emb := &stubEmbedder{Provider: faketest.New()}
 	p := providers(fakes())
 	p[llm.ProviderOllama] = emb
-	r, err := llm.New(embedConfig(), p, publicPlanner(), &faketest.Costs{})
+	r, err := llm.New(embedConfig(), p, publicPlanner(), newCosts())
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 10})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +240,7 @@ func TestRouterKeepsItsOwnConfig(t *testing.T) {
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(faketest.Turn{Error: "unavailable"}, endTurn(1, 1))
 	p := providers(f)
-	r, err := llm.New(cfg, p, publicPlanner(), &faketest.Costs{})
+	r, err := llm.New(cfg, p, publicPlanner(), newCosts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +248,7 @@ func TestRouterKeepsItsOwnConfig(t *testing.T) {
 	delete(p, llm.ProviderAnthropic)
 	cfg.Roles[contracts.RolePlanner].Fallbacks[0] = "gone"
 
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 10_000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10_000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,11 +261,14 @@ func TestRouterKeepsItsOwnConfig(t *testing.T) {
 // TestRejectedReplyIsCharged: the provider bills a reply that the adapter
 // then refuses, a refusal say. The tokens are charged to the budget and
 // recorded, so a model that refuses on every retry still runs the budget
-// out instead of spending without limit.
+// out instead of spending without limit. Each reply has its own ID, as a
+// provider's do; the ledger counts a repeated ID once.
 func TestRejectedReplyIsCharged(t *testing.T) {
-	rejected := faketest.Turn{Error: "rejected", Response: faketest.Response{ID: "msg_refused", InputTokens: 300, OutputTokens: 200}}
+	rejected := func(id string) faketest.Turn {
+		return faketest.Turn{Error: "rejected", Response: faketest.Response{ID: id, InputTokens: 300, OutputTokens: 200}}
+	}
 	f := fakes()
-	f[llm.ProviderAnthropic] = faketest.New(rejected, rejected, rejected)
+	f[llm.ProviderAnthropic] = faketest.New(rejected("msg_refused"), rejected("msg_refused_2"), rejected("msg_refused_3"))
 	h := newHarness(t, plannerConfig(), f, publicPlanner(), 1000)
 	req := contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 200}
 
@@ -296,16 +300,234 @@ func TestRejectedReplyRecordingFailure(t *testing.T) {
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(faketest.Turn{Error: "rejected", Response: faketest.Response{InputTokens: 3, OutputTokens: 2}})
 	boom := errors.New("database down")
-	r, err := llm.New(plannerConfig(), providers(f), publicPlanner(), &faketest.Costs{Err: boom})
+	costs := newCosts()
+	costs.SettleErr = boom
+	r, err := llm.New(plannerConfig(), providers(f), publicPlanner(), costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = s.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
 	if !errors.Is(err, boom) {
 		t.Fatalf("got %v, want the ledger's error", err)
+	}
+}
+
+// TestSecondScopeSeesInFlightCall attempts the overspend 8a closes: an
+// activity abandoned after a heartbeat timeout still has a call in flight
+// when its retry opens a second scope for the same attempt. The in-flight
+// call's reservation counts against the attempt, so the retry is refused
+// before reaching the provider, rather than spending the budget a second
+// time.
+func TestSecondScopeSeesInFlightCall(t *testing.T) {
+	gate := newGate()
+	p := providers(fakes())
+	p[llm.ProviderAnthropic] = gate
+	costs := newCosts()
+	r, err := llm.New(plannerConfig(), p, publicPlanner(), costs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One token of estimated input for "hi" plus the model's 4096 output.
+	scope := llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "wf/act-1", TokenBudget: 4097}
+	abandoned, err := r.Scope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope.KeyPrefix = "wf/act-2"
+	retry, err := r.Scope(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := plannerRequest(0)
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := abandoned.Complete(context.Background(), req)
+		first <- err
+	}()
+	<-gate.started
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = retry.Complete(ctx, req)
+	assertBudgetKind(t, err, llm.BudgetAttempt)
+	gate.release <- struct{}{}
+	if err := <-first; err != nil {
+		t.Fatalf("in-flight call: %v", err)
+	}
+	if n := costs.Reservations(); n != 0 {
+		t.Fatalf("%d reservations after every call settled, want 0", n)
+	}
+	if evs := costs.Events(); len(evs) != 1 || evs[0].AttemptID != attemptID || evs[0].FeatureRequestID != featureID {
+		t.Fatalf("events %+v, want the in-flight call's alone, attributed", evs)
+	}
+}
+
+// TestCapRefusals: a call that would pass any of the three caps is refused
+// before it reaches a provider, with a BudgetError naming the cap. The
+// first call in each case fits and spends; the second does not fit.
+func TestCapRefusals(t *testing.T) {
+	// The test model prices input at $3 and output at $15 per million
+	// tokens, so a call of 1 input and 4096 output tokens claims about
+	// $0.0615, and a reply of 1000 and 1000 tokens costs $0.018.
+	cases := []struct {
+		name    string
+		budget  int
+		budgets llm.Budgets
+		model   func(llm.ModelConfig) llm.ModelConfig
+		calls   int
+		want    llm.BudgetKind
+	}{
+		{"attempt", 2000, testBudgets, nil, 1, llm.BudgetAttempt},
+		{"feature request", 1 << 30, llm.Budgets{FeatureRequestTokens: 2000, MonthlyUSD: 1e9}, nil, 1, llm.BudgetFeatureRequest},
+		{"month", 1 << 30, llm.Budgets{FeatureRequestTokens: 1 << 40, MonthlyUSD: 0.07}, nil, 1, llm.BudgetMonth},
+		// The claim prices input at the dearest rate it could be billed
+		// at: an input estimate billed as cache writes costs more than
+		// plain input.
+		{"month at the cache write price", 1 << 30, llm.Budgets{FeatureRequestTokens: 1 << 40, MonthlyUSD: 0.07},
+			func(m llm.ModelConfig) llm.ModelConfig { m.CacheWriteUSDPerMTok = 1e5; return m }, 0, llm.BudgetMonth},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := plannerConfig()
+			cfg.Budgets = tc.budgets
+			if tc.model != nil {
+				cfg.Models["m"] = tc.model(cfg.Models["m"])
+			}
+			f := fakes()
+			f[llm.ProviderAnthropic] = faketest.New(endTurn(1000, 1000), endTurn(1, 1))
+			h := newHarness(t, cfg, f, publicPlanner(), tc.budget)
+			for i := range tc.calls {
+				if _, err := h.scoped.Complete(context.Background(), plannerRequest(0)); err != nil {
+					t.Fatalf("call %d: %v", i+1, err)
+				}
+			}
+			_, err := h.scoped.Complete(context.Background(), plannerRequest(0))
+			assertBudgetKind(t, err, tc.want)
+			if sent := 2 - f[llm.ProviderAnthropic].Remaining(); sent != tc.calls {
+				t.Fatalf("provider received %d requests, want %d", sent, tc.calls)
+			}
+			if n := h.costs.Reservations(); n != 0 {
+				t.Fatalf("%d reservations left by a refusal, want 0", n)
+			}
+		})
+	}
+}
+
+// TestFailedCallReleasesReservation: a call that fails without billing
+// leaves neither an event nor a reservation behind, so its claim stops
+// counting at once rather than when it expires.
+func TestFailedCallReleasesReservation(t *testing.T) {
+	f := fakes()
+	f[llm.ProviderAnthropic] = faketest.New(faketest.Turn{Error: "unavailable"})
+	h := newHarness(t, plannerConfig(), f, publicPlanner(), 10_000)
+	if _, err := h.scoped.Complete(context.Background(), plannerRequest(0)); !errors.Is(err, llm.ErrUnavailable) {
+		t.Fatalf("got %v, want ErrUnavailable", err)
+	}
+	if n, evs := h.costs.Reservations(), len(h.costs.Events()); n != 0 || evs != 0 {
+		t.Fatalf("%d reservations and %d events after an unbilled failure, want none", n, evs)
+	}
+}
+
+// billedOnCancel replies only when the caller gives up, and bills the call
+// anyway, as a provider does for a generation the client stopped waiting
+// for.
+type billedOnCancel struct{ started chan struct{} }
+
+func (b billedOnCancel) Complete(ctx context.Context, _ llm.ProviderRequest) (llm.ProviderResponse, error) {
+	b.started <- struct{}{}
+	<-ctx.Done()
+	return llm.ProviderResponse{ID: "msg_cancelled", InputTokens: 50, OutputTokens: 50}, ctx.Err()
+}
+
+// TestCancelledCallIsStillRecorded: a call billed after its caller's
+// context was cancelled is still recorded and its reservation settled.
+// Recording with the cancelled context would fail, and the spend would stop
+// counting once the reservation expired.
+func TestCancelledCallIsStillRecorded(t *testing.T) {
+	p := providers(fakes())
+	started := make(chan struct{}, 1)
+	p[llm.ProviderAnthropic] = billedOnCancel{started: started}
+	costs := newCosts()
+	r, err := llm.New(plannerConfig(), p, publicPlanner(), costs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	if _, err := s.Complete(ctx, plannerRequest(100)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want Canceled", err)
+	}
+	evs := costs.Events()
+	if len(evs) != 1 || evs[0].InputTokens+evs[0].OutputTokens != 100 || costs.Reservations() != 0 {
+		t.Fatalf("events %+v and %d reservations, want the billed call recorded and nothing held", evs, costs.Reservations())
+	}
+}
+
+// deadlineLedger records the deadline each Settle was given.
+type deadlineLedger struct {
+	*faketest.Costs
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (d *deadlineLedger) Settle(ctx context.Context, id string, ev contracts.CostEvent) error {
+	deadline, _ := ctx.Deadline()
+	d.mu.Lock()
+	d.deadlines = append(d.deadlines, deadline)
+	d.mu.Unlock()
+	return d.Costs.Settle(ctx, id, ev)
+}
+
+// TestSettleKeepsLongerDeadline: recording a billed reply gets at least
+// the caller's own deadline. A fixed short timeout would cut it down, and a
+// database slow for longer than that would lose the call from the ledger.
+// A caller with less time left still gets the minimum.
+func TestSettleKeepsLongerDeadline(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		atLeast time.Duration
+		atMost  time.Duration
+	}{
+		{"long caller deadline", time.Hour, 59 * time.Minute, time.Hour},
+		{"short caller deadline", time.Second, 25 * time.Second, 30 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fakes()
+			f[llm.ProviderAnthropic] = faketest.New(endTurn(1, 1))
+			ledger := &deadlineLedger{Costs: newCosts()}
+			r, err := llm.New(plannerConfig(), providers(f), publicPlanner(), ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10_000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+			defer cancel()
+			if _, err := s.Complete(ctx, plannerRequest(100)); err != nil {
+				t.Fatal(err)
+			}
+			if len(ledger.deadlines) != 1 {
+				t.Fatalf("%d settles, want 1", len(ledger.deadlines))
+			}
+			left := time.Until(ledger.deadlines[0])
+			if left < tc.atLeast || left > tc.atMost {
+				t.Fatalf("settle had %s left, want between %s and %s", left, tc.atLeast, tc.atMost)
+			}
+		})
 	}
 }

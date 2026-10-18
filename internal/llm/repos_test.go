@@ -40,8 +40,9 @@ var plannerAccess = map[string]llm.RepoAccess{
 func TestTamperedTierIsRefused(t *testing.T) {
 	dir := directory{repoID: {ID: repoID, FullName: tallyRepo, Tier: contracts.TierSensitive}}
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic), "g": model(llm.ProviderGoogle)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m", Fallbacks: []string{"g"}}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic), "g": model(llm.ProviderGoogle)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m", Fallbacks: []string{"g"}}},
 	}
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(endTurn(1, 1), endTurn(1, 1))
@@ -105,7 +106,7 @@ func TestDirectoryReposValidate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := llm.New(plannerConfig(), providers(fakes()), llm.NewDirectoryRepos(directory{}, tc.access), &faketest.Costs{})
+			_, err := llm.New(plannerConfig(), providers(fakes()), llm.NewDirectoryRepos(directory{}, tc.access), newCosts())
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("New: got %v, want %v", err, tc.want)
 			}

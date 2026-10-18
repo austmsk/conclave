@@ -16,8 +16,19 @@ import (
 // Scope requires database IDs, which are UUIDs.
 const (
 	repoID    = "0f6b1c2a-5d1e-4c8e-9a4b-1f2e3d4c5b6a"
+	featureID = "3c2b1a0f-9e8d-4c7b-a6f5-e4d3c2b1a0f9"
 	attemptID = "7a1d9e44-2b3c-4f5a-8e6d-0c1b2a3f4e5d"
 )
+
+// testBudgets are platform caps high enough that only tests about them hit
+// them.
+var testBudgets = llm.Budgets{FeatureRequestTokens: 1 << 40, MonthlyUSD: 1e9}
+
+// newCosts is a ledger that knows the test attempt, its feature request,
+// and its repository.
+func newCosts() *faketest.Costs {
+	return &faketest.Costs{Known: []faketest.Attribution{{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID}}}
+}
 
 var allTiers = []contracts.SensitivityTier{
 	contracts.TierPublic, contracts.TierPrivate, contracts.TierSensitive, contracts.TierLocalOnly,
@@ -83,12 +94,12 @@ type harness struct {
 
 func newHarness(t *testing.T, cfg llm.Config, f map[string]*faketest.Provider, repos llm.Repos, budget int) harness {
 	t.Helper()
-	costs := &faketest.Costs{}
+	costs := newCosts()
 	r, err := llm.New(cfg, providers(f), repos, costs)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, AttemptID: attemptID, KeyPrefix: "wf/act", TokenBudget: budget})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "wf/act", TokenBudget: budget})
 	if err != nil {
 		t.Fatalf("Scope: %v", err)
 	}
@@ -118,8 +129,9 @@ func policyCase(t *testing.T, tier contracts.SensitivityTier, role contracts.Rol
 	f := fakes()
 	f[provider] = faketest.New(endTurn(10, 5))
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(provider)},
-		Roles:  map[contracts.Role]llm.RoleRoute{role: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(provider)},
+		Roles:   map[contracts.Role]llm.RoleRoute{role: {Model: "m"}},
 	}
 	h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(tier, role)}, 100000)
 
@@ -175,8 +187,9 @@ func sensitiveCase(t *testing.T, approved []string, provider string) {
 	f := fakes()
 	f[provider] = faketest.New(endTurn(10, 5))
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(provider)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(provider)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	repos := llm.StaticRepos{repoID: {
 		Tier: contracts.TierSensitive, Roles: []contracts.Role{contracts.RolePlanner}, SensitiveProviders: approved,
@@ -208,8 +221,9 @@ func TestRoleAllowlistMatrix(t *testing.T) {
 				f := fakes()
 				f[llm.ProviderOllama] = faketest.New(endTurn(1, 1))
 				cfg := llm.Config{
-					Models: map[string]llm.ModelConfig{"m": model(llm.ProviderOllama)},
-					Roles:  map[contracts.Role]llm.RoleRoute{role: {Model: "m"}},
+					Budgets: testBudgets,
+					Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderOllama)},
+					Roles:   map[contracts.Role]llm.RoleRoute{role: {Model: "m"}},
 				}
 				h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(tier, other)}, 100000)
 				if _, err := complete(h, role); !errors.Is(err, llm.ErrRoleDenied) {
@@ -260,8 +274,9 @@ func TestRepoPolicyFailsClosed(t *testing.T) {
 			f := fakes()
 			f[llm.ProviderOllama] = faketest.New(endTurn(1, 1))
 			cfg := llm.Config{
-				Models: map[string]llm.ModelConfig{"m": model(llm.ProviderOllama)},
-				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+				Budgets: testBudgets,
+				Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderOllama)},
+				Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 			}
 			h := newHarness(t, cfg, f, liveRepos(tc.repos), 100000)
 			_, err := h.scoped.Complete(context.Background(), contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi")})
@@ -284,7 +299,7 @@ func TestNewRejectsBadStaticRepos(t *testing.T) {
 	cases := append(slices.Clone(badPolicies), badPolicy{"empty repository ID", llm.StaticRepos{"": policy(contracts.TierPublic, contracts.RolePlanner)}, llm.ErrUnknownRepo})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := llm.New(plannerConfig(), providers(fakes()), tc.repos, &faketest.Costs{})
+			_, err := llm.New(plannerConfig(), providers(fakes()), tc.repos, newCosts())
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("New: got %v, want %v", err, tc.want)
 			}
@@ -303,6 +318,7 @@ func TestRequestForAnotherRepoIsRefused(t *testing.T) {
 		publicRepo: policy(contracts.TierPublic, contracts.RolePlanner),
 	}
 	cfg := llm.Config{
+		Budgets:   testBudgets,
 		Models:    map[string]llm.ModelConfig{"m": model(llm.ProviderOpenAI)},
 		Roles:     map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 		Embedding: &llm.EmbeddingRoute{Model: "m"},
@@ -348,8 +364,9 @@ func TestFallbackMatrix(t *testing.T) {
 					f[fb] = faketest.New(endTurn(10, 5))
 				}
 				cfg := llm.Config{
-					Models: map[string]llm.ModelConfig{"primary": model(primary), "fallback": model(fb)},
-					Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "primary", Fallbacks: []string{"fallback"}}},
+					Budgets: testBudgets,
+					Models:  map[string]llm.ModelConfig{"primary": model(primary), "fallback": model(fb)},
+					Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "primary", Fallbacks: []string{"fallback"}}},
 				}
 				h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(tier, contracts.RolePlanner)}, 100000)
 
@@ -375,6 +392,7 @@ func TestDisallowedFallbackIsNotSkipped(t *testing.T) {
 	f[llm.ProviderAnthropic] = faketest.New(faketest.Turn{Error: "unavailable"})
 	f[llm.ProviderOpenAI] = faketest.New(endTurn(1, 1))
 	cfg := llm.Config{
+		Budgets: testBudgets,
 		Models: map[string]llm.ModelConfig{
 			"primary": model(llm.ProviderAnthropic), "local": model(llm.ProviderOllama), "other": model(llm.ProviderOpenAI),
 		},
@@ -407,8 +425,9 @@ func TestFallbackOnlyOnUnavailable(t *testing.T) {
 			f[llm.ProviderAnthropic] = faketest.New(tc.primary)
 			f[llm.ProviderOpenAI] = faketest.New(endTurn(1, 1))
 			cfg := llm.Config{
-				Models: map[string]llm.ModelConfig{"a": model(llm.ProviderAnthropic), "b": model(llm.ProviderOpenAI)},
-				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "a", Fallbacks: []string{"b"}}},
+				Budgets: testBudgets,
+				Models:  map[string]llm.ModelConfig{"a": model(llm.ProviderAnthropic), "b": model(llm.ProviderOpenAI)},
+				Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "a", Fallbacks: []string{"b"}}},
 			}
 			h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, 100000)
 			_, err := complete(h, contracts.RolePlanner)
@@ -426,8 +445,9 @@ func TestEveryModelUnavailable(t *testing.T) {
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(faketest.Turn{Error: "unavailable"}, faketest.Turn{Error: "unavailable"})
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"a": model(llm.ProviderAnthropic), "b": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "a", Fallbacks: []string{"b"}}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"a": model(llm.ProviderAnthropic), "b": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "a", Fallbacks: []string{"b"}}},
 	}
 	h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, 100000)
 	if _, err := complete(h, contracts.RolePlanner); !errors.Is(err, llm.ErrUnavailable) {
@@ -458,15 +478,16 @@ func TestEmbedTierMatrix(t *testing.T) {
 				p := providers(fakes())
 				p[provider] = emb
 				cfg := llm.Config{
+					Budgets:   testBudgets,
 					Models:    map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic), "e": model(provider)},
 					Roles:     map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 					Embedding: &llm.EmbeddingRoute{Model: "e"},
 				}
-				r, err := llm.New(cfg, p, llm.StaticRepos{repoID: policy(tier, contracts.RolePlanner)}, &faketest.Costs{})
+				r, err := llm.New(cfg, p, llm.StaticRepos{repoID: policy(tier, contracts.RolePlanner)}, newCosts())
 				if err != nil {
 					t.Fatal(err)
 				}
-				s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
+				s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 1000})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -484,8 +505,9 @@ func TestBudget(t *testing.T) {
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(endTurn(900, 300), endTurn(1, 1))
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, 1000)
 
@@ -503,18 +525,18 @@ func TestBudget(t *testing.T) {
 	}
 }
 
-// TestRetriedScopeKeepsBudget: an activity spends most of its attempt's
-// budget and is retried. The retry's scope reads the spend back from the
-// ledger, so it is refused rather than handed a fresh budget.
+// TestRetriedScopeKeepsBudget: an activity spends its attempt's budget and
+// is retried. The retry's scope is checked against the ledger's spend for
+// the attempt, so it is refused rather than handed a fresh budget.
 func TestRetriedScopeKeepsBudget(t *testing.T) {
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(endTurn(600, 400), endTurn(1, 1))
-	costs := &faketest.Costs{}
+	costs := newCosts()
 	r, err := llm.New(plannerConfig(), providers(f), publicPlanner(), costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := llm.Scope{RepoID: repoID, AttemptID: attemptID, KeyPrefix: "wf/act", TokenBudget: 1000}
+	scope := llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "wf/act", TokenBudget: 1000}
 	req := contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: 400}
 
 	first, err := r.Scope(context.Background(), scope)
@@ -528,9 +550,6 @@ func TestRetriedScopeKeepsBudget(t *testing.T) {
 	retry, err := r.Scope(context.Background(), scope)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if got := retry.TokensUsed(); got != 1000 {
-		t.Fatalf("retried scope starts at %d tokens, want 1000 from the ledger", got)
 	}
 	if _, err := retry.Complete(context.Background(), req); !errors.Is(err, llm.ErrBudgetExceeded) {
 		t.Fatalf("got %v, want ErrBudgetExceeded", err)
@@ -620,26 +639,22 @@ func TestNegativeUsageDoesNotCreditBudget(t *testing.T) {
 			if got := h.scoped.TokensUsed(); got < 500 {
 				t.Fatalf("TokensUsed = %d after 500 were spent", got)
 			}
-			recorded, err := h.costs.AttemptTokens(context.Background(), attemptID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if recorded < 500 {
+			if recorded := h.costs.AttemptTokens(attemptID); recorded < 500 {
 				t.Fatalf("ledger holds %d tokens after 500 were spent", recorded)
 			}
 		})
 	}
 }
 
-// TestScopeFailsWhenLedgerUnreadable: a scope whose earlier spend cannot be
-// read is refused, rather than assumed to have spent nothing.
+// TestScopeFailsWhenLedgerUnreadable: a scope whose attribution cannot be
+// checked is refused, rather than assumed to be attributed.
 func TestScopeFailsWhenLedgerUnreadable(t *testing.T) {
 	boom := errors.New("database down")
 	r, err := llm.New(plannerConfig(), providers(fakes()), publicPlanner(), &faketest.Costs{Err: boom})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.Scope(context.Background(), llm.Scope{RepoID: repoID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10})
+	_, err = r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10})
 	if !errors.Is(err, boom) {
 		t.Fatalf("got %v, want the ledger's error", err)
 	}
@@ -663,8 +678,9 @@ func TestMaxTokensClamp(t *testing.T) {
 			f := fakes()
 			f[llm.ProviderAnthropic] = faketest.New(endTurn(1, 1))
 			cfg := llm.Config{
-				Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+				Budgets: testBudgets,
+				Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+				Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 			}
 			h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, tc.budget)
 			req := contracts.Request{RepoID: repoID, PromptVersion: "test-v1", Role: contracts.RolePlanner, Messages: userMessage("hi"), MaxTokens: tc.requested}
@@ -678,32 +694,6 @@ func TestMaxTokensClamp(t *testing.T) {
 	}
 }
 
-func TestScopeRequiresKeyAndBudget(t *testing.T) {
-	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
-	}
-	r, err := llm.New(cfg, providers(fakes()), llm.StaticRepos{}, &faketest.Costs{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range []llm.Scope{
-		{RepoID: repoID, TokenBudget: 10},
-		{RepoID: repoID, KeyPrefix: "k"},
-		{KeyPrefix: "k", TokenBudget: 10},
-		// IDs that are not UUIDs, which the ledger would refuse only after
-		// a reply had been billed.
-		{RepoID: "repo-1", KeyPrefix: "k", TokenBudget: 10},
-		{RepoID: repoID, FeatureRequestID: "issue-12", KeyPrefix: "k", TokenBudget: 10},
-		{RepoID: repoID, AttemptID: "wf-12/activity-3", KeyPrefix: "k", TokenBudget: 10},
-		{RepoID: repoID, AttemptID: "7a1d9e44x2b3c-4f5a-8e6d-0c1b2a3f4e5d", KeyPrefix: "k", TokenBudget: 10},
-	} {
-		if _, err := r.Scope(context.Background(), s); !errors.Is(err, llm.ErrInvalidScope) {
-			t.Errorf("Scope(%+v): got %v, want ErrInvalidScope", s, err)
-		}
-	}
-}
-
 func TestCostRecording(t *testing.T) {
 	f := fakes()
 	first := endTurn(1_000_000, 200_000)
@@ -712,6 +702,7 @@ func TestCostRecording(t *testing.T) {
 	second.Response.ID = "msg_b"
 	f[llm.ProviderAnthropic] = faketest.New(first, second)
 	cfg := llm.Config{
+		Budgets:   testBudgets,
 		Models:    map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
 		Roles:     map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 		RateLimit: llm.RateLimit{TokensPerMinute: 10_000_000},
@@ -765,8 +756,9 @@ func TestCachePricing(t *testing.T) {
 			f := fakes()
 			f[llm.ProviderAnthropic] = faketest.New(turn)
 			cfg := llm.Config{
-				Models: map[string]llm.ModelConfig{"m": m},
-				Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+				Budgets: testBudgets,
+				Models:  map[string]llm.ModelConfig{"m": m},
+				Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 			}
 			h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, 10_000_000)
 			resp, err := complete(h, contracts.RolePlanner)
@@ -788,18 +780,19 @@ func TestCachePricing(t *testing.T) {
 // recorded in full, not swallowed as a duplicate of the first run's keys.
 func TestRetriedActivityRecordsItsOwnSpend(t *testing.T) {
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(endTurn(5, 5), endTurn(500, 500))
-	costs := &faketest.Costs{}
+	costs := newCosts()
 	r, err := llm.New(cfg, providers(f), llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, costs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "wf/act", TokenBudget: 10_000})
+		s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "wf/act", TokenBudget: 10_000})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -820,8 +813,9 @@ func TestRetriedActivityRecordsItsOwnSpend(t *testing.T) {
 // retried write would, counts it once.
 func TestSameReplyRecordedOnce(t *testing.T) {
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	turn := endTurn(5, 5)
 	turn.Response.ID = "msg_same"
@@ -840,17 +834,20 @@ func TestSameReplyRecordedOnce(t *testing.T) {
 
 func TestCostRecordingFailureFailsTheCall(t *testing.T) {
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	f := fakes()
 	f[llm.ProviderAnthropic] = faketest.New(endTurn(5, 5))
 	boom := errors.New("database down")
-	r, err := llm.New(cfg, providers(f), llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, &faketest.Costs{Err: boom})
+	costs := newCosts()
+	costs.SettleErr = boom
+	r, err := llm.New(cfg, providers(f), llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner)}, costs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, KeyPrefix: "k", TokenBudget: 1000})
+	s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -858,12 +855,17 @@ func TestCostRecordingFailureFailsTheCall(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("got %v, want the recorder's error", err)
 	}
+	// The spend is unrecorded, so its reservation must go on counting.
+	if costs.Reservations() != 1 {
+		t.Fatalf("%d reservations after a failed settle, want 1", costs.Reservations())
+	}
 }
 
 func TestInvalidRequests(t *testing.T) {
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	repos := llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RolePlanner, contracts.RoleBrief)}
 	cases := []struct {
@@ -889,12 +891,13 @@ func TestInvalidRequests(t *testing.T) {
 
 func TestNewRequiresAdapterForEveryProvider(t *testing.T) {
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"m": model(llm.ProviderGoogle)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"m": model(llm.ProviderGoogle)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RolePlanner: {Model: "m"}},
 	}
 	p := providers(fakes())
 	delete(p, llm.ProviderGoogle)
-	if _, err := llm.New(cfg, p, llm.StaticRepos{}, &faketest.Costs{}); !errors.Is(err, llm.ErrMissingProvider) {
+	if _, err := llm.New(cfg, p, llm.StaticRepos{}, newCosts()); !errors.Is(err, llm.ErrMissingProvider) {
 		t.Fatalf("got %v, want ErrMissingProvider", err)
 	}
 }
@@ -909,8 +912,9 @@ func TestReplayMultiTurnThroughRouter(t *testing.T) {
 	f := fakes()
 	f[llm.ProviderAnthropic] = fake
 	cfg := llm.Config{
-		Models: map[string]llm.ModelConfig{"claude-fable-5-1": model(llm.ProviderAnthropic)},
-		Roles:  map[contracts.Role]llm.RoleRoute{contracts.RoleImplementer: {Model: "claude-fable-5-1"}},
+		Budgets: testBudgets,
+		Models:  map[string]llm.ModelConfig{"claude-fable-5-1": model(llm.ProviderAnthropic)},
+		Roles:   map[contracts.Role]llm.RoleRoute{contracts.RoleImplementer: {Model: "claude-fable-5-1"}},
 	}
 	h := newHarness(t, cfg, f, llm.StaticRepos{repoID: policy(contracts.TierPublic, contracts.RoleImplementer)}, 100000)
 

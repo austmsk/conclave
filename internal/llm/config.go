@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 
@@ -34,6 +35,9 @@ import (
 //	rate_limit:
 //	  requests_per_minute: 20
 //	  tokens_per_minute: 300000
+//	budgets:
+//	  feature_request_tokens: 5000000
+//	  monthly_usd: 200
 //
 // Prices are per million tokens and must be copied from the provider's
 // current price list.
@@ -42,6 +46,34 @@ type Config struct {
 	Roles     map[contracts.Role]RoleRoute `yaml:"roles"`
 	Embedding *EmbeddingRoute              `yaml:"embedding"`
 	RateLimit RateLimit                    `yaml:"rate_limit"`
+	Budgets   Budgets                      `yaml:"budgets"`
+}
+
+// Budgets are the owner's platform caps (FR-SEC9). Each attempt's own token
+// budget is set per scope; these bound everything above it. Neither has a
+// default: a missing cap is a configuration error, never an unlimited one.
+type Budgets struct {
+	// FeatureRequestTokens caps input plus output tokens over every call
+	// made for one feature request, in all its attempts and outside them.
+	FeatureRequestTokens int `yaml:"feature_request_tokens"`
+	// MonthlyUSD caps spend across all repositories in a UTC calendar
+	// month.
+	MonthlyUSD float64 `yaml:"monthly_usd"`
+}
+
+// validate requires both caps. A placeholder (-1) or a missing key (0)
+// fails here with the key named, so the owner knows what to set.
+func (b Budgets) validate() error {
+	if b.FeatureRequestTokens <= 0 {
+		return fmt.Errorf("%w: budgets.feature_request_tokens is %d: set the per-feature-request token cap to a positive number",
+			ErrInvalidConfig, b.FeatureRequestTokens)
+	}
+	// Written as a negation so that NaN fails too.
+	if !(b.MonthlyUSD > 0) {
+		return fmt.Errorf("%w: budgets.monthly_usd is %v: set the monthly spending cap to a positive number of US dollars",
+			ErrInvalidConfig, b.MonthlyUSD)
+	}
+	return nil
 }
 
 // RateLimit caps how fast one router, and so one worker process, sends
@@ -151,6 +183,9 @@ func (c Config) Validate() error {
 	if c.RateLimit.RequestsPerMinute < 0 || c.RateLimit.TokensPerMinute < 0 {
 		return fmt.Errorf("%w: rate limits must not be negative", ErrInvalidConfig)
 	}
+	if err := c.Budgets.validate(); err != nil {
+		return err
+	}
 	if c.Embedding != nil {
 		if _, ok := c.Models[c.Embedding.Model]; !ok {
 			return fmt.Errorf("%w: embedding model %q is not configured", ErrInvalidConfig, c.Embedding.Model)
@@ -171,8 +206,15 @@ func validateModel(id string, m ModelConfig) error {
 	if !slices.Contains(knownProviders, m.Provider) {
 		return fmt.Errorf("unknown provider %q", m.Provider)
 	}
-	if m.InputUSDPerMTok < 0 || m.OutputUSDPerMTok < 0 || m.CacheWriteUSDPerMTok < 0 || m.CacheReadUSDPerMTok < 0 {
-		return errors.New("prices must not be negative")
+	for _, price := range []float64{m.InputUSDPerMTok, m.OutputUSDPerMTok, m.CacheWriteUSDPerMTok, m.CacheReadUSDPerMTok} {
+		// NaN compares false with everything, so a NaN price would
+		// pass a sign check and make every monthly-cap comparison false.
+		if math.IsNaN(price) || math.IsInf(price, 0) {
+			return errors.New("prices must be finite numbers")
+		}
+		if price < 0 {
+			return errors.New("prices must not be negative")
+		}
 	}
 	// A hosted model priced at zero would record every call as free, and
 	// a USD cap summing cost_events would never fire. Only models on the

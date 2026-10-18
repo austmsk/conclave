@@ -11,11 +11,14 @@
 // configuration: an owner-approved list per repository, which may name only
 // known providers.
 //
-// Requests are served by a Scoped router, bound to one repository, which
-// carries a token budget and an idempotency key prefix: every call the
-// provider bills is charged to the budget and recorded in the cost ledger,
-// including calls that end in an error, and neither can be skipped. Errors
-// a retry cannot fix are reported by IsPermanent.
+// Requests are served by a Scoped router, bound to one repository and
+// attributed to a feature request and, for attempt work, an attempt. Every
+// call reserves its claim in the cost ledger against the three FR-SEC9
+// caps (the attempt's token budget, the feature request's token cap, and
+// the monthly USD cap) before a provider is reached, and every call the
+// provider bills is recorded, including calls that end in an error. A cap
+// refusal is a BudgetError naming the cap. Errors a retry cannot fix are
+// reported by IsPermanent.
 //
 // In production, DirectoryRepos takes each repository's tier, role
 // allowlist, and sensitive providers from the owner's configuration, read

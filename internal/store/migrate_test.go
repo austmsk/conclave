@@ -9,7 +9,7 @@ import (
 )
 
 var wantTables = []string{
-	"attempts", "cost_events", "decisions", "feature_requests", "gate_results",
+	"attempts", "budget_reservations", "cost_events", "decisions", "feature_requests", "gate_results",
 	"goose_db_version", "plans", "repos", "state_transitions", "tasks",
 }
 

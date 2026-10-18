@@ -4,22 +4,39 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"time"
 
 	"github.com/austmsk/conclave/internal/contracts"
 )
 
-// CostLedger is the boundary to the cost_events table: it records one event
-// per billable model call and reports what an attempt has already spent.
+// CostLedger is the boundary to recorded and reserved spend. It enforces
+// the FR-SEC9 caps across every scope and every process: each model call
+// reserves its claim before it is sent and settles it after, and the
+// reservation is what a concurrent scope sees while the call is in flight.
 type CostLedger interface {
-	// RecordCost persists ev. A second event with the same IdempotencyKey
-	// must be ignored, not rejected (RL-2), so a reply recorded twice, for
-	// example by a retried write, is counted once and the retry succeeds.
-	RecordCost(ctx context.Context, ev contracts.CostEvent) error
+	// Attributed reports whether the feature request belongs to the
+	// repository and, when attemptID is not empty, the attempt to the
+	// feature request. A scope is refused otherwise, because spend charged
+	// to the wrong feature request would dodge its cap.
+	Attributed(ctx context.Context, repoID, featureRequestID, attemptID string) (bool, error)
 
-	// AttemptTokens is the input plus output tokens recorded for an
-	// attempt. A scope seeds its budget from it, so a retried activity does
-	// not get a fresh budget.
-	AttemptTokens(ctx context.Context, attemptID string) (int, error)
+	// Reserve calls decide with the spend settled and reserved so far for
+	// the attempt (none when attemptID is empty), the feature request, and
+	// the current UTC month, and stores the claim it returns as a
+	// reservation that expires after ttl unless settled first. Every
+	// Reserve is serialized with every other, so two calls cannot both
+	// pass a cap on the same headroom. An error from decide is returned
+	// unchanged and nothing is reserved. decide must not block.
+	Reserve(ctx context.Context, attemptID, featureRequestID string, ttl time.Duration, decide func(Spend) (Claim, error)) (string, error)
+
+	// Settle records ev and deletes the reservation atomically. An empty
+	// reservationID records spend that was never reserved. A second
+	// event with the same IdempotencyKey must be ignored, not rejected
+	// (RL-2), so a retried Settle counts the spend once and succeeds.
+	Settle(ctx context.Context, reservationID string, ev contracts.CostEvent) error
+
+	// Release deletes a reservation whose call billed nothing.
+	Release(ctx context.Context, reservationID string) error
 }
 
 // costUSD prices a call from the model's configured per-million-token rates.
