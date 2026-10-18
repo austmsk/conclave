@@ -25,3 +25,7 @@ A guide page can link to a decision record, but it doesn't replace one.
 Each ticket writes its page in its own pull request (`CLAUDE.md`, `/implement-ticket`), and review fixes keep it in step with the code. Copy [`tickets/_template.md`](tickets/_template.md), and add the ticket to [`tickets/README.md`](tickets/README.md). If the ticket changed how a request flows, update the matching step in `overview.md`.
 
 A page describes the code on `main`. If the code and a page disagree, the code is right, and the page needs fixing.
+
+## Private notes
+
+Personal notes go in `docs/notes/`, which git ignores. Nothing there is pushed, and nothing there is backed up by the repository either. The repository is public, so anything you don't want published belongs there, not in a tracked folder.

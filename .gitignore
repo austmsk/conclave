@@ -21,6 +21,10 @@ conclave-worker
 coverage.*
 /vendor/
 
+# Personal study notes. Kept on disk only; never pushed. Everything else
+# under docs/ is tracked, because tickets and agents read it.
+/docs/notes/
+
 # Local runtime state
 /artifacts/
 /tmp/
