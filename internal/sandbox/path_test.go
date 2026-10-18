@@ -1,11 +1,11 @@
-package docker
+package sandbox
 
 import (
 	"errors"
 	"testing"
 )
 
-func TestWorkspacePathRejectsEscapes(t *testing.T) {
+func TestCheckPathRejectsEscapes(t *testing.T) {
 	rejected := []struct{ name, path string }{
 		{"empty", ""},
 		{"absolute", "/etc/passwd"},
@@ -32,14 +32,14 @@ func TestWorkspacePathRejectsEscapes(t *testing.T) {
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := workspacePath(tc.path); !errors.Is(err, ErrInvalidPath) {
-				t.Fatalf("workspacePath(%q) = %v, want ErrInvalidPath", tc.path, err)
+			if err := CheckPath(tc.path); !errors.Is(err, ErrInvalidPath) {
+				t.Fatalf("CheckPath(%q) = %v, want ErrInvalidPath", tc.path, err)
 			}
 		})
 	}
 }
 
-func TestWorkspacePathAcceptsOrdinaryPaths(t *testing.T) {
+func TestCheckPathAcceptsOrdinaryPaths(t *testing.T) {
 	accepted := []string{
 		"README.md",
 		"src/tally.go",
@@ -59,12 +59,8 @@ func TestWorkspacePathAcceptsOrdinaryPaths(t *testing.T) {
 		".gi*/config",
 	}
 	for _, p := range accepted {
-		got, err := workspacePath(p)
-		if err != nil {
-			t.Errorf("workspacePath(%q) = %v, want accepted", p, err)
-		}
-		if got != p {
-			t.Errorf("workspacePath(%q) rewrote the path to %q", p, got)
+		if err := CheckPath(p); err != nil {
+			t.Errorf("CheckPath(%q) = %v, want accepted", p, err)
 		}
 	}
 }

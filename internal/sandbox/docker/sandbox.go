@@ -14,6 +14,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/austmsk/conclave/internal/contracts"
+	"github.com/austmsk/conclave/internal/sandbox"
 )
 
 var (
@@ -21,12 +22,14 @@ var (
 	ErrClosed = errors.New("sandbox is closed")
 	// ErrExpired reports use of a sandbox past its Limits.Timeout.
 	ErrExpired = errors.New("sandbox lifetime exceeded")
-	// ErrOutputTooLarge reports a command whose output passed
-	// Config.MaxOutputBytes; the command was killed.
-	ErrOutputTooLarge = errors.New("command output exceeds limit")
-	// ErrFileTooLarge reports a ReadFile of a file larger than
-	// Config.MaxOutputBytes. Nothing is killed.
-	ErrFileTooLarge = errors.New("file exceeds read limit")
+	// ErrOutputTooLarge is sandbox.ErrOutputTooLarge: a command whose
+	// output passed Config.MaxOutputBytes; the command was killed.
+	ErrOutputTooLarge = sandbox.ErrOutputTooLarge
+	// ErrFileTooLarge is sandbox.ErrFileTooLarge: a ReadFile of a file
+	// larger than Config.MaxOutputBytes. Nothing is killed.
+	ErrFileTooLarge = sandbox.ErrFileTooLarge
+	// ErrNotFile is sandbox.ErrNotFile.
+	ErrNotFile = sandbox.ErrNotFile
 	// ErrKilled reports that processes did not stop when told to and the
 	// container was killed outright. The sandbox is unusable afterwards.
 	ErrKilled = errors.New("sandbox killed: processes did not stop")
@@ -184,7 +187,9 @@ func fileScriptError(res contracts.ExecResult) error {
 		return fmt.Errorf("%w: %s", ErrInvalidPath, msg)
 	case exitTooLarge:
 		return fmt.Errorf("%w: %s", ErrFileTooLarge, msg)
-	case exitNotFile, exitMkdir:
+	case exitNotFile:
+		return fmt.Errorf("%w: %s", ErrNotFile, msg)
+	case exitMkdir:
 		return errors.New(msg)
 	default:
 		return fmt.Errorf("exit %d: %s", res.ExitCode, msg)

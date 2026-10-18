@@ -166,7 +166,7 @@ func TestExecTimeoutKillsTheProcessTree(t *testing.T) {
 func TestExecOutputCapKillsTheCommand(t *testing.T) {
 	h := newHarness(t)
 	spec := h.spec(t, contracts.NetworkNone)
-	p, err := docker.New(h.ctx, docker.Config{Namespace: h.namespace, MaxOutputBytes: 64 << 10})
+	p, err := docker.New(h.ctx, docker.Config{Namespace: h.Namespace, MaxOutputBytes: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestExecRunsBinariesFromWritableMounts(t *testing.T) {
 func TestReadFileTooLargeIsAPlainError(t *testing.T) {
 	h := newHarness(t)
 	spec := h.spec(t, contracts.NetworkNone)
-	p, err := docker.New(h.ctx, docker.Config{Namespace: h.namespace, MaxOutputBytes: 64 << 10})
+	p, err := docker.New(h.ctx, docker.Config{Namespace: h.Namespace, MaxOutputBytes: 64 << 10})
 	if err != nil {
 		t.Fatal(err)
 	}
