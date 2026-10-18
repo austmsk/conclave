@@ -128,7 +128,7 @@ Every repository has a tier, set in the platform repository's configuration. A t
 
 | ID | Threat | Mitigations | Requirements |
 |---|---|---|---|
-| D1 | Runaway agent loops or spend | Step limits; token budgets; per-attempt, per-feature, and monthly caps that pause work | FR-SEC9 |
+| D1 | Runaway agent loops or spend | Step limits; token budgets; per-attempt, per-feature, and monthly caps that stop work and route it to `needs_attention` | FR-SEC9 |
 | D2 | Sandbox resource exhaustion (fork bombs, disk filling) | Process, memory, CPU, disk, and time limits; orphan reaper | FR-SEC4, NFR-R3 |
 | D3 | Webhook flooding | Immediate acknowledgment; events from non-owners dropped early; per-sender rate limiting | FR-SEC1, NFR-P1 |
 
