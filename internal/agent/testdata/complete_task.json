@@ -1,0 +1,34 @@
+{
+  "turns": [
+    {
+      "expect": {"model": "fake-model", "messages": 1},
+      "response": {
+        "text": "I'll read the counter, then add a test for it.",
+        "tool_calls": [
+          {"id": "call_1", "name": "read_file", "arguments": {"path": "tally/count.go"}},
+          {"id": "call_2", "name": "write_file", "arguments": {"path": "tally/count_test.go", "content": "package tally\n\nfunc TestCountPerPrecinct(t *testing.T) {}\n"}}
+        ],
+        "stop_reason": "tool_use",
+        "input_tokens": 1200,
+        "output_tokens": 150
+      }
+    },
+    {
+      "expect": {"model": "fake-model", "messages": 3},
+      "response": {
+        "tool_calls": [
+          {"id": "call_3", "name": "finish", "arguments": {
+            "summary": "Count ballots per precinct",
+            "files_changed": ["tally/count_test.go"],
+            "tests_added": ["TestCountPerPrecinct"],
+            "decisions": [],
+            "uncertainties": []
+          }}
+        ],
+        "stop_reason": "tool_use",
+        "input_tokens": 1500,
+        "output_tokens": 90
+      }
+    }
+  ]
+}
