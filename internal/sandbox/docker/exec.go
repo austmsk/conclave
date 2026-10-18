@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"time"
 
@@ -23,11 +24,15 @@ type execSpec struct {
 }
 
 // run executes one command and captures its output. Callers hold s.ops.
-func (s *Sandbox) run(ctx context.Context, spec execSpec) (contracts.ExecResult, error) {
+// However the command ends, every process it started is killed before run
+// returns, and so before s.ops is released: nothing a command leaves
+// behind can act between it and the next one.
+func (s *Sandbox) run(ctx context.Context, spec execSpec) (_ contracts.ExecResult, err error) {
 	timeout, err := s.effectiveTimeout(spec.timeout)
 	if err != nil {
 		return contracts.ExecResult{}, err
 	}
+	defer func() { err = s.settle(ctx, err) }()
 	execID, err := s.cli.ExecCreate(ctx, s.id, client.ExecCreateOptions{
 		User:         strconv.Itoa(s.uid) + ":" + strconv.Itoa(s.gid),
 		AttachStdin:  spec.stdin != nil,
@@ -148,32 +153,163 @@ func (s *Sandbox) exitCode(ctx context.Context, execID string) (int, error) {
 	}
 }
 
-// initProcesses is what a quiet container shows: the init shell and its
-// sleep child.
-const initProcesses = 2
+// Kill confirmation. The first look comes quickly so an ordinary command
+// pays little for it; later looks back off, and a round that ends with
+// processes still present signals again.
+const (
+	killRounds    = 4
+	killPolls     = 6
+	firstPoll     = 10 * time.Millisecond
+	settleTimeout = 30 * time.Second
+)
+
+// initSleep is the command line of the init's own child (see initScript).
+const initSleep = "sleep 3600"
+
+// settle runs after every command, however it ended: it kills whatever
+// the command left running and folds a failure to do so into the
+// command's own error. The caller's cancellation cannot cut it short.
+func (s *Sandbox) settle(ctx context.Context, err error) error {
+	if s.unusable() {
+		return err
+	}
+	kctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
+	killErr := s.killAll(kctx)
+	switch {
+	case killErr == nil:
+		return err
+	case err == nil:
+		return killErr
+	case errors.Is(err, ErrClosed) && errors.Is(killErr, ErrClosed):
+		// Close removed the container under both; say so once.
+		return err
+	default:
+		return errors.Join(err, killErr)
+	}
+}
 
 // killAll signals the init to kill every other process, then confirms
-// through the daemon that only the init remains. If the init does not
-// respond (it may have been stopped or replaced), the container is killed
-// and the sandbox marked dead.
+// through the daemon that only the init remains. The signal is always
+// sent: a process count taken beforehand proves nothing, since a stray
+// can kill the init's sleep and take its place in the count. The init
+// answers the signal by killing everything, its own sleep included, and
+// then starting a new sleep, so confirmation needs a sleep killAll has
+// not seen before and nothing else. If the init does not respond (it may
+// have been stopped or replaced), the container is killed and the
+// sandbox marked dead. Callers hold s.ops.
 func (s *Sandbox) killAll(ctx context.Context) error {
-	for attempt := 1; attempt <= 6; attempt++ {
+	seen, err := s.baseline(ctx)
+	if err != nil {
+		return err
+	}
+	for range killRounds {
 		if _, err := s.cli.ContainerKill(ctx, s.id, client.ContainerKillOptions{Signal: "SIGUSR1"}); err != nil {
 			return s.closedOr(fmt.Errorf("signalling sandbox init: %w", err))
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt) * 100 * time.Millisecond):
-		}
-		top, err := s.cli.ContainerTop(ctx, s.id, client.ContainerTopOptions{})
+		view, err := s.awaitQuiet(ctx, seen)
 		if err != nil {
-			return s.closedOr(fmt.Errorf("listing sandbox processes: %w", err))
+			return err
 		}
-		if len(top.Processes) <= initProcesses {
+		if view.quiet(seen) {
+			s.lastSleep = view.sleeps[0]
 			return nil
 		}
+		seen = append(seen, view.sleeps...)
 	}
+	return s.killContainer(ctx)
+}
+
+// baseline returns the init's sleep children as they were before the
+// signal: the one the last confirmed kill left or, on the first kill,
+// whatever the daemon lists now. It also records the init's PID.
+func (s *Sandbox) baseline(ctx context.Context) ([]string, error) {
+	if s.initPID == "" {
+		insp, err := s.cli.ContainerInspect(ctx, s.id, client.ContainerInspectOptions{})
+		if err != nil {
+			return nil, s.closedOr(fmt.Errorf("inspecting sandbox init: %w", err))
+		}
+		if insp.Container.State == nil || insp.Container.State.Pid == 0 {
+			return nil, errors.New("sandbox init is not running")
+		}
+		s.initPID = strconv.Itoa(insp.Container.State.Pid)
+	}
+	if s.lastSleep != "" {
+		return []string{s.lastSleep}, nil
+	}
+	view, err := s.processes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return view.sleeps, nil
+}
+
+// awaitQuiet polls the process list until it is quiet or the round's
+// polls run out, and returns the last list seen.
+func (s *Sandbox) awaitQuiet(ctx context.Context, seen []string) (procView, error) {
+	var view procView
+	wait := firstPoll
+	for range killPolls {
+		select {
+		case <-ctx.Done():
+			return view, ctx.Err()
+		case <-time.After(wait):
+		}
+		wait *= 2
+		var err error
+		if view, err = s.processes(ctx); err != nil {
+			return view, err
+		}
+		if view.quiet(seen) {
+			return view, nil
+		}
+	}
+	return view, nil
+}
+
+// procView is the container's process list as killAll reads it.
+type procView struct {
+	initSeen bool
+	sleeps   []string // PIDs of the init's children running initSleep
+	strays   int      // every other process
+}
+
+// quiet reports that the init and exactly one sleep remain, and that the
+// sleep is new: the init has run its kill since the signal and restarted.
+func (v procView) quiet(seen []string) bool {
+	return v.initSeen && v.strays == 0 && len(v.sleeps) == 1 && !slices.Contains(seen, v.sleeps[0])
+}
+
+// processes lists the container's processes through the daemon, which
+// reports host PIDs and cannot be misled by anything inside the container.
+func (s *Sandbox) processes(ctx context.Context) (procView, error) {
+	top, err := s.cli.ContainerTop(ctx, s.id, client.ContainerTopOptions{})
+	if err != nil {
+		return procView{}, s.closedOr(fmt.Errorf("listing sandbox processes: %w", err))
+	}
+	pid, ppid, cmd := slices.Index(top.Titles, "PID"), slices.Index(top.Titles, "PPID"), slices.Index(top.Titles, "CMD")
+	if pid < 0 || ppid < 0 || cmd < 0 {
+		return procView{}, fmt.Errorf("listing sandbox processes: unexpected columns %q", top.Titles)
+	}
+	var v procView
+	for _, p := range top.Processes {
+		if len(p) != len(top.Titles) {
+			return procView{}, fmt.Errorf("listing sandbox processes: malformed row %q", p)
+		}
+		switch {
+		case p[pid] == s.initPID:
+			v.initSeen = true
+		case p[ppid] == s.initPID && p[cmd] == initSleep:
+			v.sleeps = append(v.sleeps, p[pid])
+		default:
+			v.strays++
+		}
+	}
+	return v, nil
+}
+
+// killContainer is killAll's last resort; the sandbox is unusable after.
+func (s *Sandbox) killContainer(ctx context.Context) error {
 	s.life.Lock()
 	s.killed = true
 	s.life.Unlock()
