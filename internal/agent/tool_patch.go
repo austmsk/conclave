@@ -95,7 +95,7 @@ func newApplyPatch(env toolEnv) contracts.Tool { return &applyPatch{env: env} }
 func (t *applyPatch) Name() contracts.ToolName { return contracts.ToolApplyPatch }
 
 func (t *applyPatch) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string","description":"A unified diff, as git diff writes it: paths as a/<path> and b/<path>, relative to the repository root. At most 64 KiB. Binary patches, symlinks, submodules and quoted paths are refused. The patch is checked as a whole and applied all or nothing."}},"required":["patch"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","description":"Apply a unified diff to the workspace. Every path is validated before git sees the patch, and git's own view of it is cross-checked; anything that does not match is refused and nothing is applied.","properties":{"patch":{"type":"string","description":"A unified diff, as git diff writes it: paths as a/<path> and b/<path>, relative to the repository root. At most 64 KiB. Binary patches, symlinks, submodules and quoted paths are refused. The patch is checked as a whole and applied all or nothing."}},"required":["patch"],"additionalProperties":false}`)
 }
 
 // Execute validates the patch's headers, checks git's reading of the
