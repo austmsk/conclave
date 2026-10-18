@@ -28,8 +28,9 @@ const callTokens = 101
 // 100 output tokens at $15 per million.
 const callUSD = (1*3 + 100*15) / 1e6
 
-// appPool connects as the application role on every connection.
-func appPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
+// appPool connects as the application role on every connection, at the
+// given default isolation level.
+func appPool(t *testing.T, ctx context.Context, isolation string) *pgxpool.Pool {
 	t.Helper()
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -37,6 +38,9 @@ func appPool(t *testing.T, ctx context.Context) *pgxpool.Pool {
 	}
 	cfg.MaxConns = 24
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if _, err := conn.Exec(ctx, `SELECT set_config('default_transaction_isolation', $1, false)`, isolation); err != nil {
+			return err
+		}
 		_, err := conn.Exec(ctx, `SET ROLE conclave_app`)
 		return err
 	}
@@ -140,6 +144,11 @@ func (p *billingProvider) Complete(ctx context.Context, req llm.ProviderRequest)
 // given chains' repositories.
 func budgetRouter(t *testing.T, ctx context.Context, p llm.Provider, budgets llm.Budgets, chains ...chain) *llm.Router {
 	t.Helper()
+	return budgetRouterOn(t, appPool(t, ctx, "read committed"), p, budgets, chains...)
+}
+
+func budgetRouterOn(t *testing.T, db store.TxDB, p llm.Provider, budgets llm.Budgets, chains ...chain) *llm.Router {
+	t.Helper()
 	cfg := llm.Config{
 		Models: map[string]llm.ModelConfig{"m": {
 			Provider: llm.ProviderAnthropic, InputUSDPerMTok: 3, OutputUSDPerMTok: 15, MaxOutputTokens: 4096,
@@ -152,7 +161,7 @@ func budgetRouter(t *testing.T, ctx context.Context, p llm.Provider, budgets llm
 	for _, c := range chains {
 		repos[c.repo] = llm.RepoPolicy{Tier: contracts.TierPublic, Roles: []contracts.Role{contracts.RolePlanner}}
 	}
-	r, err := llm.New(cfg, map[string]llm.Provider{llm.ProviderAnthropic: p}, repos, store.NewCostLedger(appPool(t, ctx)))
+	r, err := llm.New(cfg, map[string]llm.Provider{llm.ProviderAnthropic: p}, repos, store.NewCostLedger(db))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,11 +264,20 @@ func TestInFlightCallCountsAcrossScopes(t *testing.T) {
 }
 
 // TestConcurrentScopesStayInAttemptBudget: two scopes for one attempt send
-// twenty calls at once against a budget of eight. Exactly eight run.
+// twenty calls at once against a budget of eight. Exactly eight run. It
+// runs again with the server defaulting to REPEATABLE READ, where a
+// reservation that inherited the default would read spend from before the
+// lock was granted, and so overspend.
 func TestConcurrentScopesStayInAttemptBudget(t *testing.T) {
+	for _, isolation := range []string{"read committed", "repeatable read", "serializable"} {
+		t.Run(isolation, func(t *testing.T) { attemptBudgetCase(t, isolation) })
+	}
+}
+
+func attemptBudgetCase(t *testing.T, isolation string) {
 	ctx := requireDB(t)
 	c := committedChain(t, ctx, 1)
-	r := budgetRouter(t, ctx, &billingProvider{}, llm.Budgets{FeatureRequestTokens: 1 << 40, MonthlyUSD: 1e9}, c)
+	r := budgetRouterOn(t, appPool(t, ctx, isolation), &billingProvider{}, llm.Budgets{FeatureRequestTokens: 1 << 40, MonthlyUSD: 1e9}, c)
 	const fits = 8
 	scopes := []*llm.Scoped{
 		attemptScope(t, ctx, r, c, c.attempts[0], "wf/act-1", fits*callTokens),

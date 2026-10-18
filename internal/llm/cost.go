@@ -29,7 +29,8 @@ type CostLedger interface {
 	// unchanged and nothing is reserved. decide must not block.
 	Reserve(ctx context.Context, attemptID, featureRequestID string, ttl time.Duration, decide func(Spend) (Claim, error)) (string, error)
 
-	// Settle records ev and deletes the reservation atomically. A second
+	// Settle records ev and deletes the reservation atomically. An empty
+	// reservationID records spend that was never reserved. A second
 	// event with the same IdempotencyKey must be ignored, not rejected
 	// (RL-2), so a retried Settle counts the spend once and succeeds.
 	Settle(ctx context.Context, reservationID string, ev contracts.CostEvent) error

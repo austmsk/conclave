@@ -56,9 +56,23 @@ type Scoped struct {
 
 var _ contracts.Router = (*Scoped)(nil)
 
-// settleTimeout bounds recording a billed reply once the caller's context
-// is gone. The reply is paid for, so it is recorded even then.
+// settleTimeout is the least time recording a billed reply is given. The
+// reply is paid for, so it is recorded even when the caller's context has
+// been cancelled.
 const settleTimeout = 30 * time.Second
+
+// settleContext detaches ctx from its cancellation and gives it the later
+// of the caller's deadline and settleTimeout from now. Imposing only the
+// short timeout would cut a caller's longer deadline down: a database slow
+// for that long would then lose the billed call from the ledger, and its
+// spend would stop counting when the reservation expired.
+func settleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) > settleTimeout {
+		return context.WithDeadline(detached, deadline)
+	}
+	return context.WithTimeout(detached, settleTimeout)
+}
 
 // Scope returns a router bound to one attempt. The repository, feature
 // request, attempt, key prefix, and a positive budget are all required, and
@@ -177,7 +191,7 @@ func (s *Scoped) TokensUsed() int {
 func (s *Scoped) reserve(ctx context.Context, m ModelConfig, input, wantOutput int) (string, int, error) {
 	a := ask{model: m, input: input, wantOutput: wantOutput, attemptBudget: s.scope.TokenBudget, budgets: s.r.cfg.Budgets}
 	var output int
-	id, err := s.r.costs.Reserve(ctx, s.scope.AttemptID, s.scope.FeatureRequestID, reservationTTL,
+	id, err := s.r.costs.Reserve(ctx, s.scope.AttemptID, s.scope.FeatureRequestID, ReservationTTL,
 		func(sp Spend) (Claim, error) {
 			out, c, err := a.decide(sp)
 			output = out
@@ -197,7 +211,7 @@ func (s *Scoped) reserve(ctx context.Context, m ModelConfig, input, wantOutput i
 // for the ledger to stamp, so the router reads no clock and stays usable
 // from code that must be deterministic.
 func (s *Scoped) settle(ctx context.Context, reservationID string, role contracts.Role, modelID, provider, replyID string, usage contracts.Usage) error {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	ctx, cancel := settleContext(ctx)
 	defer cancel()
 	tokens := usage.InputTokens + usage.OutputTokens
 	if tokens == 0 && usage.CostUSD == 0 {

@@ -43,20 +43,24 @@ func (l *CostLedger) Attributed(ctx context.Context, repoID, featureRequestID, a
 	return ok, nil
 }
 
-// Reserve runs one short transaction: it takes the budget lock, reads the
-// spend settled and reserved against each cap, asks decide for the claim,
-// and inserts it as a reservation that expires ttl after now on the
-// database clock. While the lock is held no other Reserve can read the same
-// headroom, and a transaction that held it before has committed, so its
-// reservation is visible here. decide's error is returned unchanged, and
-// nothing is reserved.
+// Reserve runs one short transaction: it takes the budget lock, deletes
+// expired reservations, reads the spend settled and reserved against each
+// cap, asks decide for the claim, and inserts it as a reservation that
+// expires ttl after now on the database clock. While the lock is held no
+// other Reserve can read the same headroom, and a transaction that held it
+// before has committed, so its reservation is visible here. decide's error
+// is returned unchanged, and nothing is reserved.
+//
+// That visibility holds only at READ COMMITTED, where each statement takes
+// a fresh snapshot. At REPEATABLE READ or SERIALIZABLE the snapshot is taken
+// by the transaction's first statement, before the lock is granted, so a
+// Reserve that waited on the lock would read the spend as it was before
+// the previous holder committed, and two calls would be granted the same
+// headroom. Reserve therefore opens its transaction at READ COMMITTED
+// whatever the server's default, and refuses to run at any other level,
+// which it can meet when db is a transaction it can only nest inside.
 func (l *CostLedger) Reserve(ctx context.Context, attemptID, featureRequestID string, ttl time.Duration, decide func(llm.Spend) (llm.Claim, error)) (string, error) {
-	if attemptID != "" {
-		if err := checkUUID("attempt ID", attemptID); err != nil {
-			return "", fmt.Errorf("reserving budget: %w", err)
-		}
-	}
-	if err := checkUUID("feature request ID", featureRequestID); err != nil {
+	if err := checkSpendIDs(attemptID, featureRequestID); err != nil {
 		return "", fmt.Errorf("reserving budget: %w", err)
 	}
 	if ttl <= 0 {
@@ -64,9 +68,9 @@ func (l *CostLedger) Reserve(ctx context.Context, attemptID, featureRequestID st
 	}
 	var id string
 	var refused error
-	err := pgx.BeginFunc(ctx, l.db, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, budgetLockKey); err != nil {
-			return fmt.Errorf("taking the budget lock: %w", err)
+	err := l.readCommitted(ctx, func(tx pgx.Tx) error {
+		if err := lockBudgets(ctx, tx); err != nil {
+			return err
 		}
 		sp, err := readSpend(ctx, tx, attemptID, featureRequestID)
 		if err != nil {
@@ -89,6 +93,66 @@ func (l *CostLedger) Reserve(ctx context.Context, attemptID, featureRequestID st
 	return id, nil
 }
 
+// Spend reports the spend settled and reserved against each cap for the
+// attempt (none when attemptID is empty), the feature request, and the
+// current UTC month, and reserves nothing. It takes no lock, so the figures
+// may be stale by the time the caller acts on them: admitting a model call
+// goes through Reserve, never through this.
+func (l *CostLedger) Spend(ctx context.Context, attemptID, featureRequestID string) (llm.Spend, error) {
+	if err := checkSpendIDs(attemptID, featureRequestID); err != nil {
+		return llm.Spend{}, fmt.Errorf("reading spend: %w", err)
+	}
+	sp, err := readSpend(ctx, l.db, attemptID, featureRequestID)
+	if err != nil {
+		return llm.Spend{}, fmt.Errorf("reading spend for feature request %s: %w", featureRequestID, err)
+	}
+	return sp, nil
+}
+
+func checkSpendIDs(attemptID, featureRequestID string) error {
+	if attemptID != "" {
+		if err := checkUUID("attempt ID", attemptID); err != nil {
+			return err
+		}
+	}
+	return checkUUID("feature request ID", featureRequestID)
+}
+
+// readCommitted runs fn in a READ COMMITTED transaction. A pool or a
+// connection opens one at that level. A transaction can only be nested
+// inside, as a savepoint at the outer level, so fn must check the level
+// itself; lockBudgets does.
+func (l *CostLedger) readCommitted(ctx context.Context, fn func(pgx.Tx) error) error {
+	type txBeginner interface {
+		BeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
+	}
+	if b, ok := l.db.(txBeginner); ok {
+		return pgx.BeginTxFunc(ctx, b, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, fn)
+	}
+	return pgx.BeginFunc(ctx, l.db, fn)
+}
+
+// lockBudgets refuses a transaction that is not at READ COMMITTED, takes
+// the budget lock, and deletes the reservations that have expired. Under
+// the lock the delete costs nothing extra, and it keeps the table, which
+// every reservation sums, at the calls actually in flight.
+func lockBudgets(ctx context.Context, tx pgx.Tx) error {
+	var level string
+	if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_isolation')`).Scan(&level); err != nil {
+		return fmt.Errorf("reading the isolation level: %w", err)
+	}
+	if level != "read committed" {
+		return fmt.Errorf("budget reservations need read committed isolation, not %s: under the lock a %s snapshot cannot see the previous reservation", level, level)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, budgetLockKey); err != nil {
+		return fmt.Errorf("taking the budget lock: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM budget_reservations WHERE expires_at <= statement_timestamp()`); err != nil {
+		return fmt.Errorf("deleting expired reservations: %w", err)
+	}
+	return nil
+}
+
 // readSpend sums settled and live reserved spend for the attempt, the
 // feature request, and the current UTC calendar month. It is one statement
 // so that every sum comes from one snapshot: read in two, a Settle
@@ -102,7 +166,7 @@ func (l *CostLedger) Reserve(ctx context.Context, attemptID, featureRequestID st
 // the result converted back. Live reservations all belong to the current
 // month. statement_timestamp is used rather than now(), which is when the
 // transaction began, possibly before a wait for the lock.
-func readSpend(ctx context.Context, tx pgx.Tx, attemptID, featureRequestID string) (llm.Spend, error) {
+func readSpend(ctx context.Context, db DBTX, attemptID, featureRequestID string) (llm.Spend, error) {
 	const query = `SELECT
 		(SELECT coalesce(sum(input_tokens + output_tokens), 0) FROM cost_events
 		  WHERE attempt_id = NULLIF($1, '')::uuid)
@@ -118,7 +182,7 @@ func readSpend(ctx context.Context, tx pgx.Tx, attemptID, featureRequestID strin
 		  WHERE expires_at > statement_timestamp())`
 	var attempt, feature int64
 	var month float64
-	err := tx.QueryRow(ctx, query, attemptID, featureRequestID).Scan(&attempt, &feature, &month)
+	err := db.QueryRow(ctx, query, attemptID, featureRequestID).Scan(&attempt, &feature, &month)
 	if err != nil {
 		return llm.Spend{}, fmt.Errorf("summing spend: %w", err)
 	}

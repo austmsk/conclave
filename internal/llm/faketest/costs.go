@@ -125,8 +125,10 @@ func (c *Costs) Settle(ctx context.Context, reservationID string, ev contracts.C
 		delete(c.holds, reservationID)
 		return nil
 	}
-	if err := c.drop(reservationID); err != nil {
-		return err
+	if reservationID != "" {
+		if err := c.drop(reservationID); err != nil {
+			return err
+		}
 	}
 	c.keys[ev.IdempotencyKey] = true
 	c.events = append(c.events, ev)

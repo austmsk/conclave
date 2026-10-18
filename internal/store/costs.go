@@ -53,7 +53,8 @@ func NewCostLedger(db TxDB) *CostLedger {
 // so a retried Settle succeeds and the spend is counted once (RL-2). The
 // first event's values stand: a key names one provider reply, so a second
 // event under it describes the same spend. A reservation already gone,
-// settled by an earlier try or never taken, is not an error.
+// settled by an earlier try or never taken, is not an error. An empty
+// reservationID records spend that was never reserved.
 //
 // An event with no OccurredAt takes the database's time.
 func (l *CostLedger) Settle(ctx context.Context, reservationID string, ev contracts.CostEvent) error {
@@ -63,12 +64,17 @@ func (l *CostLedger) Settle(ctx context.Context, reservationID string, ev contra
 	if err := checkEventIDs(ev); err != nil {
 		return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
 	}
-	if err := checkUUID("reservation ID", reservationID); err != nil {
-		return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
+	if reservationID != "" {
+		if err := checkUUID("reservation ID", reservationID); err != nil {
+			return fmt.Errorf("recording cost %s: %w", ev.IdempotencyKey, err)
+		}
 	}
 	err := pgx.BeginFunc(ctx, l.db, func(tx pgx.Tx) error {
 		if err := insertCost(ctx, tx, ev); err != nil {
 			return err
+		}
+		if reservationID == "" {
+			return nil
 		}
 		return deleteReservation(ctx, tx, reservationID)
 	})

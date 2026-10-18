@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,21 +16,15 @@ import (
 	"github.com/austmsk/conclave/internal/store"
 )
 
-var errPeek = errors.New("peeking at spend")
-
-// spendNow is what Reserve would hand decide for the attempt and feature
-// request right now. It reserves nothing.
+// spendNow is what the ledger holds against each cap for the attempt and
+// feature request right now.
 func spendNow(t *testing.T, ctx context.Context, ledger *store.CostLedger, attempt, feature string) llm.Spend {
 	t.Helper()
-	var got llm.Spend
-	_, err := ledger.Reserve(ctx, attempt, feature, time.Minute, func(sp llm.Spend) (llm.Claim, error) {
-		got = sp
-		return llm.Claim{}, errPeek
-	})
-	if !errors.Is(err, errPeek) {
-		t.Fatalf("peeking at spend: %v", err)
+	sp, err := ledger.Spend(ctx, attempt, feature)
+	if err != nil {
+		t.Fatalf("reading spend: %v", err)
 	}
-	return got
+	return sp
 }
 
 // TestAttributed: an attempt is attributed only to the feature request its
@@ -83,7 +78,7 @@ func TestReserveSumsSpend(t *testing.T) {
 	settle := func(ev contracts.CostEvent) {
 		t.Helper()
 		ev.OccurredAt = time.Time{} // this month, by the database clock
-		if err := ledger.Settle(ctx, "00000000-0000-4000-8000-000000000000", ev); err != nil {
+		if err := ledger.Settle(ctx, "", ev); err != nil {
 			t.Fatalf("settling %s: %v", ev.IdempotencyKey, err)
 		}
 	}
@@ -186,7 +181,7 @@ func monthCase(t *testing.T, zone string) {
 	this := costEvent(s, "this-month", 1, 1)
 	this.CostUSD, this.OccurredAt = 0.25, monthStart
 	for _, ev := range []contracts.CostEvent{last, this} {
-		if err := ledger.Settle(ctx, "00000000-0000-4000-8000-000000000000", ev); err != nil {
+		if err := ledger.Settle(ctx, "", ev); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -298,4 +293,60 @@ func seedRepo(t *testing.T, ctx context.Context, tx pgx.Tx, name string) ids {
 		*st.dst = id
 	}
 	return s
+}
+
+// TestReserveSweepsExpired: taking a reservation deletes the ones that have
+// expired, so the table every reservation sums holds only calls in flight.
+func TestReserveSweepsExpired(t *testing.T) {
+	ctx, tx := testTx(t)
+	s := seed(t, ctx, tx)
+	_, err := tx.Exec(ctx, `INSERT INTO budget_reservations (attempt_id, feature_request_id, tokens, cost_usd, expires_at)
+		VALUES ($1, $2, 5, 0, statement_timestamp() - interval '1 microsecond')`, s.attempt, s.feature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := reserveTokens(t, ctx, store.NewCostLedger(tx), s, 7)
+	if n := countRows(t, ctx, tx, `SELECT count(*) FROM budget_reservations`); n != 1 {
+		t.Fatalf("%d reservations, want only the live one", n)
+	}
+	if n := countRows(t, ctx, tx, `SELECT count(*) FROM budget_reservations WHERE id = $1`, live); n != 1 {
+		t.Fatal("the live reservation was deleted")
+	}
+}
+
+// TestReserveRefusesOtherIsolation: given a transaction it can only nest
+// inside, Reserve checks the level rather than trusting it. At REPEATABLE
+// READ a reservation waiting on the lock would read spend from before the
+// previous holder committed.
+func TestReserveRefusesOtherIsolation(t *testing.T) {
+	for _, level := range []string{"REPEATABLE READ", "SERIALIZABLE"} {
+		t.Run(level, func(t *testing.T) {
+			ctx := requireDB(t)
+			tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.TxIsoLevel(strings.ToLower(level))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tx.Rollback(ctx) })
+			s := seed(t, ctx, tx)
+			_, err = store.NewCostLedger(tx).Reserve(ctx, s.attempt, s.feature, time.Minute, func(llm.Spend) (llm.Claim, error) {
+				return llm.Claim{Tokens: 1}, nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "read committed") {
+				t.Fatalf("got %v, want a refusal naming read committed", err)
+			}
+		})
+	}
+}
+
+func TestSettleWithoutReservation(t *testing.T) {
+	ctx, tx := testTx(t)
+	s := seed(t, ctx, tx)
+	ledger := store.NewCostLedger(tx)
+	held := reserveTokens(t, ctx, ledger, s, 500)
+	if err := ledger.Settle(ctx, "", costEvent(s, "unreserved", 10, 5)); err != nil {
+		t.Fatal(err)
+	}
+	if sp := spendNow(t, ctx, ledger, s.attempt, s.feature); sp.AttemptTokens != 515 {
+		t.Fatalf("attempt spend %d, want the 15 recorded plus the 500 still reserved under %s", sp.AttemptTokens, held)
+	}
 }

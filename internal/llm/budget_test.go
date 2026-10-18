@@ -473,3 +473,61 @@ func TestCancelledCallIsStillRecorded(t *testing.T) {
 		t.Fatalf("events %+v and %d reservations, want the billed call recorded and nothing held", evs, costs.Reservations())
 	}
 }
+
+// deadlineLedger records the deadline each Settle was given.
+type deadlineLedger struct {
+	*faketest.Costs
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (d *deadlineLedger) Settle(ctx context.Context, id string, ev contracts.CostEvent) error {
+	deadline, _ := ctx.Deadline()
+	d.mu.Lock()
+	d.deadlines = append(d.deadlines, deadline)
+	d.mu.Unlock()
+	return d.Costs.Settle(ctx, id, ev)
+}
+
+// TestSettleKeepsLongerDeadline: recording a billed reply gets at least
+// the caller's own deadline. A fixed short timeout would cut it down, and a
+// database slow for longer than that would lose the call from the ledger.
+// A caller with less time left still gets the minimum.
+func TestSettleKeepsLongerDeadline(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		atLeast time.Duration
+		atMost  time.Duration
+	}{
+		{"long caller deadline", time.Hour, 59 * time.Minute, time.Hour},
+		{"short caller deadline", time.Second, 25 * time.Second, 30 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fakes()
+			f[llm.ProviderAnthropic] = faketest.New(endTurn(1, 1))
+			ledger := &deadlineLedger{Costs: newCosts()}
+			r, err := llm.New(plannerConfig(), providers(f), publicPlanner(), ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := r.Scope(context.Background(), llm.Scope{RepoID: repoID, FeatureRequestID: featureID, AttemptID: attemptID, KeyPrefix: "k", TokenBudget: 10_000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), tc.timeout)
+			defer cancel()
+			if _, err := s.Complete(ctx, plannerRequest(100)); err != nil {
+				t.Fatal(err)
+			}
+			if len(ledger.deadlines) != 1 {
+				t.Fatalf("%d settles, want 1", len(ledger.deadlines))
+			}
+			left := time.Until(ledger.deadlines[0])
+			if left < tc.atLeast || left > tc.atMost {
+				t.Fatalf("settle had %s left, want between %s and %s", left, tc.atLeast, tc.atMost)
+			}
+		})
+	}
+}

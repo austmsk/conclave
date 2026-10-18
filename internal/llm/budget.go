@@ -24,6 +24,11 @@ const (
 // reached. It unwraps to ErrBudgetExceeded, so IsPermanent holds for it and
 // errors.Is matches it; errors.As yields the kind. It is a value type:
 // match it with a BudgetError target, not a *BudgetError.
+//
+// A refusal is not always the owner's spending. When recording a billed
+// reply fails, its reservation is kept so the spend still counts, and until
+// it expires (ReservationTTL) the next call can be refused on its account.
+// A database fault can therefore surface as an attempt budget refusal.
 type BudgetError struct {
 	Kind BudgetKind
 	// Detail is the spend and the cap, for logs and the status comment.
@@ -37,12 +42,18 @@ func (e BudgetError) Error() string {
 // Unwrap lets errors.Is match ErrBudgetExceeded.
 func (e BudgetError) Unwrap() error { return ErrBudgetExceeded }
 
-// reservationTTL is how long a reservation counts if it is never settled.
-// It must outlast the call it covers, so it is the Anthropic adapter's
-// whole-request timeout (anthropic.DefaultTimeout, which this package cannot
-// import) plus a margin for settling. The rate limiter is waited on before
-// the reservation is taken, so its wait does not eat into this.
-const reservationTTL = 10*time.Minute + 5*time.Minute
+// MaxCallDuration is the longest one provider call may run. Every adapter
+// must bound a whole request by it, because a call that outlives its
+// reservation stops counting against the caps while the provider is still
+// generating. The Anthropic adapter's DefaultTimeout is this, and its
+// constructor refuses an injected client without a timeout inside it.
+const MaxCallDuration = 10 * time.Minute
+
+// ReservationTTL is how long a reservation counts if it is never settled:
+// the longest call plus a margin for settling it. The rate limiter is
+// waited on before the reservation is taken, so its wait does not eat into
+// this.
+const ReservationTTL = MaxCallDuration + 5*time.Minute
 
 // Spend is what the ledger holds against each cap when a call is about to
 // be made: settled spend plus live reservations. AttemptTokens is zero for

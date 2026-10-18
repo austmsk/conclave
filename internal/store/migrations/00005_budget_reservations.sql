@@ -14,7 +14,7 @@
 -- that dies mid-call leaves its reservation behind; it keeps counting until
 -- it expires, which covers a call the dead process may still have in flight
 -- at the provider, and then stops counting so the budget is not held
--- forever.
+-- forever. The next reservation after that deletes it.
 
 -- +goose Up
 
@@ -28,6 +28,10 @@ CREATE TABLE budget_reservations (
     cost_usd           numeric(12, 6) NOT NULL CHECK (cost_usd >= 0),
     expires_at         timestamptz    NOT NULL
 );
+
+-- Every reservation deletes the expired rows and sums the live ones, while
+-- holding the global budget lock, so both are range scans on expiry.
+CREATE INDEX budget_reservations_expires ON budget_reservations (expires_at);
 
 -- The monthly cap sums cost_usd across every repository. The existing
 -- (repo_id, occurred_at) index leads with the repository and cannot serve
