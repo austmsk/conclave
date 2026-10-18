@@ -245,7 +245,15 @@ func TestInFlightCallCountsAcrossScopes(t *testing.T) {
 		_, err := abandoned.Complete(ctx, hiRequest(c.repo))
 		first <- err
 	}()
-	<-p.started
+	// Bounded, so a first call that fails before reaching the provider
+	// fails the test instead of hanging it.
+	select {
+	case <-p.started:
+	case err := <-first:
+		t.Fatalf("first call ended before reaching the provider: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("first call never reached the provider")
+	}
 	_, err := retry.Complete(ctx, hiRequest(c.repo))
 	var be llm.BudgetError
 	if !errors.As(err, &be) || be.Kind != llm.BudgetAttempt {
@@ -340,5 +348,39 @@ func TestConcurrentCallsStayInMonthlyCap(t *testing.T) {
 	if ok != fits || heldA+heldB != 0 || usdA+usdB > 7.5*callUSD {
 		t.Fatalf("%d calls ran, $%v recorded, %d reservations left; want %d, at most $%v, 0",
 			ok, usdA+usdB, heldA+heldB, fits, 7.5*callUSD)
+	}
+}
+
+// TestReserveDoesNotWaitOnSettle: a Settle has deleted an expired
+// reservation and not yet committed when a Reserve runs. Reserve must not
+// wait for it: it holds the global budget lock, so every model call would
+// queue behind the slow Settle. This is what rules out deleting expired
+// reservations inside Reserve.
+func TestReserveDoesNotWaitOnSettle(t *testing.T) {
+	ctx := requireDB(t)
+	c := committedChain(t, ctx, 1)
+	var expired string
+	err := pool.QueryRow(ctx, `INSERT INTO budget_reservations (attempt_id, feature_request_id, tokens, cost_usd, expires_at)
+		VALUES ($1, $2, 1, 0, statement_timestamp() - interval '1 second') RETURNING id::text`, c.attempts[0], c.feature).Scan(&expired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settling, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = settling.Rollback(ctx) }()
+	if _, err := settling.Exec(ctx, `DELETE FROM budget_reservations WHERE id = $1`, expired); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger := store.NewCostLedger(appPool(t, ctx, "read committed"))
+	reserveCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, err = ledger.Reserve(reserveCtx, c.attempts[0], c.feature, time.Minute, func(llm.Spend) (llm.Claim, error) {
+		return llm.Claim{Tokens: 1}, nil
+	})
+	if err != nil {
+		t.Fatalf("Reserve while a settle holds an expired row: %v", err)
 	}
 }

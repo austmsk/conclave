@@ -295,25 +295,6 @@ func seedRepo(t *testing.T, ctx context.Context, tx pgx.Tx, name string) ids {
 	return s
 }
 
-// TestReserveSweepsExpired: taking a reservation deletes the ones that have
-// expired, so the table every reservation sums holds only calls in flight.
-func TestReserveSweepsExpired(t *testing.T) {
-	ctx, tx := testTx(t)
-	s := seed(t, ctx, tx)
-	_, err := tx.Exec(ctx, `INSERT INTO budget_reservations (attempt_id, feature_request_id, tokens, cost_usd, expires_at)
-		VALUES ($1, $2, 5, 0, statement_timestamp() - interval '1 microsecond')`, s.attempt, s.feature)
-	if err != nil {
-		t.Fatal(err)
-	}
-	live := reserveTokens(t, ctx, store.NewCostLedger(tx), s, 7)
-	if n := countRows(t, ctx, tx, `SELECT count(*) FROM budget_reservations`); n != 1 {
-		t.Fatalf("%d reservations, want only the live one", n)
-	}
-	if n := countRows(t, ctx, tx, `SELECT count(*) FROM budget_reservations WHERE id = $1`, live); n != 1 {
-		t.Fatal("the live reservation was deleted")
-	}
-}
-
 // TestReserveRefusesOtherIsolation: given a transaction it can only nest
 // inside, Reserve checks the level rather than trusting it. At REPEATABLE
 // READ a reservation waiting on the lock would read spend from before the

@@ -14,7 +14,10 @@
 -- that dies mid-call leaves its reservation behind; it keeps counting until
 -- it expires, which covers a call the dead process may still have in flight
 -- at the provider, and then stops counting so the budget is not held
--- forever. The next reservation after that deletes it.
+-- forever. Expired rows are not deleted: the only delete that could find
+-- them would run under the budget lock and could wait on a Settle holding
+-- the same row (see lockBudgets in budget.go). They come only from a dead
+-- process or a failed settle, so they stay few.
 
 -- +goose Up
 
@@ -29,8 +32,8 @@ CREATE TABLE budget_reservations (
     expires_at         timestamptz    NOT NULL
 );
 
--- Every reservation deletes the expired rows and sums the live ones, while
--- holding the global budget lock, so both are range scans on expiry.
+-- Every reservation sums the live rows while holding the global budget
+-- lock, so the sums are range scans on expiry, whatever has expired.
 CREATE INDEX budget_reservations_expires ON budget_reservations (expires_at);
 
 -- The monthly cap sums cost_usd across every repository. The existing

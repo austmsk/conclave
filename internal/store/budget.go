@@ -43,9 +43,8 @@ func (l *CostLedger) Attributed(ctx context.Context, repoID, featureRequestID, a
 	return ok, nil
 }
 
-// Reserve runs one short transaction: it takes the budget lock, deletes
-// expired reservations, reads the spend settled and reserved against each
-// cap, asks decide for the claim, and inserts it as a reservation that
+// Reserve runs one short transaction: it takes the budget lock, reads the
+// spend settled and reserved against each cap, asks decide for the claim, and inserts it as a reservation that
 // expires ttl after now on the database clock. While the lock is held no
 // other Reserve can read the same headroom, and a transaction that held it
 // before has committed, so its reservation is visible here. decide's error
@@ -132,10 +131,16 @@ func (l *CostLedger) readCommitted(ctx context.Context, fn func(pgx.Tx) error) e
 	return pgx.BeginFunc(ctx, l.db, fn)
 }
 
-// lockBudgets refuses a transaction that is not at READ COMMITTED, takes
-// the budget lock, and deletes the reservations that have expired. Under
-// the lock the delete costs nothing extra, and it keeps the table, which
-// every reservation sums, at the calls actually in flight.
+// lockBudgets refuses a transaction that is not at READ COMMITTED and takes
+// the budget lock.
+//
+// Nothing under the lock may wait on another transaction, or every model
+// call queues behind it. That is why expired reservations are not deleted
+// here: a Settle that has deleted one and not yet committed holds its row,
+// and the delete would wait for it. Skipping locked rows needs a locking
+// clause, which needs UPDATE, which the application role does not have.
+// Expired rows are left out of every sum instead, and the expires_at index
+// keeps those sums to the live rows.
 func lockBudgets(ctx context.Context, tx pgx.Tx) error {
 	var level string
 	if err := tx.QueryRow(ctx, `SELECT current_setting('transaction_isolation')`).Scan(&level); err != nil {
@@ -146,9 +151,6 @@ func lockBudgets(ctx context.Context, tx pgx.Tx) error {
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, budgetLockKey); err != nil {
 		return fmt.Errorf("taking the budget lock: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM budget_reservations WHERE expires_at <= statement_timestamp()`); err != nil {
-		return fmt.Errorf("deleting expired reservations: %w", err)
 	}
 	return nil
 }
