@@ -82,5 +82,12 @@ func (c Config) validate() error {
 	case c.MaxCommandTimeout <= 0:
 		return fmt.Errorf("%w: max command timeout %v must be positive", ErrInvalidConfig, c.MaxCommandTimeout)
 	}
+	for i, entry := range c.Denylist {
+		// An entry with no components denies nothing, so it is a mistake
+		// that would leave a path open, not a harmless blank.
+		if len(foldComponents(entry)) == 0 {
+			return fmt.Errorf("%w: denylist entry %d (%q) names no path", ErrInvalidConfig, i, entry)
+		}
+	}
 	return nil
 }
