@@ -55,9 +55,9 @@ func Sign(secret, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
-// Request returns a delivery of event carrying body, signed with secret,
+// Delivery returns a delivery of event carrying body, signed with secret,
 // with the headers GitHub sets. Tests change a header to forge one.
-func Request(t testing.TB, secret, event string, body []byte) *http.Request {
+func Delivery(t testing.TB, secret, event string, body []byte) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/github", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

@@ -116,13 +116,13 @@ func (h *harness) settle(t *testing.T) {
 
 func (h *harness) send(t *testing.T, event string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
-	return h.serve(githubtest.Request(t, secret, event, body))
+	return h.serve(githubtest.Delivery(t, secret, event, body))
 }
 
 // sendAs sends a delivery with its own delivery ID.
 func (h *harness) sendAs(t *testing.T, delivery, event string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
-	req := githubtest.Request(t, secret, event, body)
+	req := githubtest.Delivery(t, secret, event, body)
 	req.Header.Set(deliveryHeader, delivery)
 	return h.serve(req)
 }
@@ -174,19 +174,19 @@ func signatureForgeries() map[string]forgery {
 	valid := func(body []byte) string { return githubtest.Sign([]byte(secret), body) }
 	withSig := func(sig func(body []byte) string) forgery {
 		return func(t *testing.T, body []byte) *http.Request {
-			req := githubtest.Request(t, secret, "issues", body)
+			req := githubtest.Delivery(t, secret, "issues", body)
 			req.Header.Set(sigHeader, sig(body))
 			return req
 		}
 	}
 	return map[string]forgery{
 		"missing header": func(t *testing.T, body []byte) *http.Request {
-			req := githubtest.Request(t, secret, "issues", body)
+			req := githubtest.Delivery(t, secret, "issues", body)
 			req.Header.Del(sigHeader)
 			return req
 		},
 		"SHA-1 header only": func(t *testing.T, body []byte) *http.Request {
-			req := githubtest.Request(t, secret, "issues", body)
+			req := githubtest.Delivery(t, secret, "issues", body)
 			req.Header.Del(sigHeader)
 			mac := hmac.New(sha1.New, []byte(secret))
 			_, _ = mac.Write(body)
@@ -199,14 +199,14 @@ func signatureForgeries() map[string]forgery {
 		"65 hex chars": withSig(func(b []byte) string { return valid(b) + "0" }),
 		"wrong secret": withSig(func(b []byte) string { return githubtest.Sign([]byte("canary_other_webhook_secret_0123456789ab"), b) }),
 		"two signatures": func(t *testing.T, body []byte) *http.Request {
-			req := githubtest.Request(t, secret, "issues", body)
+			req := githubtest.Delivery(t, secret, "issues", body)
 			req.Header.Add(sigHeader, valid(body))
 			return req
 		},
 		"one body byte flipped": func(t *testing.T, body []byte) *http.Request {
 			flipped := bytes.Clone(body)
 			flipped[len(flipped)/2] ^= 0x01
-			req := githubtest.Request(t, secret, "issues", flipped)
+			req := githubtest.Delivery(t, secret, "issues", flipped)
 			req.Header.Set(sigHeader, valid(body))
 			return req
 		},
@@ -252,7 +252,7 @@ func TestWebhookVerifiesBeforeParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, options{})
-			req := githubtest.Request(t, secret, "issues", malformed)
+			req := githubtest.Delivery(t, secret, "issues", malformed)
 			if !tt.sign {
 				req.Header.Set(sigHeader, githubtest.Sign([]byte("canary_wrong"), malformed))
 			}
@@ -362,7 +362,7 @@ func TestWebhookRejectsWrongMethodAndContentType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newHarness(t, options{})
-			req := githubtest.Request(t, secret, "issues", githubtest.LabeledEvent().JSON())
+			req := githubtest.Delivery(t, secret, "issues", githubtest.LabeledEvent().JSON())
 			req.Method = tt.method
 			req.Header.Set("Content-Type", tt.contentType)
 			wantStatus(t, h.serve(req), tt.want)
