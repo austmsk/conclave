@@ -72,7 +72,16 @@ The worker clones the repository into its own workspace. The installation token 
 
 ### 7. Agent works (ticket 5), calling models through the router (ticket 4, merged)
 
-The agent loop sends the conversation to a model, runs the tool calls the model asks for (read a file, write a file, run the tests) inside the sandbox, and repeats until the model calls `finish` or hits a limit.
+The agent loop in `internal/agent` sends the task to a model and runs the tool calls the model asks for (read a file, write a file, apply a patch, run the tests) inside the sandbox. It repeats until the model calls `finish` or hits a limit.
+
+- **Tools.** The role's tool list decides which tools are offered. A call to any other tool is refused before the sandbox sees it.
+- **Paths.** Every path is checked and refused, never cleaned up, and `.git` is always out of reach.
+- **Processes.** No process outlives a sandbox command, so nothing can swap a path for a symlink while a file is read or written.
+- **Audit.** Before a result goes back to the model, the worker stores the full output in the blob store and writes an audit row to `tool_calls`. The row records the tool, the full arguments, the exit code and the duration. If either write fails, the attempt ends.
+- **Limits.** Steps, tokens, wall clock and repeated identical failures are enforced by code.
+- **The report.** It is validated against its schema, with one chance to repair it.
+
+See [ticket 5](tickets/05-agent-loop-and-tools.md).
 
 Every model call goes through the router in `internal/llm`. Before any provider sees a prompt, the router checks the repository's **sensitivity tier**: which providers may see this repository's code at all. It also checks whether the role is allowed on the repository and whether the call fits the remaining **token budget**. Afterwards it records the cost under an idempotency key, so a retried call isn't billed twice. See [ticket 4](tickets/04-llm-router.md). Ticket 8a adds the per-feature-request and monthly caps.
 
