@@ -46,19 +46,30 @@ func auditSandbox(t *testing.T, readme string) *agenttest.Sandbox {
 		t.Fatal(err)
 	}
 	sb.ExecFunc = func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
+		// Long enough that the recorded duration cannot round to zero.
+		time.Sleep(commandTook)
 		return contracts.ExecResult{ExitCode: 1, Stdout: []byte("--- FAIL: TestCount")}, nil
 	}
 	return sb
 }
 
+// commandTook is how long the fake test command runs.
+const commandTook = 20 * time.Millisecond
+
 type auditRow struct {
 	step      int
 	callID    string
+	tool      string
+	args      string
 	errText   string
 	rejected  bool
 	exitCode  int
 	key       string
 	truncated bool
+
+	// durationMS is checked apart from the other columns, since only the
+	// command's is known.
+	durationMS int64
 }
 
 // TestToolCallsReachAuditTable runs a session against real Postgres, as
@@ -101,16 +112,21 @@ func TestToolCallsReachAuditTable(t *testing.T) {
 	}
 
 	rows := readAuditRows(t, ctx, tx, s.attempt)
+	// Each row holds the tool and the exact arguments the model sent,
+	// including for a tool that does not exist and a rejected path.
 	want := []auditRow{
-		{step: 1, callID: "c1", truncated: true},
-		{step: 2, callID: "c2", errText: "tool_not_offered", rejected: true},
-		{step: 3, callID: "c3", errText: "invalid_path", rejected: true},
-		{step: 4, callID: "c4", errText: "invalid_path", rejected: true},
-		{step: 5, callID: "c5", exitCode: 1},
-		{step: 6, callID: "c6", errText: "invalid_report"},
-		{step: 7, callID: "c7"},
+		{step: 1, callID: "c1", tool: "read_file", args: `{"path":"README.md"}`, truncated: true},
+		{step: 2, callID: "c2", tool: "delete_branch", args: `{"branch":"main"}`, errText: "tool_not_offered", rejected: true},
+		{step: 3, callID: "c3", tool: "read_file", args: `{"path":"../etc/passwd"}`, errText: "invalid_path", rejected: true},
+		{step: 4, callID: "c4", tool: "read_file", args: `{"path":"link/x.txt"}`, errText: "invalid_path", rejected: true},
+		{step: 5, callID: "c5", tool: "run_tests", args: `{}`, exitCode: 1},
+		{step: 6, callID: "c6", tool: "finish", args: `{"summary":"Count ballots"}`, errText: "invalid_report"},
+		{step: 7, callID: "c7", tool: "finish", args: auditReport},
 	}
 	checkAuditRows(t, rows, want)
+	if got := rows[4].durationMS; got < commandTook.Milliseconds() {
+		t.Errorf("run_tests recorded %d ms, want at least %d", got, commandTook.Milliseconds())
+	}
 	checkBlob(t, ctx, blobs, rows[0].key, readme)
 	checkBlob(t, ctx, blobs, rows[4].key, "--- FAIL: TestCount")
 	if n, err := recorder.RejectionCount(ctx, s.attempt); err != nil || n != 3 {
@@ -120,8 +136,8 @@ func TestToolCallsReachAuditTable(t *testing.T) {
 
 func readAuditRows(t *testing.T, ctx context.Context, tx pgx.Tx, attempt string) []auditRow {
 	t.Helper()
-	rows, err := tx.Query(ctx, `SELECT step, call_id, coalesce(error, ''), rejected, exit_code,
-		coalesce(artifact_key, ''), truncated FROM tool_calls WHERE attempt_id = $1 ORDER BY step`, attempt)
+	rows, err := tx.Query(ctx, `SELECT step, call_id, tool, arguments_raw, coalesce(error, ''), rejected, exit_code,
+		coalesce(artifact_key, ''), truncated, duration_ms FROM tool_calls WHERE attempt_id = $1 ORDER BY step`, attempt)
 	if err != nil {
 		t.Fatalf("reading tool calls: %v", err)
 	}
@@ -129,9 +145,11 @@ func readAuditRows(t *testing.T, ctx context.Context, tx pgx.Tx, attempt string)
 	var out []auditRow
 	for rows.Next() {
 		var r auditRow
-		if err := rows.Scan(&r.step, &r.callID, &r.errText, &r.rejected, &r.exitCode, &r.key, &r.truncated); err != nil {
+		var args []byte
+		if err := rows.Scan(&r.step, &r.callID, &r.tool, &args, &r.errText, &r.rejected, &r.exitCode, &r.key, &r.truncated, &r.durationMS); err != nil {
 			t.Fatalf("scanning tool call: %v", err)
 		}
+		r.args = string(args)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -141,7 +159,8 @@ func readAuditRows(t *testing.T, ctx context.Context, tx pgx.Tx, attempt string)
 }
 
 // checkAuditRows compares every column but the artifact key, which must
-// be set whenever the call produced output and always when truncated.
+// be set whenever the call produced output and always when truncated, and
+// the duration, which the caller checks.
 func checkAuditRows(t *testing.T, got, want []auditRow) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -152,7 +171,7 @@ func checkAuditRows(t *testing.T, got, want []auditRow) {
 		if g.truncated && g.key == "" {
 			t.Errorf("step %d truncated with no artifact key", g.step)
 		}
-		g.key = ""
+		g.key, g.durationMS = "", 0
 		if g != want[i] {
 			t.Errorf("row %d: %+v, want %+v", i, g, want[i])
 		}
