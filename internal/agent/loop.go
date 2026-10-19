@@ -131,10 +131,14 @@ func (s *session) modelError(ctx context.Context, err error) (bool, error) {
 		return s.end(contracts.ReasonTokenLimit)
 	}
 	if errors.Is(err, llm.ErrBudgetExceeded) {
-		return true, fmt.Errorf("model call for role %s refused by a platform cap: %w", s.in.Spec.Role, err)
+		kind := llm.BudgetKind("platform")
+		if errors.As(err, &budget) {
+			kind = budget.Kind
+		}
+		return true, sessionErr(err, "model call for role %s refused by the %s budget cap", s.in.Spec.Role, kind)
 	}
 	s.out.Reason = contracts.ReasonProviderError
-	return true, fmt.Errorf("model call for role %s: %w", s.in.Spec.Role, err)
+	return true, sessionErr(err, "model call for role %s failed", s.in.Spec.Role)
 }
 
 // interrupted reports whether the session's context is done. The
@@ -148,7 +152,9 @@ func (s *session) interrupted(ctx context.Context) (bool, error) {
 		s.out.Reason = contracts.ReasonWallClock
 		return true, nil
 	}
-	return true, fmt.Errorf("agent session stopped: %w", context.Cause(ctx))
+	// The caller's cause is the caller's own text, but ctx.Err is the
+	// standard library's, so only it goes in the message.
+	return true, sessionErr(context.Cause(ctx), "agent session stopped: %s", ctx.Err())
 }
 
 // nudge answers a reply that made no tool call. The session ends only
@@ -272,7 +278,7 @@ func (s *session) execOne(ctx context.Context, call contracts.ToolCall, alone bo
 		return result, true, stopErr
 	case oc.fatal:
 		s.out.Reason = contracts.ReasonSandboxError
-		return result, true, fmt.Errorf("running tool %s: %w", call.Name, toolErr)
+		return result, true, sessionErr(toolErr, "running tool %s at step %d failed in the sandbox", call.Name, s.step)
 	case call.Name == contracts.ToolFinish && alone:
 		return result, s.finished(call, oc), nil
 	}
@@ -351,7 +357,7 @@ func (s *session) store(ctx context.Context, full string) (string, error) {
 	defer cancel()
 	key, err := s.r.cfg.Blobs.Put(ctx, s.in.RepoID, []byte(full))
 	if err != nil {
-		return "", fmt.Errorf("%w: storing output of step %d: %w", errAudit, s.step, err)
+		return "", sessionErr(errors.Join(errAudit, err), "%s: storing output of step %d", errAudit, s.step)
 	}
 	return key, nil
 }
@@ -362,7 +368,7 @@ func (s *session) record(ctx context.Context, rec ToolCallRecord) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()
 	if err := s.r.cfg.Recorder.Record(ctx, rec); err != nil {
-		return fmt.Errorf("%w: recording step %d: %w", errAudit, rec.Step, err)
+		return sessionErr(errors.Join(errAudit, err), "%s: recording step %d", errAudit, rec.Step)
 	}
 	s.out.Steps = append(s.out.Steps, contracts.ToolCall{ID: rec.CallID, Name: rec.Tool, Arguments: rec.ArgumentsRaw})
 	return nil

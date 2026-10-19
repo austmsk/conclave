@@ -36,10 +36,11 @@
 //     attempt's state: a Reason with a nil error is the agent's failure,
 //     an error is the platform's.
 //
-// The audit's error column and the model's text never carry raw router
-// or sandbox error text, which may hold a credential. The error Run
-// returns does wrap it, so errors.Is works; callers must not persist its
-// text.
+// The audit's error column, the model's text and the text of the error
+// Run returns never carry raw router or sandbox error text, which may
+// hold a credential. Run's error is a SessionError: its message is
+// written by this package and safe to persist, and the raw cause is
+// reachable only through errors.Is and errors.As.
 //
 // Every path a tool touches is checked lexically and refused, never
 // sanitized; the sandbox backend then refuses symlinks and hardlinks.

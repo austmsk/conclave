@@ -36,8 +36,9 @@ var errWallClock = errors.New("session wall clock exhausted")
 //     llm.ErrBudgetExceeded, so the caller can route it to
 //     needs_attention.
 //
-// The output carries every step taken so far, the usage and the
-// provenance, whatever the outcome.
+// Once the session has started, every error is a *SessionError, whose
+// text is safe to persist. The output carries every step taken so far,
+// the usage and the provenance, whatever the outcome.
 func (r *Runner) Run(ctx context.Context, sb contracts.Sandbox, in contracts.SessionInput) (contracts.SessionOutput, error) {
 	s, err := r.newSession(sb, in)
 	if err != nil {

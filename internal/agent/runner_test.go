@@ -633,8 +633,26 @@ func checkNoCanary(t *testing.T, g *rig, canary string) {
 	}
 }
 
-// TestCanaryNotInAudit: a router or sandbox error carrying a credential
-// reaches neither the audit rows nor the blob store.
+// checkErrorClean checks Run's error: the caller persists its text (in
+// workflow history), so the text must not carry the canary, while the
+// cause stays reachable through errors.Is when is is set.
+func checkErrorClean(t *testing.T, err error, canary string, is error) {
+	t.Helper()
+	if strings.Contains(err.Error(), canary) {
+		t.Errorf("Run's error text carries the canary: %q", err)
+	}
+	var se *SessionError
+	if !errors.As(err, &se) {
+		t.Errorf("Run's error is %T, want *SessionError", err)
+	}
+	if is != nil && !errors.Is(err, is) {
+		t.Errorf("Run's error %v no longer matches %v", err, is)
+	}
+}
+
+// TestCanaryNotInAudit: a router, sandbox or blob store error carrying a
+// credential reaches neither the audit rows, the blob store, nor the text
+// of the error Run returns.
 func TestCanaryNotInAudit(t *testing.T) {
 	const canary = "canary_sk_live_0000"
 	cases := []struct {
@@ -642,7 +660,11 @@ func TestCanaryNotInAudit(t *testing.T) {
 		// router wraps the replay router.
 		router func(inner contracts.Router) contracts.Router
 		exec   func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error)
+		// setup adjusts the rig, for a failing blob store.
+		setup  func(g *rig)
 		reason contracts.FailureReason
+		// is is a sentinel the returned error must still match.
+		is error
 	}{
 		{
 			name: "sandbox failure",
@@ -665,6 +687,14 @@ func TestCanaryNotInAudit(t *testing.T) {
 				return contracts.ExecResult{ExitCode: 1, Stdout: []byte("FAIL")}, nil
 			},
 			reason: contracts.ReasonProviderError,
+			is:     llm.ErrUnavailable,
+		},
+		{
+			name: "blob store failure",
+			exec: func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
+				return contracts.ExecResult{Stdout: []byte("ok")}, nil
+			},
+			setup: func(g *rig) { g.blobs.err = errors.New("disk said " + canary) },
 		},
 	}
 	for _, tc := range cases {
@@ -676,11 +706,15 @@ func TestCanaryNotInAudit(t *testing.T) {
 			}
 			g := newRig(t, router)
 			g.sb.ExecFunc = tc.exec
+			if tc.setup != nil {
+				tc.setup(g)
+			}
 			out, err := g.run(t, testSpec(nil))
 			if err == nil || out.Reason != tc.reason {
 				t.Fatalf("Run: %q, %v; want %q and an error", out.Reason, err, tc.reason)
 			}
 			checkNoCanary(t, g, canary)
+			checkErrorClean(t, err, canary, tc.is)
 		})
 	}
 }
