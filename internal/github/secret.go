@@ -38,10 +38,13 @@ func (secret) MarshalText() ([]byte, error) { return []byte(redacted), nil }
 // back: GitHub installation, user, OAuth and refresh tokens, fine-grained
 // personal access tokens, and JWTs such as the App's own. The prefixes are
 // assembled from parts so the literal forms never appear in the source.
+// They are not anchored at a word boundary: a token is still a token after
+// a word character, as in a percent-encoded "token%3D" or a JSON-escaped
+// "\n", and over-redacting a word is cheaper than leaking a credential.
 var tokenPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`\bgh[pousr]` + `_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`\bgithub` + `_pat_[A-Za-z0-9_]{20,}`),
-	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`),
+	regexp.MustCompile(`gh[pousr]` + `_[A-Za-z0-9_]{20,}`),
+	regexp.MustCompile(`github` + `_pat_[A-Za-z0-9_]{20,}`),
+	regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`),
 }
 
 // redact replaces every known secret value and every token-shaped string
