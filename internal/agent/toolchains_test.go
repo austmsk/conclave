@@ -54,11 +54,22 @@ func toolchainsCases(shipped, filled string) []toolchainsCase {
 	return []toolchainsCase{
 		{
 			name: "valid",
-			yaml: "repositories:\n  austmsk/election-tally:\n    test: [go, test, ./...]\n    lint: [sh, -c, \"golangci-lint run\"]\n",
+			yaml: "repositories:\n  austmsk/election-tally:\n    test: [go, test, ./...]\n    build: [go, build, ./...]\n    lint: [sh, -c, \"golangci-lint run\"]\n",
 			want: map[string]Commands{"austmsk/election-tally": {
-				Test: []string{"go", "test", "./..."}, Lint: []string{"sh", "-c", "golangci-lint run"},
+				Test: []string{"go", "test", "./..."}, Build: []string{"go", "build", "./..."}, Lint: []string{"sh", "-c", "golangci-lint run"},
 			}},
 		},
+		{
+			name: "no linter configured as true",
+			yaml: "repositories:\n  a/b:\n    test: [make, test]\n    build: [make]\n    lint: [\"true\"]\n",
+			want: map[string]Commands{"a/b": {Test: []string{"make", "test"}, Build: []string{"make"}, Lint: []string{"true"}}},
+		},
+		// The implementer role offers all three tools, and the runner
+		// refuses a role it cannot equip, so a gap fails here at startup.
+		{name: "lint missing", yaml: "repositories:\n  a/b:\n    test: [make, test]\n    build: [make]\n",
+			errPart: `repositories."a/b".lint: missing, but role implementer offers run_lint`},
+		{name: "build missing", yaml: "repositories:\n  a/b:\n    test: [make, test]\n    lint: [make, lint]\n",
+			errPart: `repositories."a/b".build: missing, but role implementer offers run_build`},
 		{name: "placeholder fails validation", yaml: shipped, errPart: `repositories."owner/repo": placeholder`},
 		{
 			name: "placeholder filled in loads",
@@ -74,7 +85,7 @@ func toolchainsCases(shipped, filled string) []toolchainsCase {
 		{name: "empty file", yaml: "", errPart: "parsing YAML"},
 		{name: "two documents", yaml: "repositories:\n  a/b:\n    test: [make]\n---\nrepositories: {}\n", errPart: "more than one YAML document"},
 		{name: "duplicate key", yaml: "repositories:\n  a/b:\n    test: [make]\n  a/b:\n    test: [make]\n", errPart: "already defined"},
-		{name: "same repository in another case", yaml: "repositories:\n  a/b:\n    test: [make]\n  A/B:\n    test: [make]\n",
+		{name: "same repository in another case", yaml: "repositories:\n  a/b:\n    test: [make]\n  A/B:\n    test: [make]\n    build: [make]\n    lint: [make]\n",
 			errPart: `repositories."a/b": same repository as "A/B"`},
 		{name: "name without owner", yaml: "repositories:\n  election-tally:\n    test: [make]\n", errPart: `repositories."election-tally": not a repository full name`},
 		{name: "name with two slashes", yaml: "repositories:\n  a/b/c:\n    test: [make]\n", errPart: `repositories."a/b/c": not a repository full name`},

@@ -16,8 +16,10 @@
 #   test:   runs the test suite         (run_tests)
 #   build:  builds the project          (run_build)
 #   lint:   runs the linters            (run_lint)
-# Omit a key if the repository has no such command, and its tool is not
-# offered. At least one command is required. No process survives between
+# All three are required: the implementer role offers all three tools, and
+# a role whose tools the worker cannot provide fails every attempt. A
+# repository with nothing to run for one of them can use [true], which
+# succeeds without doing anything. No process survives between
 # commands, so each must be self-contained: a command that needs a running
 # service has to start it itself.
 

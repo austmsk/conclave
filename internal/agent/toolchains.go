@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"github.com/austmsk/conclave/internal/contracts"
 )
 
 // ErrInvalidToolchains wraps every toolchains.yaml validation failure.
@@ -40,7 +42,10 @@ type toolchainsFile struct {
 // LoadToolchains reads deploy/toolchains.yaml: each repository's
 // configured commands, keyed by full name as in deploy/repos.yaml. Unknown
 // fields are an error, so a misspelt key stops startup instead of leaving
-// a command silently unconfigured. Every failure wraps
+// a command silently unconfigured. Every command tool the Implementer
+// role lists must be configured, because the runner refuses a role whose
+// tools it cannot provide: a gap here would otherwise fail every attempt
+// on that repository instead of startup. Every failure wraps
 // ErrInvalidToolchains and names the offending key.
 func LoadToolchains(r io.Reader) (map[string]Commands, error) {
 	var f toolchainsFile
@@ -61,7 +66,7 @@ func LoadToolchains(r io.Reader) (map[string]Commands, error) {
 			return nil, fmt.Errorf("%w: repositories.%q: same repository as %q", ErrInvalidToolchains, name, other)
 		}
 		seen[strings.ToLower(name)] = name
-		if err := validateCommands(f.Repositories[name]); err != nil {
+		if err := validateCommands(f.Repositories[name], Implementer); err != nil {
 			return nil, fmt.Errorf("%w: repositories.%q.%w", ErrInvalidToolchains, name, err)
 		}
 	}
@@ -99,13 +104,14 @@ func validateRepoName(name string) error {
 	return nil
 }
 
-// validateCommands requires at least one command. A key that is present
-// must hold a usable argv; a repository without a command omits the key.
-func validateCommands(c Commands) error {
+// validateCommands requires at least one command, and one for every
+// command tool role lists. A key that is present must hold a usable argv.
+func validateCommands(c Commands, role contracts.RoleSpec) error {
 	cmds := []struct {
 		key  string
+		tool contracts.ToolName
 		argv []string
-	}{{"test", c.Test}, {"build", c.Build}, {"lint", c.Lint}}
+	}{{"test", contracts.ToolRunTests, c.Test}, {"build", contracts.ToolRunBuild, c.Build}, {"lint", contracts.ToolRunLint, c.Lint}}
 	configured := 0
 	for _, cmd := range cmds {
 		if cmd.argv == nil {
@@ -117,14 +123,20 @@ func validateCommands(c Commands) error {
 		configured++
 	}
 	if configured == 0 {
-		return errors.New("test/build/lint: no commands; configure at least one, or remove the repository")
+		return errors.New("test/build/lint: no commands; configure them, or remove the repository")
+	}
+	for _, cmd := range cmds {
+		if cmd.argv == nil && !role.ReadOnly && role.Allows(cmd.tool) {
+			return fmt.Errorf("%s: missing, but role %s offers %s; configure it (a repository with nothing to run can use [\"true\"])",
+				cmd.key, role.Role, cmd.tool)
+		}
 	}
 	return nil
 }
 
 func validateArgv(argv []string) error {
 	if len(argv) == 0 {
-		return errors.New("empty command; omit the key if the repository has none")
+		return errors.New(`empty command; use ["true"] if the repository has nothing to run`)
 	}
 	if strings.TrimSpace(argv[0]) == "" {
 		return errors.New("the first element, the program, is empty")
