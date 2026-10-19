@@ -28,14 +28,16 @@ import (
 type memRecorder struct {
 	mu   sync.Mutex
 	recs []ToolCallRecord
-	// err, when set, fails every write.
-	err error
+	// err, when set, fails every write from step failFrom on, or every
+	// write when failFrom is zero.
+	err      error
+	failFrom int
 }
 
 func (m *memRecorder) Record(ctx context.Context, rec ToolCallRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.err != nil {
+	if m.err != nil && rec.Step >= m.failFrom {
 		return m.err
 	}
 	if err := ctx.Err(); err != nil {
@@ -641,8 +643,9 @@ func checkErrorClean(t *testing.T, err error, canary string, is error) {
 	if strings.Contains(err.Error(), canary) {
 		t.Errorf("Run's error text carries the canary: %q", err)
 	}
-	var se *SessionError
-	if !errors.As(err, &se) {
+	// The type itself, not merely somewhere in the chain: a caller may
+	// persist the outermost error's text alone.
+	if _, ok := err.(*SessionError); !ok {
 		t.Errorf("Run's error is %T, want *SessionError", err)
 	}
 	if is != nil && !errors.Is(err, is) {
@@ -655,66 +658,111 @@ func checkErrorClean(t *testing.T, err error, canary string, is error) {
 // of the error Run returns.
 func TestCanaryNotInAudit(t *testing.T) {
 	const canary = "canary_sk_live_0000"
-	cases := []struct {
-		name string
-		// router wraps the replay router.
-		router func(inner contracts.Router) contracts.Router
-		exec   func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error)
-		// setup adjusts the rig, for a failing blob store.
-		setup  func(g *rig)
-		reason contracts.FailureReason
-		// is is a sentinel the returned error must still match.
-		is error
-	}{
+	failing := func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
+		return contracts.ExecResult{ExitCode: 1, Stdout: []byte("FAIL")}, nil
+	}
+	passing := func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
+		return contracts.ExecResult{Stdout: []byte("ok")}, nil
+	}
+	broken := func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
+		return contracts.ExecResult{}, errors.New("docker exec: token=" + canary)
+	}
+	cases := []canaryCase{
+		{name: "sandbox failure", exec: broken, reason: contracts.ReasonSandboxError},
 		{
-			name: "sandbox failure",
-			exec: func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
-				return contracts.ExecResult{}, errors.New("docker exec: token=" + canary)
-			},
-			reason: contracts.ReasonSandboxError,
+			name:   "router failure",
+			router: failSecondRequest(fmt.Errorf("upstream said %s: %w", canary, llm.ErrUnavailable)),
+			exec:   failing, reason: contracts.ReasonProviderError, is: llm.ErrUnavailable,
 		},
 		{
-			name: "router failure",
-			router: func(inner contracts.Router) contracts.Router {
-				return &spyRouter{inner: inner, fail: func(n int) error {
-					if n == 2 {
-						return fmt.Errorf("upstream said %s: %w", canary, llm.ErrUnavailable)
-					}
-					return nil
-				}}
+			name:   "budget cap",
+			router: failSecondRequest(fmt.Errorf("ledger said %s: %w", canary, llm.BudgetError{Kind: llm.BudgetMonth, Detail: "spent"})),
+			exec:   failing, is: llm.ErrBudgetExceeded,
+		},
+		{name: "blob store failure", exec: passing, setup: func(g *rig) { g.blobs.err = errors.New("disk said " + canary) }},
+		{name: "recorder failure", exec: passing, setup: func(g *rig) { g.rec.err = errors.New("db said " + canary) }},
+		{
+			// The caller's cancel cause is the caller's text; only the
+			// standard library's ctx.Err text reaches Run's error.
+			name: "caller cancel",
+			ctx: func(t *testing.T, g *rig) context.Context {
+				ctx, cancel := context.WithCancelCause(t.Context())
+				g.sb.ExecFunc = func(c context.Context, req contracts.ExecRequest) (contracts.ExecResult, error) {
+					cancel(errors.New("caller said " + canary))
+					return passing(c, req)
+				}
+				return ctx
 			},
-			exec: func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
-				return contracts.ExecResult{ExitCode: 1, Stdout: []byte("FAIL")}, nil
-			},
-			reason: contracts.ReasonProviderError,
-			is:     llm.ErrUnavailable,
 		},
 		{
-			name: "blob store failure",
-			exec: func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error) {
-				return contracts.ExecResult{Stdout: []byte("ok")}, nil
-			},
-			setup: func(g *rig) { g.blobs.err = errors.New("disk said " + canary) },
+			// A sandbox failure, then a failure to record the call it left:
+			// the joined error is still one SessionError with clean text.
+			name:  "sandbox failure then recorder failure",
+			turns: []faketest.Turn{turnCalls(callOf("c1", contracts.ToolRunTests, `{}`), callOf("c2", contracts.ToolRunBuild, `{}`))},
+			exec:  broken, reason: contracts.ReasonSandboxError,
+			setup: func(g *rig) { g.rec.err, g.rec.failFrom = errors.New("db said "+canary), 2 },
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var router contracts.Router
-			router, _ = agenttest.Router(t, turnCalls(callOf("c1", contracts.ToolRunTests, `{}`)), turnCalls(finishCall("c2")))
-			if tc.router != nil {
-				router = tc.router(router)
-			}
-			g := newRig(t, router)
-			g.sb.ExecFunc = tc.exec
-			if tc.setup != nil {
-				tc.setup(g)
-			}
-			out, err := g.run(t, testSpec(nil))
+			g, ctx := tc.rig(t)
+			out, err := g.runInput(t, ctx, testInput(testSpec(nil)))
 			if err == nil || out.Reason != tc.reason {
 				t.Fatalf("Run: %q, %v; want %q and an error", out.Reason, err, tc.reason)
 			}
 			checkNoCanary(t, g, canary)
 			checkErrorClean(t, err, canary, tc.is)
 		})
+	}
+}
+
+// canaryCase is one way a credential could reach Run's error.
+type canaryCase struct {
+	name string
+	// turns replace the default script: run_tests, then finish.
+	turns []faketest.Turn
+	// router wraps the replay router.
+	router func(inner contracts.Router) contracts.Router
+	exec   func(context.Context, contracts.ExecRequest) (contracts.ExecResult, error)
+	// setup adjusts the rig, for a failing store.
+	setup func(g *rig)
+	// ctx, when set, builds the context Run gets, and may adjust the rig.
+	ctx    func(t *testing.T, g *rig) context.Context
+	reason contracts.FailureReason
+	// is is a sentinel the returned error must still match.
+	is error
+}
+
+func (tc canaryCase) rig(t *testing.T) (*rig, context.Context) {
+	t.Helper()
+	turns := tc.turns
+	if turns == nil {
+		turns = []faketest.Turn{turnCalls(callOf("c1", contracts.ToolRunTests, `{}`)), turnCalls(finishCall("c2"))}
+	}
+	var router contracts.Router
+	router, _ = agenttest.Router(t, turns...)
+	if tc.router != nil {
+		router = tc.router(router)
+	}
+	g := newRig(t, router)
+	g.sb.ExecFunc = tc.exec
+	if tc.setup != nil {
+		tc.setup(g)
+	}
+	if tc.ctx != nil {
+		return g, tc.ctx(t, g)
+	}
+	return g, t.Context()
+}
+
+// failSecondRequest answers the session's second model request with err.
+func failSecondRequest(err error) func(contracts.Router) contracts.Router {
+	return func(inner contracts.Router) contracts.Router {
+		return &spyRouter{inner: inner, fail: func(n int) error {
+			if n == 2 {
+				return err
+			}
+			return nil
+		}}
 	}
 }

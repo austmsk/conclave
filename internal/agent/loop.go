@@ -206,13 +206,15 @@ func (s *session) stop(ctx context.Context, calls []contracts.ToolCall, reason c
 
 // abandon records the calls left when a call ended the session with err,
 // unless err is a failed audit write, after which nothing can be
-// recorded. It returns err, joined with any failure to record.
+// recorded. It returns err, or, when recording fails too, a SessionError
+// wrapping both. Both are this package's SessionErrors, so the combined
+// text is still safe to persist.
 func (s *session) abandon(ctx context.Context, calls []contracts.ToolCall, err error) error {
 	if errors.Is(err, errAudit) {
 		return err
 	}
 	if _, rerr := s.skip(ctx, calls, s.stopCode(err), nil); rerr != nil {
-		return errors.Join(err, rerr)
+		return sessionErr(errors.Join(err, rerr), "%s; and recording the calls it left: %s", err, rerr)
 	}
 	return err
 }
