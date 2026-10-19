@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -90,40 +91,152 @@ type job struct {
 	signal *CommandSignal
 }
 
+// ids returns the job's workflow and delivery IDs for the log.
+func (j job) ids() (workflowID, deliveryID string) {
+	if j.start != nil {
+		return j.start.WorkflowID, j.start.DeliveryID
+	}
+	return j.signal.WorkflowID, j.signal.DeliveryID
+}
+
+// callTimeout bounds one starter call, so an engine that stops answering
+// holds the queue for at most this long per job.
+const callTimeout = 10 * time.Second
+
 // Dispatcher runs starter calls off the request path, one at a time and in
 // arrival order, so a label is handled before the /approve that follows
 // it. The receiver enqueues without blocking; a full queue is refused.
 //
-// L0 stub: W1 implements.
+// A failed call is logged and not retried. The engine dedupes by workflow
+// ID and comment ID, so the owner's remedy, redelivering from GitHub's
+// delivery log, is always safe; a retry loop here would only hide an
+// outage behind a queue that has stopped moving.
 type Dispatcher struct {
 	starter WorkflowStarter
 	log     *slog.Logger
 	jobs    chan job
+
+	// mu guards closed, so enqueue never sends on the closed jobs channel.
+	mu     sync.Mutex
+	closed bool
+
+	// abort ends Run, and the call it is making, once Close's drain
+	// deadline passes.
+	abort    context.Context
+	abortRun context.CancelFunc
+	// done is closed when Run returns.
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 // NewDispatcher returns a dispatcher with a queue of depth jobs.
-//
-// L0 stub: W1 implements.
 func NewDispatcher(s WorkflowStarter, log *slog.Logger, depth int) *Dispatcher {
-	return &Dispatcher{starter: s, log: log, jobs: make(chan job, depth)}
+	abort, cancel := context.WithCancel(context.Background())
+	return &Dispatcher{
+		starter:  s,
+		log:      log,
+		jobs:     make(chan job, depth),
+		abort:    abort,
+		abortRun: cancel,
+		done:     make(chan struct{}),
+	}
 }
 
-// Run consumes the queue until Close drains it or ctx ends.
-//
-// L0 stub: W1 implements.
-func (d *Dispatcher) Run(ctx context.Context) { <-ctx.Done() }
+// Run consumes the queue until Close drains it or ctx ends. It is called
+// once, from its own goroutine. Each starter call's timeout derives from
+// ctx, so ctx should outlive shutdown: Close, not ctx, is how a dispatcher
+// is meant to stop, because a cancelled ctx abandons whatever is queued.
+func (d *Dispatcher) Run(ctx context.Context) {
+	defer d.doneOnce.Do(func() { close(d.done) })
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(d.abort, cancel)
+	defer stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case j, ok := <-d.jobs:
+			if !ok {
+				return
+			}
+			if ctx.Err() != nil {
+				d.dropped(j)
+				return
+			}
+			d.dispatch(ctx, j)
+		}
+	}
+}
+
+// dispatch makes one starter call and logs its outcome. A duplicate start
+// and a command for an issue with no run are expected outcomes, not
+// failures.
+func (d *Dispatcher) dispatch(ctx context.Context, j job) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	var err error
+	if j.start != nil {
+		err = d.starter.StartFeature(ctx, *j.start)
+	} else {
+		err = d.starter.SignalCommand(ctx, *j.signal)
+	}
+	workflowID, deliveryID := j.ids()
+	outcome := "dispatched"
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrAlreadyStarted):
+		outcome = "duplicate"
+	case errors.Is(err, ErrNoWorkflow):
+		outcome = "no_workflow"
+	default:
+		d.log.Error("webhook dispatch failed; redeliver to retry",
+			"workflow_id", workflowID, "delivery", deliveryID, "error", err)
+		return
+	}
+	d.log.Info("webhook dispatched", "outcome", outcome, "workflow_id", workflowID, "delivery", deliveryID)
+}
 
 // Close stops accepting jobs and waits up to drain for queued jobs to be
 // dispatched. Jobs still queued after that are logged by delivery ID, so
-// the owner can redeliver them.
-//
-// L0 stub: W1 implements.
-func (d *Dispatcher) Close(drain time.Duration) { _ = drain }
+// the owner can redeliver them. It is safe to call more than once.
+func (d *Dispatcher) Close(drain time.Duration) {
+	d.mu.Lock()
+	if !d.closed {
+		d.closed = true
+		close(d.jobs)
+	}
+	d.mu.Unlock()
 
-// enqueue adds j without blocking and reports whether it was accepted.
-//
-// L0 stub: W1 implements.
+	timer := time.NewTimer(drain)
+	defer timer.Stop()
+	select {
+	case <-d.done:
+	case <-timer.C:
+		d.abortRun()
+	}
+	// Whatever is left was never dispatched: Run ended on its context, or
+	// the deadline passed. Run may still take one job after the abort; it
+	// logs that one itself.
+	for j := range d.jobs {
+		d.dropped(j)
+	}
+}
+
+func (d *Dispatcher) dropped(j job) {
+	workflowID, deliveryID := j.ids()
+	d.log.Warn("webhook dropped undispatched at shutdown; redeliver to retry",
+		"workflow_id", workflowID, "delivery", deliveryID)
+}
+
+// enqueue adds j without blocking and reports whether it was accepted. It
+// refuses once Close has been called.
 func (d *Dispatcher) enqueue(j job) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return false
+	}
 	select {
 	case d.jobs <- j:
 		return true

@@ -1,0 +1,29 @@
+# GitHub App configuration: which App, which installation, and whose
+# commands count. Loaded and validated at startup by github.LoadConfig
+# (internal/github/config.go). Unknown keys are an error.
+#
+# Nothing here is secret. The webhook secret and the path of the App's
+# private key come from the secrets file outside the repository, through
+# CONCLAVE_GITHUB_WEBHOOK_SECRET and CONCLAVE_GITHUB_APP_KEY_FILE. The server
+# reads only the webhook secret and unsets it once read; only the worker
+# loads the private key.
+#
+# The placeholders fail validation on purpose, so neither process starts
+# until real values are filled in:
+#   app_id: 0            the App's numeric ID, from its settings page.
+#   app_slug: ""         the App's URL name; its bot user is <slug>[bot].
+#   installation_id: 0   the App's one installation. Deliveries from any
+#                        other installation are ignored.
+#   owner_user_id: 0     the owner's numeric GitHub user ID, never a login:
+#                        logins change (FR-SEC1). Only this account's labels
+#                        and commands are honoured.
+#
+# trigger_label is the label whose application by the owner starts a run.
+# api_base_url and git_base_url may be left out for GitHub's own endpoints;
+# anything else must be https.
+
+app_id: 0
+app_slug: ""
+installation_id: 0
+owner_user_id: 0
+trigger_label: agent
