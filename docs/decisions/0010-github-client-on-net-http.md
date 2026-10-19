@@ -36,7 +36,7 @@ Containing all of that would have taken more code than writing the client. That 
   - errors have fixed text: operation, status and request ID, unwrapping only to a sentinel;
   - transport causes are dropped.
 - Webhooks are verified on `X-Hub-Signature-256` only, with `hmac.Equal`. The handler refuses to start with a secret shorter than 32 bytes.
-- Push runs git with a scrubbed environment. The token goes in an extra header scoped to the repository URL, and hooks and redirects are off.
+- Push runs git with a scrubbed environment. The token goes in an extra header scoped to the repository URL, and hooks and redirects are off. Clone goes through ticket 3's `sandbox.Clone`, which now also refuses redirects and scopes its header to the clone URL's host.
 
 `ARCHITECTURE.md` and ticket 6's text now say so.
 

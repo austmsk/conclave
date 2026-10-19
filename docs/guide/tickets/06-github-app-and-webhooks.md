@@ -41,7 +41,7 @@ GitHub access is the platform's most powerful capability (RL-7). The design foll
   - Tokens cover one repository and a fixed permission set, and never include `workflows` or `administration`.
   - Every secret prints as `[redacted]`.
   - Errors carry fixed text, never GitHub's message.
-  - Redirects are refused for both the API and git.
+  - Redirects are refused by the API client, by `Push`, and by ticket 3's `sandbox.Clone`, which this ticket changed to match.
 - **A write to the wrong place** (T1, T3, FR-SEC5, FR-SEC16).
   - Pushes go only to `agent/<issue>/integration` or `agent/<issue>/pr-<n>`.
   - The refspec is built inside the package, and every push carries a lease.
@@ -101,7 +101,7 @@ Everything ignored gets 202 and a log line with the reason and the sender's nume
 **Dispatch** (`dispatch.go`).
 - `FeatureWorkflowID(repoID, issue)` is `feature/<numeric repository ID>/<issue>`. It is the same for every delivery about that issue, including after a rename.
 - A command becomes a `CommandSignal` to the same ID, carrying the comment's ID so the workflow can drop a command it has already applied.
-- The `Dispatcher` has a single consumer, so a label is dispatched before the `/approve` that follows it. Each starter call has a 10-second timeout and is never retried.
+- The `Dispatcher` has a single consumer, so a label is dispatched before the `/approve` that follows it. Each starter call has a 10-second timeout and is never retried. A panic in a starter call is recovered and logged as `starter panicked`, without its value, so it costs one delivery rather than the server (`call`).
 - `ErrAlreadyStarted` is logged as a duplicate and `ErrNoWorkflow` as `no_workflow`. Any other error is logged with the delivery ID, so the owner can redeliver it from GitHub.
 - `enqueue` never blocks. When the queue is full, or `Close` has been called, the receiver answers 503.
 - `Close(drain)` waits for the queue to empty. It then cancels Run's in-flight call and logs every job left behind by delivery ID.
@@ -138,6 +138,7 @@ Everything ignored gets 202 and a log line with the reason and the sender's nume
   - every failure is an `*APIError`. Its text is the operation, the status and a request ID checked against a pattern, and it unwraps only to a sentinel.
 - `IsPermanent` names what ticket 8's activities must not retry.
 - Every write first checks the repository name with `checkFullName`, then the body (not empty, at most 65,536 characters). It also refuses a body carrying the live token or anything token-shaped (`refuseSecrets`).
+- Every comment body, and every pull request title and body, passes through `sanitizeMarkdown` first (FR-SEC28). `@org/team` mentions are wrapped in a code span, so they notify nobody. HTML comments are removed, so nothing hidden reaches the thread. `<details>` sections stay, because the status comment uses them.
 - `EditComment` reads the comment first and refuses one whose `performed_via_github_app` is not this App.
 - `AddReaction` sends only six allowlisted reactions.
 - `CreatePullRequest`:
@@ -159,7 +160,7 @@ Everything ignored gets 202 and a log line with the reason and the sender's nume
   - no hooks, no fsmonitor, no credential helper;
   - only the https protocol.
 - A refusal becomes a `PushError` with a classified reason. The detail is redacted, including the base64 form of the credential, before it is truncated.
-- `Clone` mints a token and calls ticket 3's `sandbox.Clone`.
+- `Clone` mints a token and calls ticket 3's `sandbox.Clone`. This ticket changed that function: it now sets `http.followRedirects=false`, and scopes the token's header to the clone URL's host, so submodules on the same host still authenticate.
 
 **Quarantine** (`quarantine.go`).
 - `NewQuarantine` draws a 128-bit nonce, one per model request.
@@ -192,7 +193,9 @@ Everything ignored gets 202 and a log line with the reason and the sender's nume
 | `internal/github/api.go` | `Client` interface, `App`, `NewApp`, `do`, `APIError`, `IsPermanent` |
 | `internal/github/appauth.go` | `LoadAppKey`, `appJWT`, `installationToken` |
 | `internal/github/issues.go`, `pulls.go` | Comments, reactions, pull requests |
+| `internal/github/sanitize.go` | `sanitizeMarkdown`: team mentions and HTML comments |
 | `internal/github/git.go` | `CheckBranch`, `Push`, `Clone`, `PushError` |
+| `internal/sandbox/clone.go` | Ticket 3's clone, now refusing redirects with a host-scoped header |
 | `internal/github/githubtest/` | Fake REST API, `FakeStarter`, signed deliveries, git server, runtime keys |
 | `cmd/server/main.go` | Server wiring and shutdown |
 | `deploy/github.yaml` | The owner's App configuration (placeholders) |
@@ -222,7 +225,7 @@ Everything ignored gets 202 and a log line with the reason and the sender's nume
 **Acknowledgement is fast and bounded.**
 - `TestWebhookAcksBeforeDispatch`: a blocked starter still gets a 202 within two seconds.
 - `TestWebhookQueueFullReturns503`, `TestWebhookConcurrencyLimit`, `TestWebhookBodyLimit`.
-- `TestCommandsDispatchedInOrder`, `TestDispatcherDrainsOnClose`, `TestDispatcherDropsAfterDrainDeadline`, `TestEnqueueAfterCloseRefused`, `TestStarterErrorLoggedNotRetried`, `TestDispatcherDoesNotLeak`.
+- `TestCommandsDispatchedInOrder`, `TestDispatcherDrainsOnClose`, `TestDispatcherDropsAfterDrainDeadline`, `TestEnqueueAfterCloseRefused`, `TestStarterErrorLoggedNotRetried`, `TestDispatcherDoesNotLeak`, `TestDispatcherSurvivesStarterPanic`.
 - `TestNewServerBoundsEveryPhase`.
 
 **A token is obtained, scoped and used.**
@@ -236,7 +239,11 @@ Everything ignored gets 202 and a log line with the reason and the sender's nume
 - `TestAPIErrorsCarryNoSecrets`, `TestSecretHoldersFormatRedacted`, `TestSecretFormatsRedacted`, `TestRedact`, `TestRedactAttr`.
 - `TestPushErrorRedacted`, `TestPushGitSeesNoInheritedEnv`, `TestCloneLeavesNoToken`.
 - `TestOutgoingBodyCarryingTokenRefused`.
-- `TestClientRefusesRedirect`, `TestPushDoesNotFollowRedirect`.
+- `TestClientRefusesRedirect`, `TestPushDoesNotFollowRedirect`, and `TestCloneDoesNotFollowRedirect` in `internal/sandbox`.
+
+**Posted text is sanitized.**
+- `TestSanitizeMarkdown`: team mentions wrapped, HTML comments removed (including unterminated and spliced ones), user mentions, email addresses and `<details>` left alone.
+- `TestOutgoingBodiesSanitized`: a created comment, an edited comment, and a pull request's title and body all reach GitHub sanitized.
 - `TestLoadAppKey`.
 
 **Writes land only where they should.**
@@ -274,13 +281,11 @@ Everything ignored gets 202 and a log line with the reason and the sender's nume
   - Bot-identity commits.
   - The artifact-hash check before `Push`.
   - Branch cleanup.
-  - Sanitising generated markdown (mass mentions, hidden HTML).
 - **Not in this ticket.**
   - Commands on pull request conversations and edited comments are ignored.
   - Per-sender rate limiting is left to ticket 10. Non-owners are dropped before the queue in the meantime.
   - A full queue answers 503 and relies on the owner redelivering, because GitHub does not retry on its own.
 - **Residual risks.**
-  - `sandbox.Clone` (ticket 3) neither disables redirects nor scopes the token header to one URL, as `Push` does.
   - A third-party App acting with the owner's user-to-server token can apply the trigger label, because `labeled` payloads carry no App flag.
   - `RedactAttr` does not redact a non-error struct passed to `slog.Any`.
 - **To confirm against real GitHub** before ticket 10's end-to-end run:
