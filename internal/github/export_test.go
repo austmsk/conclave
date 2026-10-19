@@ -36,3 +36,6 @@ func secrets(vs []string) []secret {
 	}
 	return out
 }
+
+// SanitizeMarkdown exposes sanitizeMarkdown.
+func SanitizeMarkdown(s string) string { return sanitizeMarkdown(s) }

@@ -45,8 +45,9 @@ type pullCreate struct {
 // looks for an open one from the same head and returns it if this App
 // opened it, so a retried activity never opens a second (RL-2). One opened
 // by anyone else is refused, not adopted. A 422 from a concurrent create
-// looks again.
+// looks again. The title and body are sanitized first (sanitizeMarkdown).
 func (a *App) CreatePullRequest(ctx context.Context, p PullRequestSpec) (PullRequest, error) {
+	p.Title, p.Body = sanitizeMarkdown(p.Title), sanitizeMarkdown(p.Body)
 	if err := checkPullRequest(p); err != nil {
 		return PullRequest{}, err
 	}

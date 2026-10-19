@@ -33,11 +33,13 @@ type commentReply struct {
 	} `json:"performed_via_github_app"`
 }
 
-// CreateComment posts body on an issue or pull request.
+// CreateComment posts body on an issue or pull request, sanitized first
+// (sanitizeMarkdown).
 func (a *App) CreateComment(ctx context.Context, repo RepoRef, issue int, body string) (Comment, error) {
 	if issue <= 0 {
 		return Comment{}, fmt.Errorf("%w: issue number %d", ErrRefused, issue)
 	}
+	body = sanitizeMarkdown(body)
 	tok, err := a.writeToken(ctx, repo, body)
 	if err != nil {
 		return Comment{}, err
@@ -56,10 +58,12 @@ func (a *App) CreateComment(ctx context.Context, repo RepoRef, issue int, body s
 // EditComment replaces a comment's body in place. It first reads the
 // comment and refuses one this App did not post: an installation token can
 // edit any comment, and a wrong ID must never rewrite the owner's words.
+// The new body is sanitized first (sanitizeMarkdown).
 func (a *App) EditComment(ctx context.Context, repo RepoRef, commentID int64, body string) error {
 	if commentID <= 0 {
 		return fmt.Errorf("%w: comment ID %d", ErrRefused, commentID)
 	}
+	body = sanitizeMarkdown(body)
 	tok, err := a.writeToken(ctx, repo, body)
 	if err != nil {
 		return err
