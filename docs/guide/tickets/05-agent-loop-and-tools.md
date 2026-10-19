@@ -82,7 +82,9 @@ The loop itself has to be correct in the ways `RL-6` warns about:
    - The report is checked by `validateReport` (`report.go`). One field table produces both the JSON Schema and the validator. Required fields, unknown fields at any depth, null arrays and trailing data are all checked. The error lists every problem, for the model's one repair.
    - The first invalid report gets the errors back, which uses the repair. A second gives `invalid_output`.
 
-**Errors Run returns.** Once a session has started, every error is a `*SessionError`. Its message is written by the agent package (role, tool, step, budget kind), so a caller may store it; Temporal writes activity errors into workflow history. The raw router or sandbox error is reachable only through `errors.Is` and `errors.As`, because it may carry a credential. The audit's `error` column and the model's text hold sanitized codes only.
+**Errors Run returns.** Once a session has started, every error is a `*SessionError`. Its message is written by the agent package (role, tool, step, budget kind), so a caller may store it; Temporal writes activity errors into workflow history. The raw router or sandbox error is reachable only through `errors.Is` and `errors.As`, because it may carry a credential. This holds even when recording the calls a failure left also fails: `abandon` wraps both in one `SessionError`.
+
+The audit's `error` column holds sanitized codes only. The model sees refusal text: the agent package's own, or, for an error wrapping a sandbox sentinel, the backend's message about the agent's already-validated path. Any other tool error ends the session, and the model sees nothing of it.
 
 **The tools.**
 - **Paths** (`internal/sandbox/path.go`, `internal/agent/path.go`). `sandbox.CheckPath` refuses:
