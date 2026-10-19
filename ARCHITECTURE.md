@@ -140,12 +140,13 @@ cmd/worker/          Temporal worker; flags select task queues
 internal/contracts/  Shared types and interfaces (reviewed by hand)
 internal/workflow/   Deterministic workflows
 internal/activity/   Side effects: LLM, sandbox, git, GitHub
-internal/agent/      Agent loop and tools
+internal/agent/      Agent loop and tools; fakes for testing it (agenttest/)
 internal/llm/        Role-based router, provider adapters (anthropic/), fake replay provider (faketest/)
 internal/sandbox/    Sandbox interface; docker/ and daytona/
 internal/gate/       Deterministic gates
 internal/github/     App auth, webhooks, PR operations
-internal/store/      Postgres access: migrations, compare-and-set helpers, cost ledger
+internal/store/      Postgres access: migrations, compare-and-set helpers, cost ledger, tool-call audit
+internal/blob/       Content-addressed blob store for full tool output
 internal/repoindex/  Code intelligence (Milestone 3)
 internal/eval/       Benchmark runner (Milestone 2)
 internal/testenv/    Skip locally, fail in CI, when a test's environment is missing

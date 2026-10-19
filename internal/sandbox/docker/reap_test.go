@@ -74,7 +74,7 @@ func TestReapSweepsOtherNamespacesOnlyPastStaleAge(t *testing.T) {
 
 	// A provider whose stale age has passed removes it regardless of
 	// namespace, so a renamed namespace cannot strand containers.
-	stale, err := docker.New(b.ctx, docker.Config{Namespace: b.namespace, StaleAge: time.Nanosecond})
+	stale, err := docker.New(b.ctx, docker.Config{Namespace: b.Namespace, StaleAge: time.Nanosecond})
 	if err != nil {
 		t.Fatal(err)
 	}

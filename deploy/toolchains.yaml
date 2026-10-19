@@ -1,0 +1,30 @@
+# Repository toolchains: each repository's configured test, build and lint
+# commands (FR-I4), offered to the agent as run_tests, run_build and
+# run_lint. Loaded and validated at startup by agent.LoadToolchains
+# (internal/agent/toolchains.go).
+#
+# Repositories are keyed by full name, the same keys as deploy/repos.yaml.
+# Only the owner edits this file; never derive it from the target
+# repository, because the agent cannot change or add to these commands.
+#
+# The placeholder fails validation on purpose, so the worker refuses to
+# start until a real entry is filled in:
+#   owner/repo     replace with the repository's full name.
+#
+# Each command is an argv list, run exactly as written in the workspace
+# root with no shell; for pipes or redirection, write [sh, -c, "..."].
+#   test:   runs the test suite         (run_tests)
+#   build:  builds the project          (run_build)
+#   lint:   runs the linters            (run_lint)
+# All three are required: the implementer role offers all three tools, and
+# a role whose tools the worker cannot provide fails every attempt. A
+# repository with nothing to run for one of them can use [true], which
+# succeeds without doing anything. No process survives between
+# commands, so each must be self-contained: a command that needs a running
+# service has to start it itself.
+
+repositories:
+  owner/repo:
+    test: [go, test, ./...]
+    build: [go, build, ./...]
+    lint: [golangci-lint, run]

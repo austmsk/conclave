@@ -14,6 +14,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/austmsk/conclave/internal/contracts"
+	"github.com/austmsk/conclave/internal/sandbox"
 )
 
 var (
@@ -21,12 +22,15 @@ var (
 	ErrClosed = errors.New("sandbox is closed")
 	// ErrExpired reports use of a sandbox past its Limits.Timeout.
 	ErrExpired = errors.New("sandbox lifetime exceeded")
-	// ErrOutputTooLarge reports a command whose output passed
-	// Config.MaxOutputBytes; the command was killed.
-	ErrOutputTooLarge = errors.New("command output exceeds limit")
-	// ErrFileTooLarge reports a ReadFile of a file larger than
-	// Config.MaxOutputBytes. Nothing is killed.
-	ErrFileTooLarge = errors.New("file exceeds read limit")
+	// ErrOutputTooLarge is sandbox.ErrOutputTooLarge: a command whose
+	// output passed Config.MaxOutputBytes; the command was killed.
+	ErrOutputTooLarge = sandbox.ErrOutputTooLarge
+	// ErrFileTooLarge is sandbox.ErrFileTooLarge: a ReadFile of a file
+	// larger than Config.MaxOutputBytes, refused before any of it is
+	// read. It is a refusal, not ErrOutputTooLarge.
+	ErrFileTooLarge = sandbox.ErrFileTooLarge
+	// ErrNotFile is sandbox.ErrNotFile.
+	ErrNotFile = sandbox.ErrNotFile
 	// ErrKilled reports that processes did not stop when told to and the
 	// container was killed outright. The sandbox is unusable afterwards.
 	ErrKilled = errors.New("sandbox killed: processes did not stop")
@@ -46,8 +50,12 @@ type Sandbox struct {
 	maxOutput int64
 	uid, gid  int
 
-	// ops serializes commands.
-	ops sync.Mutex
+	// ops serializes commands and guards initPID and lastSleep, which
+	// killAll keeps: the init's host PID and the sleep child it had when
+	// the last kill was confirmed.
+	ops       sync.Mutex
+	initPID   string
+	lastSleep string
 	// life guards the fields below.
 	life       sync.Mutex
 	closed     bool
@@ -92,18 +100,21 @@ func (s *Sandbox) Exec(ctx context.Context, req contracts.ExecRequest) (contract
 // Exit codes the file scripts use for their own refusals, distinct from
 // anything cat or mkdir return.
 const (
-	exitSymlink   = 3
-	exitNotFile   = 4
-	exitMkdir     = 5
-	exitTooLarge  = 6
-	execArgvShell = "/bin/sh"
+	exitInvalidPath = 3
+	exitNotFile     = 4
+	exitMkdir       = 5
+	exitTooLarge    = 6
+	execArgvShell   = "/bin/sh"
 )
 
 // readScript walks the path one component at a time, refusing any
 // symlink so a read cannot be redirected out of the workspace, then
-// prints the file. The path arrives as $1 and is only ever expanded
-// quoted, with globbing off, so it is used exactly as given. It runs as
-// the sandbox user and so cannot read what the agent could not.
+// prints the file. A file with more than one link is refused too: it may
+// be another name for a file the path check would refuse, such as
+// .git/config. The comparison is with the string 1, so a stat that fails
+// refuses rather than reads. The path arrives as $1 and is only ever
+// expanded quoted, with globbing off, so it is used exactly as given. It
+// runs as the sandbox user and so cannot read what the agent could not.
 const readScript = `set -f
 rest=$1; p=/workspace
 while [ -n "$rest" ]; do
@@ -115,11 +126,12 @@ while [ -n "$rest" ]; do
   [ -L "$p" ] && { echo "refusing symlink: $p" >&2; exit 3; }
 done
 [ -f "$p" ] || { echo "not a regular file: $p" >&2; exit 4; }
+[ "$(stat -c %h "$p")" = 1 ] || { echo "refusing hard link: $p" >&2; exit 3; }
 [ "$(wc -c < "$p")" -le "$2" ] || { echo "file larger than $2 bytes" >&2; exit 6; }
 exec cat -- "$p"`
 
 // writeScript mirrors readScript, creating missing parent directories and
-// refusing to write through a symlink or over a non-file.
+// refusing to write through a symlink or a hard link or over a non-file.
 const writeScript = `set -f
 rest=$1; p=/workspace
 while [ -n "$rest" ]; do
@@ -134,6 +146,9 @@ while [ -n "$rest" ]; do
   [ -d "$p" ] || { echo "not a directory: $p" >&2; exit 4; }
 done
 [ -e "$p" ] && [ ! -f "$p" ] && { echo "not a regular file: $p" >&2; exit 4; }
+if [ -f "$p" ]; then
+  [ "$(stat -c %h "$p")" = 1 ] || { echo "refusing hard link: $p" >&2; exit 3; }
+fi
 exec cat > "$p"`
 
 // ReadFile returns the contents of a workspace file. A file larger than
@@ -180,11 +195,13 @@ func fileScriptError(res contracts.ExecResult) error {
 	switch res.ExitCode {
 	case 0:
 		return nil
-	case exitSymlink:
+	case exitInvalidPath:
 		return fmt.Errorf("%w: %s", ErrInvalidPath, msg)
 	case exitTooLarge:
 		return fmt.Errorf("%w: %s", ErrFileTooLarge, msg)
-	case exitNotFile, exitMkdir:
+	case exitNotFile:
+		return fmt.Errorf("%w: %s", ErrNotFile, msg)
+	case exitMkdir:
 		return errors.New(msg)
 	default:
 		return fmt.Errorf("exit %d: %s", res.ExitCode, msg)
@@ -264,4 +281,12 @@ func (s *Sandbox) isClosed() bool {
 	s.life.Lock()
 	defer s.life.Unlock()
 	return s.closed || s.closing
+}
+
+// unusable reports a sandbox that is closed, closing, or killed: there is
+// nothing left in it to kill.
+func (s *Sandbox) unusable() bool {
+	s.life.Lock()
+	defer s.life.Unlock()
+	return s.closed || s.closing || s.killed
 }

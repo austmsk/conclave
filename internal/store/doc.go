@@ -19,7 +19,8 @@
 // in one transaction. A replayed event is absorbed by the idempotency key
 // rather than rejected. RepoDirectory gives the
 // router each repository's record, which it checks against the owner's
-// configured tier.
+// configured tier. ToolCalls is the agent's audit recorder over the
+// append-only tool_calls table (FR-SEC24).
 //
 // These grants are a control only when the application connects as a
 // non-owner LOGIN role that is a member of conclave_app. SET ROLE
