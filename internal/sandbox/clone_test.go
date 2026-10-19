@@ -141,6 +141,34 @@ func TestCloneWithWrongTokenFailsAndLeavesNoTree(t *testing.T) {
 	}
 }
 
+// TestCloneDoesNotFollowRedirect answers the clone URL with a redirect to a
+// real server. Following it would replay the request, and before the
+// header was scoped and redirects refused, the token with it.
+func TestCloneDoesNotFollowRedirect(t *testing.T) {
+	root, _ := sandboxtest.NewBareRemotes(t)
+	target := newGitServer(t, root, sandboxtest.CanaryToken)
+	var redirected atomic.Int64
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Add(1)
+		http.Redirect(w, r, target.URL+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirect.Close)
+	dir := filepath.Join(t.TempDir(), "clone")
+
+	err := sandbox.Clone(t.Context(), sandbox.CloneSpec{
+		URL: redirect.URL + "/super.git", Dir: dir, Token: sandboxtest.CanaryToken,
+	})
+	if err == nil {
+		t.Fatal("a clone answered with a redirect should fail")
+	}
+	if redirected.Load() == 0 {
+		t.Fatal("the redirecting server was never asked")
+	}
+	if n := target.authorized.Load() + target.rejected.Load(); n != 0 {
+		t.Fatalf("the redirect was followed: the target received %d requests", n)
+	}
+}
+
 func TestCloneRejectsUnsafeSpecs(t *testing.T) {
 	cases := []struct {
 		name string

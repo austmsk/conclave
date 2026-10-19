@@ -61,7 +61,7 @@ func Clone(ctx context.Context, spec CloneSpec) error {
 		args = append(args, "--branch", spec.Ref)
 	}
 	args = append(args, "--", spec.URL, spec.Dir)
-	if err := runGit(ctx, "", spec.Token, args...); err != nil {
+	if err := runGit(ctx, "", spec.URL, spec.Token, args...); err != nil {
 		return fmt.Errorf("cloning: %w", err)
 	}
 	if commitID.MatchString(spec.Ref) {
@@ -80,14 +80,14 @@ func checkoutCommit(ctx context.Context, spec CloneSpec) error {
 	if spec.Depth > 0 {
 		fetch = append(fetch[:2], append([]string{"--depth", strconv.Itoa(spec.Depth)}, fetch[2:]...)...)
 	}
-	if err := runGit(ctx, spec.Dir, spec.Token, fetch...); err != nil {
+	if err := runGit(ctx, spec.Dir, spec.URL, spec.Token, fetch...); err != nil {
 		return fmt.Errorf("fetching %s: %w", spec.Ref, err)
 	}
-	if err := runGit(ctx, spec.Dir, "", "checkout", "--quiet", "--detach", spec.Ref); err != nil {
+	if err := runGit(ctx, spec.Dir, "", "", "checkout", "--quiet", "--detach", spec.Ref); err != nil {
 		return fmt.Errorf("checking out %s: %w", spec.Ref, err)
 	}
 	if spec.Submodules {
-		if err := runGit(ctx, spec.Dir, spec.Token, "submodule", "--quiet", "update", "--init", "--recursive"); err != nil {
+		if err := runGit(ctx, spec.Dir, spec.URL, spec.Token, "submodule", "--quiet", "update", "--init", "--recursive"); err != nil {
 			return fmt.Errorf("updating submodules: %w", err)
 		}
 	}
@@ -124,10 +124,13 @@ func validateCloneSpec(spec CloneSpec) error {
 }
 
 // runGit runs git with a scrubbed environment: no system or global
-// config, no terminal prompts, and the token, if any, as an extra header
-// configured through the environment. Command output is returned in the
-// error; git does not echo request headers.
-func runGit(ctx context.Context, dir, token string, args ...string) error {
+// config, no terminal prompts, redirects refused, and the token, if any,
+// as an extra header configured through the environment and scoped to the
+// clone URL's host. Submodules on the same host still authenticate; no
+// other host is ever sent the header, and a redirect is an error rather
+// than a way to carry the token somewhere else. Command output is returned
+// in the error; git does not echo request headers.
+func runGit(ctx context.Context, dir, remote, token string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = []string{
@@ -140,14 +143,16 @@ func runGit(ctx context.Context, dir, token string, args ...string) error {
 		"LANG=C",
 		"LC_ALL=C",
 	}
+	config := []string{"GIT_CONFIG_KEY_0=http.followRedirects", "GIT_CONFIG_VALUE_0=false"}
 	if token != "" {
 		auth := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
-		cmd.Env = append(cmd.Env,
-			"GIT_CONFIG_COUNT=1",
-			"GIT_CONFIG_KEY_0=http.extraheader",
-			"GIT_CONFIG_VALUE_0=Authorization: Basic "+auth,
+		config = append(config,
+			"GIT_CONFIG_KEY_1=http."+originOf(remote)+"/.extraheader",
+			"GIT_CONFIG_VALUE_1=Authorization: Basic "+auth,
 		)
 	}
+	cmd.Env = append(cmd.Env, "GIT_CONFIG_COUNT="+strconv.Itoa(len(config)/2))
+	cmd.Env = append(cmd.Env, config...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -155,4 +160,14 @@ func runGit(ctx context.Context, dir, token string, args ...string) error {
 		return fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(out.String()))
 	}
 	return nil
+}
+
+// originOf returns remote's scheme and host, the scope of the token's
+// header. validateCloneSpec has already parsed remote.
+func originOf(remote string) string {
+	u, err := url.Parse(remote)
+	if err != nil {
+		return remote
+	}
+	return u.Scheme + "://" + u.Host
 }

@@ -55,7 +55,7 @@ Milestone 1 implements a thin vertical slice: one issue, one implementer, one sa
 | Sandboxes | Docker (local) → Daytona (remote) | One `Sandbox` interface |
 | Models | Adapters written on `net/http` (Anthropic so far; OpenAI, Google, Ollama to follow), not vendor SDKs | Behind a role-based router |
 | Code intelligence | ripgrep, language servers (LSP) | Search and symbol queries |
-| GitHub | GitHub App + `go-github` + `ghinstallation` | Events and actions |
+| GitHub | GitHub App; JWT, installation tokens and REST written on `net/http` ([0010](docs/decisions/0010-github-client-on-net-http.md)), not `go-github` or `ghinstallation` | Events and actions |
 | Networking | Docker Compose, Tailscale, Cloudflare Tunnel | Local stack, private mesh, public webhook |
 | Observability | OpenTelemetry + Jaeger, Temporal UI | Traces and run inspection |
 | CI | GitHub Actions | `go vet`, `golangci-lint`, `go test -race`, `workflowcheck`, `govulncheck` |
