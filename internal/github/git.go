@@ -98,10 +98,9 @@ const (
 // scoped to that repository. The URL is built from configuration and the
 // checked full name, never taken from a payload.
 //
-// sandbox.Clone runs git with its own scrubbed environment, which neither
-// sets http.followRedirects=false nor scopes the token's header to the
-// repository's URL as Push does. That is ticket 3's code and is left as it
-// is here.
+// sandbox.Clone runs git with its own scrubbed environment: redirects are
+// refused, and the token's header is scoped to the clone URL's host rather
+// than its repository, so submodules on the same host still authenticate.
 func (a *App) Clone(ctx context.Context, repo RepoRef, dir, ref string) error {
 	if err := checkFullName(repo.FullName); err != nil {
 		return err
