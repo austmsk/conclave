@@ -10,7 +10,7 @@ One page per merged ticket, in build order. The spec for each ticket is in [`doc
 | 4 | LLM router and fake provider | merged (PR #4) | [04-llm-router](04-llm-router.md) |
 | 8a | Budgets and attribution | in progress | — |
 | 5 | Agent loop and tools | in review (`ticket/5`) | [05-agent-loop-and-tools](05-agent-loop-and-tools.md) |
-| 6 | GitHub App and webhooks | not started | — |
+| 6 | GitHub App and webhooks | in review (`ticket/6`) | [06-github-app-and-webhooks](06-github-app-and-webhooks.md) |
 | 7 | Gates and artifact integrity | not started | — |
 | 8 | Feature workflow core | not started | — |
 | 8b | Commands and status surface | not started | — |

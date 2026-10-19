@@ -48,13 +48,13 @@ This page follows one request through Milestone 1, the walking skeleton: one iss
 
 ### 1. Webhook received (ticket 6)
 
-GitHub sends an event when an issue is labeled or a comment is posted. `cmd/server` checks the signature and acknowledges within two seconds. Only commands from the owner's numeric user ID are honoured. The App's own comments and other bots are ignored, so a model's output can't issue a command.
+GitHub sends an event when an issue is labeled or a comment is posted. `cmd/server` checks the signature and acknowledges within two seconds. Only commands from the owner's numeric user ID are honoured. The App's own comments and other bots are ignored, so a model's output can't issue a command. Accepted work goes on a queue for the workflow starter, and the request returns without waiting on it. See [ticket 6](tickets/06-github-app-and-webhooks.md).
 
 ### 2. Workflow started (ticket 8)
 
 A Temporal workflow is code whose progress is saved after every step. If a worker dies, another worker replays the saved history and carries on. For that to work, workflow code must make the same decisions every time it runs. So it never reads the clock, generates random numbers, touches the network, or ranges over a map unsorted (see `CLAUDE.md`). Anything with a side effect is an **activity** in `internal/activity`.
 
-The workflow ID comes from the issue number, so a duplicate webhook can't start a second run.
+The workflow ID comes from the repository's numeric ID and the issue number (`github.FeatureWorkflowID`), so a duplicate webhook can't start a second run.
 
 ### 3. Records written (ticket 2, merged)
 
