@@ -173,14 +173,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 // and a command for an issue with no run are expected outcomes, not
 // failures.
 func (d *Dispatcher) dispatch(ctx context.Context, j job) {
-	ctx, cancel := context.WithTimeout(ctx, callTimeout)
-	defer cancel()
-	var err error
-	if j.start != nil {
-		err = d.starter.StartFeature(ctx, *j.start)
-	} else {
-		err = d.starter.SignalCommand(ctx, *j.signal)
-	}
+	err := d.call(ctx, j)
 	workflowID, deliveryID := j.ids()
 	outcome := "dispatched"
 	switch {
@@ -195,6 +188,29 @@ func (d *Dispatcher) dispatch(ctx context.Context, j job) {
 		return
 	}
 	d.log.Info("webhook dispatched", "outcome", outcome, "workflow_id", workflowID, "delivery", deliveryID)
+}
+
+// errStarterPanicked stands for a starter call that panicked. The panic
+// value is not kept: it is the engine client's text, and could hold
+// anything.
+var errStarterPanicked = errors.New("starter panicked")
+
+// call makes one starter call. A panic in it is recovered and becomes
+// errStarterPanicked: this goroutine is the server's only consumer, and a
+// panic left to unwind would take the webhook endpoint down with it, where
+// one on the request path costs only that delivery.
+func (d *Dispatcher) call(ctx context.Context, j job) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	defer func() {
+		if recover() != nil {
+			err = errStarterPanicked
+		}
+	}()
+	if j.start != nil {
+		return d.starter.StartFeature(ctx, *j.start)
+	}
+	return d.starter.SignalCommand(ctx, *j.signal)
 }
 
 // Close stops accepting jobs and waits up to drain for queued jobs to be

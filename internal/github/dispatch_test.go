@@ -1,8 +1,12 @@
 package github_test
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,5 +138,48 @@ func TestDispatcherDoesNotLeak(t *testing.T) {
 				t.Fatal("Run did not return after Close")
 			}
 		})
+	}
+}
+
+// panickingStarter panics on every start and passes commands to a
+// FakeStarter.
+type panickingStarter struct{ *githubtest.FakeStarter }
+
+func (panickingStarter) StartFeature(context.Context, github.FeatureStart) error {
+	panic("engine client misconfigured")
+}
+
+func TestDispatcherSurvivesStarterPanic(t *testing.T) {
+	fake := &githubtest.FakeStarter{}
+	logs := &syncBuffer{}
+	log := slog.New(slog.NewJSONHandler(logs, nil))
+	disp := github.NewDispatcher(panickingStarter{fake}, log, 4)
+	recv, err := github.NewReceiver(githubtest.WebhookConfig(), githubtest.EnabledRepos(), []byte(secret), disp, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan struct{})
+	go func() { defer close(ran); disp.Run(t.Context()) }()
+
+	for _, d := range []struct {
+		event string
+		body  []byte
+	}{
+		{"issues", githubtest.LabeledEvent().JSON()},
+		{"issue_comment", githubtest.CommentEvent("/status").JSON()},
+	} {
+		rec := httptest.NewRecorder()
+		recv.ServeHTTP(rec, githubtest.Delivery(t, secret, d.event, d.body))
+		wantStatus(t, rec, http.StatusAccepted)
+	}
+	disp.Close(5 * time.Second)
+	<-ran
+
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].Signal == nil {
+		t.Fatalf("after a panicking start the command was not dispatched: %d calls", len(calls))
+	}
+	if out := logs.String(); !strings.Contains(out, "starter panicked") || strings.Contains(out, "misconfigured") {
+		t.Fatalf("want the panic logged as a fixed error, without its value:\n%s", out)
 	}
 }
