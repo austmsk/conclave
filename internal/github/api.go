@@ -1,11 +1,18 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -175,12 +182,184 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+const (
+	// apiVersion pins the REST API version every request asks for.
+	apiVersion = "2022-11-28"
+	// maxErrorBody bounds how much of an error reply is read before it is
+	// discarded; maxReplyBody bounds a reply that is decoded.
+	maxErrorBody = 4 << 10
+	maxReplyBody = 1 << 20
+)
+
+// requestIDPattern is the shape of GitHub's X-GitHub-Request-Id. Anything
+// else in that header is dropped, so a server cannot put text of its
+// choosing, a token included, into an error through it.
+var requestIDPattern = regexp.MustCompile(`^[A-Fa-f0-9:]{1,64}$`)
+
 // do sends one API request authenticated with tok, encoding in as JSON
 // when it is non-nil and decoding a 2xx reply into out when it is
-// non-nil. Every failure is an *APIError or a context error.
-//
-// L0 stub: W2 implements.
+// non-nil. Every failure is an *APIError or a context error. path is built
+// by the caller from validated parts and begins with a slash.
 func (a *App) do(ctx context.Context, op, method, path string, tok secret, in, out any) error {
-	_, _, _, _, _, _ = ctx, method, path, tok, in, out
-	return &APIError{Op: op, kind: ErrUnavailable}
+	req, err := a.newRequest(ctx, method, path, tok, in)
+	if err != nil {
+		// The cause could quote the request; it is dropped.
+		return &APIError{Op: op, kind: ErrInvalidRequest}
+	}
+	resp, err := a.http.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("github: %s: %w", op, ctx.Err())
+		}
+		// A transport error names the URL but never the headers, so the
+		// token cannot leak through it; the cause is still dropped to be
+		// sure.
+		return &APIError{Op: op, kind: ErrUnavailable}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return statusError(op, resp)
+	}
+	body := io.LimitReader(resp.Body, maxReplyBody)
+	if out == nil {
+		_, _ = io.Copy(io.Discard, body)
+		return nil
+	}
+	if err := json.NewDecoder(body).Decode(out); err != nil {
+		return decodeError(ctx, op, resp, err)
+	}
+	return nil
+}
+
+func (a *App) newRequest(ctx context.Context, method, path string, tok secret, in any) (*http.Request, error) {
+	var body io.Reader
+	if in != nil {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, a.cfg.APIBaseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", apiVersion)
+	req.Header.Set("User-Agent", "conclave")
+	req.Header.Set("Authorization", "Bearer "+tok.reveal())
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req, nil
+}
+
+// decodeError reports a 2xx reply that could not be read. A reply cut off
+// by the context or the network is worth asking for again; one that does
+// not decode is not.
+func decodeError(ctx context.Context, op string, resp *http.Response, err error) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("github: %s: %w", op, ctx.Err())
+	}
+	kind := ErrInvalidRequest
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		kind = ErrUnavailable
+	}
+	return &APIError{Op: op, Status: resp.StatusCode, RequestID: requestID(resp.Header), kind: kind}
+}
+
+// statusError maps a failed reply to an *APIError. The body is read, up to
+// a bound, and thrown away: GitHub's messages quote the request, and a
+// misbehaving server could echo the token. A redirect is never followed
+// (see refuseRedirect), and asking again will not change where it points,
+// so it is ErrInvalidRequest.
+func statusError(op string, resp *http.Response) error {
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
+	e := &APIError{Op: op, Status: resp.StatusCode, RequestID: requestID(resp.Header)}
+	switch s := resp.StatusCode; {
+	case s == http.StatusUnauthorized:
+		e.kind = ErrAuth
+	case s == http.StatusTooManyRequests || (s == http.StatusForbidden && rateLimited(resp.Header)):
+		e.kind = ErrRateLimited
+		e.RetryAfter = retryAfter(resp.Header.Get("Retry-After"))
+	case s == http.StatusNotFound:
+		e.kind = ErrNotFound
+	case s == http.StatusRequestTimeout || s >= 500:
+		e.kind = ErrUnavailable
+	default:
+		// Other 4xx, and 3xx. A 403 without rate-limit headers is a
+		// missing permission, which a retry cannot grant.
+		e.kind = ErrInvalidRequest
+	}
+	return e
+}
+
+// rateLimited reports GitHub's signs of a primary limit (no requests
+// remaining) or a secondary one (a Retry-After on a 403).
+func rateLimited(h http.Header) bool {
+	return h.Get("X-RateLimit-Remaining") == "0" || h.Get("Retry-After") != ""
+}
+
+// retryAfter reads a Retry-After header in seconds, the form GitHub sends.
+// Anything else is ignored, leaving the interval to the retry policy.
+func retryAfter(v string) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || secs <= 0 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
+func requestID(h http.Header) string {
+	id := h.Get("X-GitHub-Request-Id")
+	if !requestIDPattern.MatchString(id) {
+		return ""
+	}
+	return id
+}
+
+// send is do with repo's installation token. A token GitHub rejects is
+// dropped from the cache, so the activity's retry mints a new one rather
+// than presenting the rejected token until it expires.
+func (a *App) send(ctx context.Context, repo RepoRef, tok secret, op, method, path string, in, out any) error {
+	err := a.do(ctx, op, method, path, tok, in, out)
+	if errors.Is(err, ErrAuth) {
+		a.invalidate(repo.ID)
+	}
+	return err
+}
+
+// repoPath is the API path under repo. The full name has passed
+// checkFullName, whose characters need no escaping in a path.
+func repoPath(repo RepoRef, format string, args ...any) string {
+	return "/repos/" + repo.FullName + fmt.Sprintf(format, args...)
+}
+
+// permanent lists the errors a retry cannot fix: the same request fails
+// the same way again.
+var permanent = []error{ErrRefused, ErrInvalidRequest, ErrNotFound, ErrInvalidConfig}
+
+// IsPermanent reports whether err is one a retry cannot fix: a refusal by
+// this package, a request GitHub rejected as made, a missing resource, bad
+// configuration, or a push the remote refused on its merits. ErrAuth is
+// not permanent: the retry mints a new token. Ticket 8's activities return
+// a permanent error as non-retryable
+// (temporal.NewNonRetryableApplicationError); this package does not import
+// Temporal, so the wrapping lives with the activity.
+func IsPermanent(err error) bool {
+	for _, p := range permanent {
+		if errors.Is(err, p) {
+			return true
+		}
+	}
+	var pe *PushError
+	if errors.As(err, &pe) {
+		switch pe.Reason {
+		case PushNonFastForward, PushStaleLease, PushRemoteRejected:
+			return true
+		}
+	}
+	return false
 }
