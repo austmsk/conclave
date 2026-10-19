@@ -97,7 +97,7 @@ Enforce every limit in `Limits`. Validate the finish report against its schema w
 
 ## Ticket 6 — GitHub App and webhooks
 
-Webhook receiver on `net/http` with constant-time signature verification. Command parser honouring only the owner's numeric user ID; comments from the App itself and from other bots are ignored. App authentication via `ghinstallation`. Clone, branch push restricted to `agent/` prefixes, PR creation, comment posting and in-place editing, reaction adding.
+Webhook receiver on `net/http` with constant-time signature verification. Command parser honouring only the owner's numeric user ID; comments from the App itself and from other bots are ignored. App authentication on `net/http`: the App JWT and installation tokens are written in the package, not taken from `ghinstallation` ([0010](../decisions/0010-github-client-on-net-http.md)). Clone, branch push restricted to `agent/` prefixes, PR creation, comment posting and in-place editing, reaction adding.
 
 Webhooks acknowledge within two seconds and dispatch work asynchronously.
 
