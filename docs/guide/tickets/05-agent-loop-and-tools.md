@@ -1,6 +1,6 @@
 # Ticket 5 — Agent loop and tools
 
-**Status:** in review on branch `ticket/5` · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-5--agent-loop-and-tools) · **Plan:** [`ticket-5-plan.md`](../../tickets/ticket-5-plan.md) · **Requirements:** FR-SEC3, FR-SEC24, FR-SEC29 (FR-SEC28 on the runner side) · **Review list:** RL-6, RL-11
+**Status:** merged as PR #11 (`eff9812`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-5--agent-loop-and-tools) · **Plan:** [`ticket-5-plan.md`](../../tickets/ticket-5-plan.md) · **Requirements:** FR-SEC3, FR-SEC24, FR-SEC29 (FR-SEC28 on the runner side) · **Review list:** RL-6, RL-11
 
 ## In one paragraph
 
