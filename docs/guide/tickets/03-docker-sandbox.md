@@ -3,7 +3,7 @@
 **Status:** merged in `e894259` (feature `82de9d8`, review fixes `729e0b5`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-3--docker-sandbox) · **Requirements:** FR-SEC4, FR-SEC21, FR-SEC23, NFR-R3 · **Review list:** RL-5, RL-3
 
 > **Changed after merge — `writeTree` moved (ticket 7).**
-> - **When:** 2026-10-23, in ticket 7's groundwork commit on branch `ticket/7` (COMMIT_PENDING).
+> - **When:** 2026-10-23, in ticket 7's groundwork commit `e674d81` on branch `ticket/7`.
 > - **Where:** `writeTree` and its helper `writeEntry` moved from `internal/sandbox/docker/archive.go` to `internal/sandbox/archive.go`. The function is now exported as `sandbox.WriteTree`. `copyTreeIn` stays in `docker/archive.go` and calls it.
 > - **How:** the code moved without changes: same signature apart from the capital letter, same symlink, uid/gid and special-file handling. The docker tests that cover streaming the tree in pass unchanged.
 > - **Why:** ticket 7's gate staging (`internal/gate`) wipes a sandbox's workspace and streams the clean prepared tree back in, through the `contracts.Sandbox` interface rather than the docker backend. One shared tar writer means the gate and any later backend (Daytona) apply the same rules for what a tree may contain. The alternative was a second copy that could drift. The owner chose the move at ticket 7's start.
