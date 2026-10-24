@@ -25,6 +25,12 @@ const (
 	// GateExecSurface flags changes to files that run code at install, build,
 	// or commit time, or that reconfigure the owner's AI tooling (FR-SEC25).
 	GateExecSurface GateName = "execution_surface"
+
+	// GateToolCalls flags, and never fails, an attempt whose recorded tool
+	// calls are suspect: in Milestone 1, repeated path rejections
+	// (FR-SEC29). The FR-SEC24 pattern scan adds rules under the same name.
+	// A flag moves gating to clean_room (FR-SEC27).
+	GateToolCalls GateName = "tool_calls"
 )
 
 // GatingMode selects how the recorded artifact is gated.
@@ -54,7 +60,9 @@ type GateResult struct {
 	// such as an execution-surface change.
 	Flagged bool `json:"flagged"`
 
-	// ArtifactHash ties this result to the exact diff that was checked.
+	// ArtifactHash ties this result to the exact artifact checked: the
+	// lowercase hex SHA-256 of the base commit and diff bytes as framed by
+	// gate.HashArtifact. The same diff on another base is another artifact.
 	ArtifactHash string `json:"artifact_hash"`
 
 	Mode GatingMode `json:"mode"`

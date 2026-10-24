@@ -2,6 +2,12 @@
 
 **Status:** merged in `e894259` (feature `82de9d8`, review fixes `729e0b5`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-3--docker-sandbox) · **Requirements:** FR-SEC4, FR-SEC21, FR-SEC23, NFR-R3 · **Review list:** RL-5, RL-3
 
+> **Changed after merge — `writeTree` moved (ticket 7).**
+> - **When:** 2026-10-23, in ticket 7's groundwork commit on branch `ticket/7` (COMMIT_PENDING).
+> - **Where:** `writeTree` and its helper `writeEntry` moved from `internal/sandbox/docker/archive.go` to `internal/sandbox/archive.go`. The function is now exported as `sandbox.WriteTree`. `copyTreeIn` stays in `docker/archive.go` and calls it.
+> - **How:** the code moved without changes: same signature apart from the capital letter, same symlink, uid/gid and special-file handling. The docker tests that cover streaming the tree in pass unchanged.
+> - **Why:** ticket 7's gate staging (`internal/gate`) wipes a sandbox's workspace and streams the clean prepared tree back in, through the `contracts.Sandbox` interface rather than the docker backend. One shared tar writer means the gate and any later backend (Daytona) apply the same rules for what a tree may contain. The alternative was a second copy that could drift. The owner chose the move at ticket 7's start.
+
 ## In one paragraph
 
 A place to run untrusted code. `internal/sandbox` clones a repository on the worker and strips everything that could leak a credential. `internal/sandbox/docker` copies that tree into a locked-down container and runs commands, reads and writes files, and takes a diff, all inside it. Whatever ends the attempt, the container is removed. The design assumes the agent inside is hostile, and makes the worst case a wasted container.
@@ -40,6 +46,7 @@ The agent runs code it wrote, or code it was tricked into writing. The sandbox m
 |---|---|
 | `internal/sandbox/clone.go` | Tokenless clone |
 | `internal/sandbox/tree.go` | `PrepareTree`, `VerifyTree`, `HeadCommit` |
+| `internal/sandbox/archive.go` | `WriteTree`, the tar writer (moved here from `docker/archive.go` in ticket 7) |
 | `internal/sandbox/docker/doc.go` | The full isolation story, worth reading in full |
 | `internal/sandbox/docker/spec.go` | Spec validation, host config, disk split, environment |
 | `internal/sandbox/docker/provider.go` | `Create`, `CreateWithInstall`, `Reap` |

@@ -19,6 +19,8 @@ import (
 	"github.com/austmsk/conclave/internal/store"
 )
 
+var _ agent.Recorder = (*store.ToolCalls)(nil)
+
 const auditReport = `{"summary":"Count ballots","files_changed":[],"tests_added":[],"decisions":[],"uncertainties":[]}`
 
 func auditTurn(calls ...contracts.ToolCall) faketest.Turn {

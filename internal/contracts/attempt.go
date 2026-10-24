@@ -49,9 +49,9 @@ type Attempt struct {
 	Provenance Provenance `json:"provenance"`
 	Usage      Usage      `json:"usage"`
 
-	// ArtifactHash identifies the diff this attempt produced. The push path
-	// refuses any artifact whose recomputed hash does not match a passing
-	// gate result (FR-SEC27).
+	// ArtifactHash identifies the artifact (base commit plus diff) this
+	// attempt produced. The push path refuses any artifact whose recomputed
+	// hash does not match a passing gate result (FR-SEC27).
 	ArtifactHash string `json:"artifact_hash,omitempty"`
 
 	Report *CompletionReport `json:"report,omitempty"`

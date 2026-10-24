@@ -1,6 +1,7 @@
 // Package sandbox holds what every sandbox backend shares: preparing a
 // working tree on the worker before it enters a sandbox, verifying that a
-// tree has been prepared, the workspace path rules (CheckPath), and the
+// tree has been prepared, archiving it for streaming in (WriteTree), the
+// workspace path rules (CheckPath), and the
 // refusals every backend reports alike (ErrInvalidPath and the rest), so
 // the agent loop can tell a refusal the model should see from a failure of
 // the sandbox itself. The Sandbox and SandboxProvider interfaces live in
