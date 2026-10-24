@@ -87,7 +87,18 @@ Every model call goes through the router in `internal/llm`. Before any provider 
 
 ### 8. Diff frozen and gated (ticket 7)
 
-When the agent finishes, its processes are killed and the diff is extracted and hashed. The gates check that recorded diff, never the live sandbox: build, lint, tests, diff size, secrets, protected paths, test weakening, and changes to files that make code run at install, build or commit time, or reconfigure AI tools (`package.json` scripts, `.husky/`, `.gitattributes`, `.claude/`). Because the hash is recorded on every gate result, the diff that gets pushed is provably the one that was checked.
+When the agent finishes, the diff is read twice and must come back identical. No process outlives the command that started it, so nothing can still be writing. The diff is then stored as an **artifact**: an envelope binding it to its base commit, named by its SHA-256.
+
+The gates check that artifact, never the agent's live workspace.
+- **Static gates**, over the diff alone:
+  - diff size;
+  - secrets (a pinned `gitleaks` on the worker);
+  - protected paths such as CI configuration, which fail;
+  - test weakening, such as deleted tests, removed test cases or new skips;
+  - execution surface: files that make code run at install, build or commit time, or reconfigure AI tools (`package.json`, `.husky/`, `.gitattributes`, `.claude/`). These are flagged, not failed.
+- **Command gates**, only if every static gate passes. The sandbox's workspace is wiped, refilled from the clean tree on the worker, and the recorded diff is applied and re-diffed to prove it reproduces. Then build, lint and tests run; the tests must leave a JUnit report showing tests actually ran.
+
+A flagged artifact, or a sensitive repository, is gated in a fresh `clean_room` sandbox rather than the agent's. A broken environment makes the attempt `errored` and records nothing, so a retry starts clean. Every result is recorded with the artifact's hash, so the diff that gets pushed is provably the one that was checked. See [ticket 7](tickets/07-gates-and-artifact-integrity.md).
 
 ### 9. Pull request delivered (ticket 9)
 

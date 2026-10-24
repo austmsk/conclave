@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/austmsk/conclave/internal/agent"
+	"github.com/austmsk/conclave/internal/contracts"
 )
 
 // ErrToolCallConflict means a tool call was recorded under a key that
@@ -19,12 +19,11 @@ import (
 var ErrToolCallConflict = errors.New("a different tool call is already recorded under this key")
 
 // ToolCalls writes the tool-call audit (FR-SEC24) to tool_calls, which is
-// append-only to the application role. It implements agent.Recorder.
+// append-only to the application role. It implements agent.Recorder; the
+// assertion lives in toolcalls_agent_test.go so store does not import agent.
 type ToolCalls struct {
 	db DBTX
 }
-
-var _ agent.Recorder = (*ToolCalls)(nil)
 
 // NewToolCalls returns a recorder over db, which should connect as the
 // application role so the audit cannot be rewritten through it (threat
@@ -51,7 +50,7 @@ type toolCallRow struct {
 	occurredAt  time.Time
 }
 
-func rowOf(rec agent.ToolCallRecord) toolCallRow {
+func rowOf(rec contracts.ToolCallRecord) toolCallRow {
 	// pgx sends a nil slice as NULL, and arguments_raw is NOT NULL: no
 	// arguments at all is stored as zero bytes.
 	raw := rec.ArgumentsRaw
@@ -82,7 +81,7 @@ func rowOf(rec agent.ToolCallRecord) toolCallRow {
 // The arguments column is derived from ArgumentsRaw: set when the bytes
 // are JSON that Postgres accepts as jsonb, null otherwise. Malformed
 // arguments never make the write fail; the raw bytes are kept either way.
-func (r *ToolCalls) Record(ctx context.Context, rec agent.ToolCallRecord) error {
+func (r *ToolCalls) Record(ctx context.Context, rec contracts.ToolCallRecord) error {
 	key := fmt.Sprintf("%s/%s/%d", rec.AttemptID, rec.SessionKey, rec.Step)
 	if err := checkToolCall(rec); err != nil {
 		return fmt.Errorf("recording tool call %s: %w", key, err)
@@ -123,7 +122,7 @@ func (r *ToolCalls) RejectionCount(ctx context.Context, attemptID string) (int, 
 
 // checkToolCall refuses a record the table would reject, before any SQL
 // runs: an error inside a caller's transaction would abort it.
-func checkToolCall(rec agent.ToolCallRecord) error {
+func checkToolCall(rec contracts.ToolCallRecord) error {
 	if err := checkUUID("attempt ID", rec.AttemptID); err != nil {
 		return err
 	}
@@ -163,7 +162,7 @@ func (r *ToolCalls) jsonbArguments(ctx context.Context, raw []byte) (*string, er
 	return &s, nil
 }
 
-func (r *ToolCalls) insert(ctx context.Context, rec agent.ToolCallRecord, row toolCallRow, args *string) error {
+func (r *ToolCalls) insert(ctx context.Context, rec contracts.ToolCallRecord, row toolCallRow, args *string) error {
 	const insert = `INSERT INTO tool_calls
 		(attempt_id, session_key, step, call_id, tool, arguments_raw, arguments,
 		 exit_code, duration_ms, artifact_key, error, rejected, truncated, occurred_at)
@@ -176,7 +175,7 @@ func (r *ToolCalls) insert(ctx context.Context, rec agent.ToolCallRecord, row to
 	return err
 }
 
-func (r *ToolCalls) stored(ctx context.Context, rec agent.ToolCallRecord) (toolCallRow, error) {
+func (r *ToolCalls) stored(ctx context.Context, rec contracts.ToolCallRecord) (toolCallRow, error) {
 	const query = `SELECT call_id, tool, arguments_raw, arguments IS NOT NULL,
 		exit_code, duration_ms, coalesce(artifact_key, ''), coalesce(error, ''),
 		rejected, truncated, occurred_at

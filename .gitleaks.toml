@@ -1,0 +1,16 @@
+# gitleaks configuration for scanning Conclave's own repository, e.g.
+# `gitleaks git .`. It is not the secrets gate's: the worker runs gitleaks
+# with deploy/gitleaks.toml, from an empty directory, so this file never
+# reaches a gated scan.
+#
+# Tests and fixtures use canary credentials (canary_*, FR-SEC20) shaped to
+# look like secrets; this allowlists exactly those values and nothing else.
+
+title = "Conclave repository scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Canary test credentials (canary_*), never real secrets"
+regexes = ['''^canary_[A-Za-z0-9_]+$''']

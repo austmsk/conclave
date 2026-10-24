@@ -68,6 +68,11 @@ type ExecResult struct {
 // Close must be safe to call more than once and must be invoked from a
 // disconnected context in deferred cleanup, or a cancelled workflow leaves the
 // container running (RL-3).
+//
+// No process outlives the call that started it: when Exec, ReadFile,
+// WriteFile or Diff returns, by any path, nothing it started still runs.
+// Freezing depends on this (FR-SEC27); a backend that cannot guarantee it
+// must not implement Sandbox.
 type Sandbox interface {
 	ID() string
 
@@ -82,6 +87,9 @@ type Sandbox interface {
 	// Diff returns the unified diff of the workspace against its base commit.
 	// Substitution commits are excluded by construction, since the diff is
 	// taken from the substitution commit forward.
+	//
+	// Diff output is produced inside the sandbox by tools its code can
+	// influence. Callers treat it as attacker-controlled input.
 	Diff(ctx context.Context) ([]byte, error)
 
 	Close(ctx context.Context) error
