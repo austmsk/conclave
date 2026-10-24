@@ -1,0 +1,10 @@
+diff --git a/src/FooTest.java b/src/FooTest.java
+deleted file mode 100644
+index cb429c7..0000000
+--- a/src/FooTest.java
++++ /dev/null
+@@ -1,4 +0,0 @@
+-class FooTest {
+-    @Test
+-    void adds() {}
+-}
