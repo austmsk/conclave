@@ -91,8 +91,6 @@ const placeholderRepo = "owner/repo"
 // fullName is a GitHub owner/repo, as in agent.LoadToolchains.
 var fullName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
 
-var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
 // placeholderSHA256 is the gitleaks hash deploy/gates.yaml ships with.
 const placeholderSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -213,7 +211,7 @@ func gitleaksPin(g *gitleaksFile) (GitleaksPin, error) {
 		return GitleaksPin{}, errors.New("path: must be an absolute, clean path to the gitleaks binary")
 	case strings.TrimSpace(g.Version) == "":
 		return GitleaksPin{}, errors.New("version: required")
-	case !sha256Hex.MatchString(g.SHA256):
+	case !sha256HexRE.MatchString(g.SHA256):
 		return GitleaksPin{}, errors.New("sha256: must be 64 lowercase hex digits")
 	case g.SHA256 == placeholderSHA256:
 		return GitleaksPin{}, errors.New("sha256: placeholder: put the SHA-256 of the installed gitleaks binary")

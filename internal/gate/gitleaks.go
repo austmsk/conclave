@@ -196,7 +196,7 @@ func (g *Gitleaks) Scan(ctx context.Context, input []byte) ([]Finding, error) {
 	if code != 0 && code != gitleaksFoundExit {
 		return nil, environmentf("gitleaks exited %d", code)
 	}
-	found, err := readReport(report)
+	found, err := readGitleaksReport(report)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +283,7 @@ type gitleaksFinding struct {
 // readReport reads the JSON report. A missing, oversized or malformed
 // report, or a finding with an unexpected rule ID or line, is
 // ErrEnvironment.
-func readReport(path string) ([]Finding, error) {
+func readGitleaksReport(path string) ([]Finding, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, environmentf("reading gitleaks report: %v", err)

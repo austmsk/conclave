@@ -63,13 +63,6 @@ func changePaths(c FileChange) []string {
 	return []string{c.OldPath, c.NewPath}
 }
 
-// quotePath renders a repository path for a Detail. Paths are repository
-// content, so control and bidirectional characters are escaped rather
-// than shown.
-func quotePath(p string) string {
-	return strconv.Quote(p)
-}
-
 // maxListed is how many items a Detail names before summarizing.
 const maxListed = 5
 
