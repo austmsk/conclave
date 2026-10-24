@@ -24,8 +24,6 @@ func w1GitDiff(t testing.TB, base, change string) []byte {
 	home := t.TempDir()
 	script := strings.Join([]string{
 		"git init -q -b main .",
-		"git config user.email gate@example.invalid",
-		"git config user.name gate",
 		base,
 		"git add -A",
 		"git commit -q --allow-empty -m base",
@@ -36,8 +34,15 @@ func w1GitDiff(t testing.TB, base, change string) []byte {
 	}, "\n")
 	cmd := exec.Command("sh", "-e", "-c", script)
 	cmd.Dir = dir
+	// The identity is in the environment, not the repository's config, so
+	// that repositories a script creates inside this one (a gitlink) have
+	// it too. useConfigOnly stops git guessing one from the user and host
+	// name, which works on a workstation and fails on a CI runner.
 	cmd.Env = []string{
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "HOME=" + home,
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=user.useConfigOnly", "GIT_CONFIG_VALUE_0=true",
+		"GIT_AUTHOR_NAME=gate", "GIT_AUTHOR_EMAIL=gate@example.invalid",
+		"GIT_COMMITTER_NAME=gate", "GIT_COMMITTER_EMAIL=gate@example.invalid",
 		"PATH=" + os.Getenv("PATH"), "LC_ALL=C",
 	}
 	var stderr strings.Builder
