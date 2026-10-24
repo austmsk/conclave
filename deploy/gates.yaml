@@ -1,0 +1,72 @@
+# Gate configuration: the pinned secret scanner and each repository's gate
+# policy (FR-A1, FR-A3, FR-SEC8, FR-SEC25). Loaded and validated at startup
+# by gate.LoadConfig (internal/gate/policy.go).
+#
+# Repositories are keyed by full name, the same keys as deploy/repos.yaml.
+# Only the owner edits this file; never derive it from the target
+# repository, because an agent's pull request must not be able to widen
+# its own gates.
+#
+# The placeholders fail validation on purpose, so the worker refuses to
+# start until real values are filled in:
+#   owner/repo     replace with the repository's full name.
+#   sha256 0000…   replace with the SHA-256 of the gitleaks binary actually
+#                  installed on the worker, and its path and version.
+#
+# gitleaks: the secret scanner binary the worker trusts. Every field is
+# required. The worker checks the SHA-256 at startup and before each run.
+#   path:     absolute path to the binary on the worker
+#   version:  the release the hash belongs to
+#   sha256:   64 lowercase hex digits
+#
+# Per repository:
+#   mode:      optional. clean_room gates every attempt in a fresh
+#              sandbox; reset_in_place (or leaving it out) lets the
+#              platform choose, which is clean_room anyway for the
+#              sensitive and local_only tiers and for flagged attempts.
+#   limits:    all three required and greater than zero.
+#     max_changed_lines:  added plus removed lines
+#     max_changed_files:  files the diff touches, binary ones included
+#     max_diff_bytes:     size of the raw diff
+#   protected_paths:          optional additions to the built-in list
+#                             (CI configuration, CODEOWNERS, .gitleaks*);
+#                             a change to any of them fails the attempt.
+#   execution_surface_paths:  optional additions to the built-in list
+#                             (manifests, lockfiles, build files, hooks,
+#                             .claude/ and friends); a change is flagged.
+#   tests:     what a test looks like here, for the gate-weakening gate.
+#     paths:         required. Patterns naming test files.
+#     case_markers:  RE2 expressions matching the line that declares a
+#                    test case, at its first non-blank character.
+#     skip_markers:  RE2 expressions; an added test line containing one
+#                    fails the attempt.
+#     config_paths:  patterns naming test configuration; any change fails.
+#   flag_rejections_at:  optional, default 3. Tool calls refused on
+#                        security grounds that flag the attempt.
+#
+# Patterns: a name with no inner "/" matches at any depth ("Makefile");
+# one with an inner "/" is anchored at the repository root
+# ("src/*Test.java"); a trailing "/" means a directory ("lib/"). "*", "?"
+# and "[...]" match within one path component; "**" is not supported.
+# Matching ignores case and the characters macOS ignores in names.
+#
+# Built-in lists live in internal/gate/defaults.go. Entries here only add.
+
+gitleaks:
+  path: /usr/local/bin/gitleaks
+  version: 8.0.0
+  sha256: 0000000000000000000000000000000000000000000000000000000000000000
+
+repositories:
+  owner/repo:
+    limits:
+      max_changed_lines: 400
+      max_changed_files: 20
+      max_diff_bytes: 262144
+    protected_paths: []
+    execution_surface_paths: []
+    tests:
+      paths: [src/*Test.java]
+      case_markers: ['@(Test|ParameterizedTest|RepeatedTest|TestFactory)\b']
+      skip_markers: ['@Disabled', '@DisabledIf', 'assume(True|False|That)']
+      config_paths: [lib/]
