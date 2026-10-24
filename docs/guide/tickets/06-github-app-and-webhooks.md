@@ -1,6 +1,6 @@
 # Ticket 6 — GitHub App and webhooks
 
-**Status:** in review on branch `ticket/6` · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-6--github-app-and-webhooks) · **Decision:** [0010](../../decisions/0010-github-client-on-net-http.md) · **Requirements:** FR-I1, FR-SEC1, FR-SEC2, FR-SEC5, FR-SEC15, FR-SEC28, NFR-P1 · **Review list:** RL-7, RL-8
+**Status:** merged as PR #12 (`00ea73e`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-6--github-app-and-webhooks) · **Decision:** [0010](../../decisions/0010-github-client-on-net-http.md) · **Requirements:** FR-I1, FR-SEC1, FR-SEC2, FR-SEC5, FR-SEC15, FR-SEC28, NFR-P1 · **Review list:** RL-7, RL-8
 
 ## In one paragraph
 

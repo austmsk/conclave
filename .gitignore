@@ -25,6 +25,11 @@ coverage.*
 # under docs/ is tracked, because tickets and agents read it.
 /docs/notes/
 
+# Owner configuration for real repositories. The shipped deploy/*.yaml
+# files are placeholders that fail validation; the filled-in copies live
+# here, because this repository is public and they name private ones.
+/deploy/local/
+
 # Local runtime state
 /artifacts/
 /tmp/

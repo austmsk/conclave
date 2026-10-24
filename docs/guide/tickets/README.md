@@ -8,9 +8,9 @@ One page per merged ticket, in build order. The spec for each ticket is in [`doc
 | 2 | Contracts package and schema | merged | [02-contracts-and-schema](02-contracts-and-schema.md) |
 | 3 | Docker sandbox | merged | [03-docker-sandbox](03-docker-sandbox.md) |
 | 4 | LLM router and fake provider | merged (PR #4) | [04-llm-router](04-llm-router.md) |
-| 8a | Budgets and attribution | in progress | — |
-| 5 | Agent loop and tools | in review (`ticket/5`) | [05-agent-loop-and-tools](05-agent-loop-and-tools.md) |
-| 6 | GitHub App and webhooks | in review (`ticket/6`) | [06-github-app-and-webhooks](06-github-app-and-webhooks.md) |
+| 8a | Budgets and attribution | merged (PR #10) | [08a-budgets-and-attribution](08a-budgets-and-attribution.md) |
+| 5 | Agent loop and tools | merged (PR #11) | [05-agent-loop-and-tools](05-agent-loop-and-tools.md) |
+| 6 | GitHub App and webhooks | merged (PR #12) | [06-github-app-and-webhooks](06-github-app-and-webhooks.md) |
 | 7 | Gates and artifact integrity | not started | — |
 | 8 | Feature workflow core | not started | — |
 | 8b | Commands and status surface | not started | — |
