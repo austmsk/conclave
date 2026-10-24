@@ -1,0 +1,32 @@
+# Platform gitleaks configuration for the secrets gate (ticket 7).
+#
+# The worker passes this file with --config, which takes precedence over
+# every other source gitleaks knows: GITLEAKS_CONFIG and
+# GITLEAKS_CONFIG_TOML (the process runs with an empty environment) and a
+# .gitleaks.toml in the target (the scan reads stdin from an empty
+# directory). A repository therefore cannot weaken the rules that judge it.
+# The worker copies this file at startup, so editing it takes effect on the
+# next worker start, never halfway through a run.
+#
+# Nothing here may allowlist by path or by gitleaks:allow comment: the scan
+# input is the attempt's added lines on stdin, where gitleaks sees no file
+# path, and the worker passes --ignore-gitleaks-allow.
+
+title = "Conclave secrets gate"
+
+# Start from gitleaks' built-in rules, pinned by the binary's SHA-256, so a
+# rule set change arrives only with a reviewed pin bump.
+[extend]
+useDefault = true
+
+# Canary credentials (FR-SEC20). The platform plants canary_* values where
+# a secret would be, in test fixtures, sandbox environments and prompts, so
+# a canary in an attempt's diff means something copied a credential-shaped
+# value out of its context. The rule has no entropy threshold and no
+# allowlist: any canary is a finding.
+[[rules]]
+id = "conclave-canary"
+description = "Conclave canary credential (FR-SEC20)"
+regex = '''canary_[A-Za-z0-9_]+'''
+keywords = ["canary_"]
+tags = ["canary"]
