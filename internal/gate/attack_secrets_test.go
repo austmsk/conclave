@@ -17,12 +17,12 @@ regexes = ['''.*''']
 paths = ['''.*''']
 `
 
-// plantedCanary is a canary on the second added line of src/b.go, input
+// plantedCanary is a canary on line 2 of the new file src/b.go, input
 // line 6 of the scan.
 func plantedCanary(canary, suffix string) []FileChange {
 	return []FileChange{
 		twoFiles[0],
-		{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"b1", `key := "` + canary + `"` + suffix}},
+		{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"b1", `key := "` + canary + `"` + suffix}, AddedAt: []int{1, 2}},
 	}
 }
 
@@ -34,7 +34,7 @@ func requireCanaryFound(t *testing.T, g SecretScanner, changes []FileChange, can
 	if err != nil {
 		t.Fatalf("checkSecrets: %v", err)
 	}
-	if v.Passed || !strings.Contains(v.Detail, `conclave-canary at "src/b.go" added line 2`) {
+	if v.Passed || !strings.Contains(v.Detail, `conclave-canary at "src/b.go" line 2`) {
 		t.Fatalf("verdict %+v: the planted canary was not found", v)
 	}
 	if strings.Contains(fmt.Sprintf("%+v", v), canary) {
@@ -97,6 +97,9 @@ func plantRepoConfig(t *testing.T) string {
 func TestAttackRepoGitleaksConfigIgnored(t *testing.T) {
 	canary := "canary_" + "repo_config_m4"
 	repoConfig := FileChange{Kind: ChangeAdded, NewPath: ".gitleaks.toml", Added: strings.Split(permissiveConfig, "\n")}
+	for i := range repoConfig.Added {
+		repoConfig.AddedAt = append(repoConfig.AddedAt, i+1)
+	}
 	changes := append([]FileChange{repoConfig}, plantedCanary(canary, "")...)
 
 	t.Run("isolated", func(t *testing.T) {
@@ -143,6 +146,18 @@ func checkIsolated(t *testing.T, f fakeGitleaks, g *Gitleaks, leak string) {
 	if i < 0 || i+1 >= len(args) || args[i+1] != g.config {
 		t.Fatalf("scanner not given the private config copy %s: %q", g.config, args)
 	}
+	// gitleaks looks for a .gitleaksignore under this path; pointing it at
+	// the empty working directory stops it finding one anywhere else.
+	pwd := strings.TrimSpace(f.recorded(t, "pwd"))
+	i = slices.Index(args, "--gitleaks-ignore-path")
+	if i < 0 || i+1 >= len(args) || !samePath(args[i+1], pwd) {
+		t.Errorf("scanner's ignore path is not its empty working directory %s: %q", pwd, args)
+	}
+	for _, flag := range []string{"--redact", "--ignore-gitleaks-allow"} {
+		if !slices.Contains(args, flag) {
+			t.Errorf("scanner run without %s: %q", flag, args)
+		}
+	}
 	got, err := os.ReadFile(g.config)
 	if err != nil || string(got) != "title = \"fake\"\n" {
 		t.Errorf("private config holds %q, %v; want the platform config", got, err)
@@ -179,4 +194,11 @@ func TestSecretsEvidenceHasNoCanary(t *testing.T) {
 	t.Run("real", func(t *testing.T) {
 		requireCanaryFound(t, realGitleaks(t), changes, canary)
 	})
+}
+
+// samePath reports whether a and b name the same directory, allowing for
+// macOS's /var being /private/var. The scan's directory is gone by the
+// time this runs, so symlinks cannot be resolved.
+func samePath(a, b string) bool {
+	return strings.TrimPrefix(a, "/private") == strings.TrimPrefix(b, "/private")
 }

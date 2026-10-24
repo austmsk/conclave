@@ -16,10 +16,9 @@ type Finding struct {
 	RuleID string
 	Path   string
 
-	// Line is the ordinal of the added line within Path's added lines,
-	// from 1, in diff order. FileChange carries no hunk positions, so this
-	// is not a line number in the new file. Zero means the match is in the
-	// header that names the path: the path itself looks like a secret.
+	// Line is the matched added line's number in the new file, from 1
+	// (FileChange.AddedAt). Zero means the match is in the header that
+	// names the path: the path itself looks like a secret.
 	Line int
 }
 
@@ -44,7 +43,7 @@ const maxFindingsInDetail = 10
 const fileHeaderPrefix = "# conclave-file: "
 
 // lineRef locates one line of the scan input in the diff: a file and the
-// ordinal of the added line within it, zero for the file's header.
+// added line's number in the new file, zero for the file's header.
 type lineRef struct {
 	path string
 	line int
@@ -60,6 +59,10 @@ type scanInput struct {
 
 	// added counts the added lines in text, headers excluded.
 	added int
+
+	// unlocated names a file whose AddedAt does not parallel Added, so
+	// its findings could not be located. ParseDiff never builds one.
+	unlocated string
 
 	// binaryPaths are files with added or changed binary content, which
 	// no text scanner can read.
@@ -77,7 +80,7 @@ type scanInput struct {
 // Removed lines are not scanned: a secret leaving the tree is not a secret
 // being pushed. Line numbers in the scanner's report index into the input,
 // and the returned map, built here rather than parsed back out of the
-// input, turns each into a path and an added-line ordinal. An added line
+// input, turns each into a path and a new-file line number. An added line
 // that imitates a header therefore cannot redirect a finding.
 func secretsInput(changes []FileChange) (input []byte, binaryPaths []string) {
 	in := buildScanInput(changes)
@@ -95,13 +98,17 @@ func buildScanInput(changes []FileChange) scanInput {
 		if len(c.Added) == 0 {
 			continue
 		}
+		if len(c.AddedAt) != len(c.Added) {
+			in.unlocated = path
+			continue
+		}
 		b.WriteString(fileHeaderPrefix + strconv.Quote(path) + "\n")
 		in.lines = append(in.lines, lineRef{path: path})
 		for i, l := range c.Added {
 			// A lone \n inside a line would desynchronise the map; the
 			// parser splits on \n, so this only guards hand-built input.
 			b.WriteString(strings.ReplaceAll(l, "\n", " ") + "\n")
-			in.lines = append(in.lines, lineRef{path: path, line: i + 1})
+			in.lines = append(in.lines, lineRef{path: path, line: c.AddedAt[i]})
 		}
 		in.added += len(c.Added)
 	}
@@ -121,11 +128,15 @@ func changePath(c FileChange) string {
 // fails the gate outright, since no scanner reads it; the text is still
 // scanned, so a scanner failure is reported even then. Findings fail the
 // gate with their rule IDs and locations only, never the matched text. A
-// scanner error, or a finding that points outside the input, is an
-// environment failure.
+// scanner error, a finding that points outside the input, and a change
+// whose added lines have no line numbers are environment failures: none
+// is the attempt's doing, and no verdict can rest on them.
 func checkSecrets(ctx context.Context, s SecretScanner, changes []FileChange) (verdict, error) {
 	start := time.Now()
 	in := buildScanInput(changes)
+	if in.unlocated != "" {
+		return verdict{}, environmentf("scanning added lines for secrets: %s has no line numbers for its added lines", quotePath(in.unlocated))
+	}
 	var findings []Finding
 	if in.added > 0 {
 		raw, err := s.Scan(ctx, in.text)
@@ -151,8 +162,7 @@ func checkSecrets(ctx context.Context, s SecretScanner, changes []FileChange) (v
 	return v, nil
 }
 
-// locate maps each finding's input line to its file and added-line
-// ordinal. The scanner reports input line numbers in Line and leaves Path
+// locate maps each finding's input line to its file and new-file line. The scanner reports input line numbers in Line and leaves Path
 // empty; a line outside the input means the scanner and the input
 // disagree, which no verdict can rest on.
 func locate(raw []Finding, lines []lineRef) ([]Finding, error) {
@@ -173,7 +183,7 @@ func (f Finding) String() string {
 	if f.Line == 0 {
 		return fmt.Sprintf("%s in path %s", f.RuleID, quotePath(f.Path))
 	}
-	return fmt.Sprintf("%s at %s added line %d", f.RuleID, quotePath(f.Path), f.Line)
+	return fmt.Sprintf("%s at %s line %d", f.RuleID, quotePath(f.Path), f.Line)
 }
 
 // quotePath Go-quotes a path, so control and bidi characters in an

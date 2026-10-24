@@ -430,6 +430,7 @@ func TestGate_EnvironmentFailuresAreErrored(t *testing.T) {
 		"rejection count": func(_ *testing.T, h *gateHarness) {
 			h.g.Rejections = fakeRejections{err: errors.New("connection reset")}
 		},
+		"blob missing":    func(t *testing.T, h *gateHarness) { h.g.Blobs = newTestBlobs(t) },
 		"reading results": func(_ *testing.T, h *gateHarness) { h.results.forErr = errors.New("connection reset") },
 		"recording results": func(_ *testing.T, h *gateHarness) {
 			h.results.recordErr = errors.New("connection reset")

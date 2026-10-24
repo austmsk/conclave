@@ -20,8 +20,8 @@ func TestSecretsInput(t *testing.T) {
 		{
 			name: "added lines under a header per file, removed lines left out",
 			changes: []FileChange{
-				{Kind: ChangeModified, OldPath: "src/a.go", NewPath: "src/a.go", Added: []string{"x := 1", "y := 2"}, Removed: []string{"old := 0"}},
-				{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"z := 3"}},
+				{Kind: ChangeModified, OldPath: "src/a.go", NewPath: "src/a.go", Added: []string{"x := 1", "y := 2"}, Removed: []string{"old := 0"}, AddedAt: []int{4, 5}},
+				{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"z := 3"}, AddedAt: []int{1}},
 			},
 			wantInput: "# conclave-file: \"src/a.go\"\nx := 1\ny := 2\n# conclave-file: \"src/b.go\"\nz := 3\n",
 		},
@@ -36,7 +36,7 @@ func TestSecretsInput(t *testing.T) {
 		{
 			name: "a newline in a path is quoted, not a new line",
 			changes: []FileChange{
-				{Kind: ChangeAdded, NewPath: "evil\nname.go", Added: []string{"v"}},
+				{Kind: ChangeAdded, NewPath: "evil\nname.go", Added: []string{"v"}, AddedAt: []int{1}},
 			},
 			wantInput: "# conclave-file: \"evil\\nname.go\"\nv\n",
 		},
@@ -64,7 +64,8 @@ func TestSecretsInput(t *testing.T) {
 	}
 }
 
-// twoFiles is the input
+// twoFiles is the input below. src/a.go's added lines are lines 10 and
+// 11 of the new file, src/b.go's lines 1 and 2.
 //
 //	1 # conclave-file: "src/a.go"
 //	2 a1
@@ -73,8 +74,8 @@ func TestSecretsInput(t *testing.T) {
 //	5 b1
 //	6 b2
 var twoFiles = []FileChange{
-	{Kind: ChangeModified, OldPath: "src/a.go", NewPath: "src/a.go", Added: []string{"a1", `# conclave-file: "src/b.go"`}},
-	{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"b1", "b2"}},
+	{Kind: ChangeModified, OldPath: "src/a.go", NewPath: "src/a.go", Added: []string{"a1", `# conclave-file: "src/b.go"`}, AddedAt: []int{10, 11}},
+	{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"b1", "b2"}, AddedAt: []int{1, 2}},
 }
 
 func TestCheckSecrets(t *testing.T) {
@@ -89,17 +90,17 @@ func TestCheckSecrets(t *testing.T) {
 		{name: "nothing added passes without scanning", wantPassed: true},
 		{name: "clean text passes", changes: twoFiles, wantPassed: true, wantScans: 1},
 		{
-			name:       "findings map to file and added line",
+			name:       "findings map to file and new-file line",
 			changes:    twoFiles,
 			findings:   []Finding{{RuleID: "conclave-canary", Line: 6}, {RuleID: "generic-api-key", Line: 2}},
-			wantDetail: `2 secret finding(s): conclave-canary at "src/b.go" added line 2, generic-api-key at "src/a.go" added line 1`,
+			wantDetail: `2 secret finding(s): conclave-canary at "src/b.go" line 2, generic-api-key at "src/a.go" line 10`,
 			wantScans:  1,
 		},
 		{
 			name:       "a line imitating a header stays in its own file",
 			changes:    twoFiles,
 			findings:   []Finding{{RuleID: "r", Line: 3}},
-			wantDetail: `1 secret finding(s): r at "src/a.go" added line 2`,
+			wantDetail: `1 secret finding(s): r at "src/a.go" line 11`,
 			wantScans:  1,
 		},
 		{
@@ -132,17 +133,19 @@ func TestCheckSecrets(t *testing.T) {
 
 func TestCheckSecretsDetailCapped(t *testing.T) {
 	added := make([]string, 25)
+	at := make([]int, 25)
 	findings := make([]Finding, 25)
 	for i := range added {
 		added[i] = "line"
+		at[i] = i + 1
 		findings[i] = Finding{RuleID: "r", Line: i + 2}
 	}
 	s := &fakeScanner{findings: findings}
-	v, err := checkSecrets(context.Background(), s, []FileChange{{Kind: ChangeAdded, NewPath: "f", Added: added}})
+	v, err := checkSecrets(context.Background(), s, []FileChange{{Kind: ChangeAdded, NewPath: "f", Added: added, AddedAt: at}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(v.Detail, "added line") != maxFindingsInDetail || !strings.HasSuffix(v.Detail, "and 15 more") {
+	if strings.Count(v.Detail, "r at ") != maxFindingsInDetail || !strings.HasSuffix(v.Detail, "and 15 more") {
 		t.Errorf("detail not capped at %d findings: %q", maxFindingsInDetail, v.Detail)
 	}
 }
@@ -178,7 +181,7 @@ func TestSecretsBinaryFails(t *testing.T) {
 		{"binary alone", []FileChange{{Kind: ChangeAdded, NewPath: "key.p12", Binary: true}}, false, 0},
 		{"binary beside text", []FileChange{
 			{Kind: ChangeModified, OldPath: "x.bin", NewPath: "x.bin", Binary: true},
-			{Kind: ChangeAdded, NewPath: "a.go", Added: []string{"a"}},
+			{Kind: ChangeAdded, NewPath: "a.go", Added: []string{"a"}, AddedAt: []int{1}},
 		}, false, 1},
 		{"deleted binary is not new content", []FileChange{{Kind: ChangeDeleted, OldPath: "x.bin", Binary: true}}, true, 0},
 	}
@@ -196,5 +199,16 @@ func TestSecretsBinaryFails(t *testing.T) {
 				t.Errorf("detail = %q, want it to name unscanned binary content", v.Detail)
 			}
 		})
+	}
+}
+
+// TestCheckSecretsRefusesUnlocatedChange: a change whose added lines have
+// no line numbers cannot have its findings located, so it is refused
+// rather than scanned. ParseDiff never builds one.
+func TestCheckSecretsRefusesUnlocatedChange(t *testing.T) {
+	s := &fakeScanner{}
+	_, err := checkSecrets(context.Background(), s, []FileChange{{Kind: ChangeAdded, NewPath: "a.go", Added: []string{"a"}}})
+	if !errors.Is(err, ErrEnvironment) || s.calls() != 0 {
+		t.Fatalf("err = %v after %d scans, want ErrEnvironment before scanning", err, s.calls())
 	}
 }

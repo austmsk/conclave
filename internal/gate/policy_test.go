@@ -29,6 +29,8 @@ repositories:
       paths: [src/*Test.java]
       case_markers: ['@(Test|ParameterizedTest|RepeatedTest|TestFactory)\b']
       skip_markers: ['@Disabled', '@DisabledIf', 'assume(True|False|That)']
+      comment_openers: ['/\*([^*]|\*+[^*/])*\**$']
+      comment_closers: ['^([^/]|/[^*])*\*/']
       config_paths: [lib/]
 `
 
@@ -126,6 +128,8 @@ func TestLoadConfig_Invalid(t *testing.T) {
 		{"tests paths empty", repl("paths: [src/*Test.java]", "paths: []"), "tests.paths: required"},
 		{"bad case marker", repl(`'@(Test|ParameterizedTest|RepeatedTest|TestFactory)\b'`, `'@(Test'`), "tests.case_markers[0]"},
 		{"empty skip marker", repl(`'@Disabled', `, `'', `), "tests.skip_markers[0]: empty"},
+		{"bad comment closer", repl(`'^([^/]|/[^*])*\*/'`, `'(['`), "tests.comment_closers[0]"},
+		{"comment openers without closers", repl("      comment_closers: ['^([^/]|/[^*])*\\*/']\n", ""), "set both or neither"},
 		{"marker matches empty", repl(`'@Disabled', `, `'x*', `), "tests.skip_markers[0]: matches an empty line"},
 		{"double star pattern", repl("paths: [src/*Test.java]", "paths: ['src/**/*Test.java']"), "tests.paths"},
 		{"absolute config path", repl("config_paths: [lib/]", "config_paths: [/lib/]"), "tests.config_paths"},

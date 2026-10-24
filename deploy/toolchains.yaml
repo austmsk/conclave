@@ -22,9 +22,20 @@
 # succeeds without doing anything. No process survives between
 # commands, so each must be self-contained: a command that needs a running
 # service has to start it itself.
+#
+# The test command must also write a JUnit XML report under
+# /tmp/conclave-junit/ (gate.JUnitDir). The tests gate passes only when
+# the command exits 0 and that report shows at least one test ran and none
+# failed or errored; an exit code alone is not trusted. The directory is
+# deleted before each run, so the command recreates it. The placeholder's
+# [go, test, ./...] writes no report and would fail every attempt; for Go,
+# use for example
+#   [sh, -c, "mkdir -p /tmp/conclave-junit && exec gotestsum --junitfile /tmp/conclave-junit/go.xml -- ./..."]
+# with gotestsum in the sandbox image. A JUnit 5 project adds
+# --reports-dir=/tmp/conclave-junit to the console launcher.
 
 repositories:
   owner/repo:
-    test: [go, test, ./...]
+    test: [go, test, ./...]   # writes no JUnit report: replace it (see above)
     build: [go, build, ./...]
     lint: [golangci-lint, run]

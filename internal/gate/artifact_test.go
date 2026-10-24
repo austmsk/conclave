@@ -196,10 +196,47 @@ func TestArtifactBlobTamperDetected(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, diff, err := Load(context.Background(), blobs, art.Key)
-	if !errors.Is(err, blob.ErrCorrupt) {
-		t.Fatalf("Load of tampered blob: err = %v, want blob.ErrCorrupt", err)
+	if !errors.Is(err, blob.ErrCorrupt) || !errors.Is(err, ErrEnvironment) {
+		t.Fatalf("Load of tampered blob: err = %v, want ErrEnvironment wrapping blob.ErrCorrupt", err)
 	}
 	if diff != nil {
 		t.Errorf("Load returned bytes of a tampered blob")
+	}
+}
+
+// rawStore is a blob.Store that verifies nothing on read, as a backend
+// other than blob.Dir might not. It answers Get from blobs.
+type rawStore map[string][]byte
+
+func (r rawStore) Put(context.Context, string, []byte) (string, error) {
+	return "", errors.New("rawStore: read-only")
+}
+
+func (r rawStore) Get(_ context.Context, key string) ([]byte, error) {
+	b, ok := r[key]
+	if !ok {
+		return nil, blob.ErrNotFound
+	}
+	return b, nil
+}
+
+// TestLoadCorruptEnvelope: an envelope changed in a store that does not
+// re-hash on read is caught by Load itself, and is the store's failure,
+// not the attempt's.
+func TestLoadCorruptEnvelope(t *testing.T) {
+	base := strings.Repeat("a", 40)
+	art := testArtifact(base, sampleDiff)
+	cases := map[string][]byte{
+		"not an envelope": []byte("not an envelope"),
+		"another diff":    Envelope(base, []byte("diff --git a/x b/x\n")),
+		"another base":    Envelope(strings.Repeat("b", 40), sampleDiff),
+	}
+	for name, stored := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, diff, err := Load(context.Background(), rawStore{art.Key: stored}, art.Key)
+			if !errors.Is(err, ErrEnvironment) || !errors.Is(err, blob.ErrCorrupt) || diff != nil {
+				t.Fatalf("Load = %q, %v; want ErrEnvironment wrapping blob.ErrCorrupt", diff, err)
+			}
+		})
 	}
 }

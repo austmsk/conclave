@@ -40,6 +40,17 @@
 #                    test case, at its first non-blank character.
 #     skip_markers:  RE2 expressions; an added test line containing one
 #                    fails the attempt.
+#     comment_openers:  RE2 expressions matching a line that leaves a
+#                    block comment open; optional, with comment_closers.
+#     comment_closers:  RE2 expressions matching a line that closes a
+#                    comment it did not open.
+#                    Each run of adjacent lines added to, or removed from,
+#                    an existing test file must open and close its own
+#                    comments; a run that leaves one open or closes one
+#                    opened elsewhere fails the attempt, since moving a
+#                    comment boundary can disable tests far from any
+#                    changed line. New test files are not checked. The
+#                    example is for /* */ comments.
 #     config_paths:  patterns naming test configuration; any change fails.
 #   flag_rejections_at:  optional, default 3. Tool calls refused on
 #                        security grounds that flag the attempt.
@@ -69,4 +80,6 @@ repositories:
       paths: [src/*Test.java]
       case_markers: ['@(Test|ParameterizedTest|RepeatedTest|TestFactory)\b']
       skip_markers: ['@Disabled', '@DisabledIf', 'assume(True|False|That)']
+      comment_openers: ['/\*([^*]|\*+[^*/])*\**$']
+      comment_closers: ['^([^/]|/[^*])*\*/']
       config_paths: [lib/]

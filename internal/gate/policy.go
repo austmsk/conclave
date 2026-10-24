@@ -47,6 +47,17 @@ type TestPolicy struct {
 	// SkipMarkers match anywhere in an added test-file line.
 	SkipMarkers []*regexp.Regexp
 
+	// CommentOpeners match a line that leaves a block comment open, and
+	// CommentClosers one that closes a comment it did not open. Every run
+	// of adjacent lines added to, or removed from, an existing test file
+	// must open and close its own comments: a run that leaves one open,
+	// or closes one opened elsewhere, fails the gate, because moving a
+	// comment boundary disables cases far from any changed line, where
+	// neither the case-marker count nor the skip markers see them. Both
+	// are set or neither is.
+	CommentOpeners []*regexp.Regexp
+	CommentClosers []*regexp.Regexp
+
 	// ConfigPaths are patterns naming test configuration; any change to
 	// them fails the gate.
 	ConfigPaths []string
@@ -113,6 +124,8 @@ const placeholderSHA256 = "00000000000000000000000000000000000000000000000000000
 //	      paths: [src/*Test.java]   # required
 //	      case_markers: ['@Test\b'] # RE2
 //	      skip_markers: ['@Disabled'] # RE2
+//	      comment_openers: ['/\*([^*]|\*+[^*/])*\**$'] # RE2
+//	      comment_closers: ['^([^/]|/[^*])*\*/'] # RE2
 //	      config_paths: [lib/]
 //	    flag_rejections_at: 3       # optional, default 3
 type gatesFile struct {
@@ -142,10 +155,12 @@ type limitsFile struct {
 }
 
 type testsFile struct {
-	Paths       []string `yaml:"paths"`
-	CaseMarkers []string `yaml:"case_markers"`
-	SkipMarkers []string `yaml:"skip_markers"`
-	ConfigPaths []string `yaml:"config_paths"`
+	Paths          []string `yaml:"paths"`
+	CaseMarkers    []string `yaml:"case_markers"`
+	SkipMarkers    []string `yaml:"skip_markers"`
+	CommentOpeners []string `yaml:"comment_openers"`
+	CommentClosers []string `yaml:"comment_closers"`
+	ConfigPaths    []string `yaml:"config_paths"`
 }
 
 // LoadConfig reads and validates deploy/gates.yaml. Unknown fields are an
@@ -302,7 +317,21 @@ func loadTestPolicy(t *testsFile) (TestPolicy, error) {
 	if err != nil {
 		return TestPolicy{}, err
 	}
-	return TestPolicy{Paths: t.Paths, CaseMarkers: cases, SkipMarkers: skips, ConfigPaths: t.ConfigPaths}, nil
+	openers, err := compileMarkers("tests.comment_openers", t.CommentOpeners)
+	if err != nil {
+		return TestPolicy{}, err
+	}
+	closers, err := compileMarkers("tests.comment_closers", t.CommentClosers)
+	if err != nil {
+		return TestPolicy{}, err
+	}
+	if (len(openers) == 0) != (len(closers) == 0) {
+		return TestPolicy{}, errors.New("tests.comment_openers and tests.comment_closers: set both or neither")
+	}
+	return TestPolicy{
+		Paths: t.Paths, CaseMarkers: cases, SkipMarkers: skips,
+		CommentOpeners: openers, CommentClosers: closers, ConfigPaths: t.ConfigPaths,
+	}, nil
 }
 
 // compileMarkers compiles RE2 markers; an empty marker would match every

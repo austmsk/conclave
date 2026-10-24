@@ -136,11 +136,11 @@ type parseCase struct {
 var realGitCases = []parseCase{
 	{
 		name: "modified", base: "printf 'a\\nb\\n' > f.txt", change: "printf 'a\\nc\\n' > f.txt",
-		want: []FileChange{{Kind: ChangeModified, OldPath: "f.txt", NewPath: "f.txt", OldMode: "100644", NewMode: "100644", Added: []string{"c"}, Removed: []string{"b"}}},
+		want: []FileChange{{Kind: ChangeModified, OldPath: "f.txt", NewPath: "f.txt", OldMode: "100644", NewMode: "100644", Added: []string{"c"}, Removed: []string{"b"}, AddedAt: []int{2}, RemovedAt: []int{2}}},
 	},
 	{
 		name: "added", change: "printf 'x\\ny\\n' > new.txt",
-		want: []FileChange{{Kind: ChangeAdded, NewPath: "new.txt", NewMode: "100644", Added: []string{"x", "y"}}},
+		want: []FileChange{{Kind: ChangeAdded, NewPath: "new.txt", NewMode: "100644", Added: []string{"x", "y"}, AddedAt: []int{1, 2}}},
 	},
 	{
 		name: "added empty", change: ": > empty.txt",
@@ -148,7 +148,7 @@ var realGitCases = []parseCase{
 	},
 	{
 		name: "deleted", base: "printf 'gone\\n' > d.txt", change: "rm d.txt",
-		want: []FileChange{{Kind: ChangeDeleted, OldPath: "d.txt", OldMode: "100644", Removed: []string{"gone"}}},
+		want: []FileChange{{Kind: ChangeDeleted, OldPath: "d.txt", OldMode: "100644", Removed: []string{"gone"}, RemovedAt: []int{1}}},
 	},
 	{
 		name: "renamed unchanged", base: "printf '1\\n2\\n3\\n4\\n' > old.txt", change: "mv old.txt new.txt",
@@ -156,12 +156,12 @@ var realGitCases = []parseCase{
 	},
 	{
 		name: "renamed and edited", base: "printf '1\\n2\\n3\\n4\\n5\\n6\\n' > old.txt", change: "mv old.txt new.txt && printf '1\\n2\\n3\\n4\\n5\\nsix\\n' > new.txt",
-		want: []FileChange{{Kind: ChangeRenamed, OldPath: "old.txt", NewPath: "new.txt", OldMode: "100644", NewMode: "100644", Added: []string{"six"}, Removed: []string{"6"}}},
+		want: []FileChange{{Kind: ChangeRenamed, OldPath: "old.txt", NewPath: "new.txt", OldMode: "100644", NewMode: "100644", Added: []string{"six"}, Removed: []string{"6"}, AddedAt: []int{6}, RemovedAt: []int{6}}},
 	},
 	{
 		name: "copied", base: "git config diff.renames copies && printf '1\\n2\\n3\\n4\\n5\\n6\\n' > a.txt", change: "cp a.txt b.txt && printf '1\\n2\\n3\\n4\\n5\\n7\\n' > a.txt",
 		want: []FileChange{
-			{Kind: ChangeModified, OldPath: "a.txt", NewPath: "a.txt", OldMode: "100644", NewMode: "100644", Added: []string{"7"}, Removed: []string{"6"}},
+			{Kind: ChangeModified, OldPath: "a.txt", NewPath: "a.txt", OldMode: "100644", NewMode: "100644", Added: []string{"7"}, Removed: []string{"6"}, AddedAt: []int{6}, RemovedAt: []int{6}},
 			{Kind: ChangeCopied, OldPath: "a.txt", NewPath: "b.txt"},
 		},
 	},
@@ -171,7 +171,7 @@ var realGitCases = []parseCase{
 	},
 	{
 		name: "new executable", change: "printf '#!/bin/sh\\n' > run && chmod +x run",
-		want: []FileChange{{Kind: ChangeAdded, NewPath: "run", NewMode: "100755", Added: []string{"#!/bin/sh"}}},
+		want: []FileChange{{Kind: ChangeAdded, NewPath: "run", NewMode: "100755", Added: []string{"#!/bin/sh"}, AddedAt: []int{1}}},
 	},
 	{
 		name: "binary modified", base: "printf 'bin\\000ary' > b.bin", change: "printf 'bin\\000ary2' > b.bin",
@@ -187,35 +187,35 @@ var realGitCases = []parseCase{
 	},
 	{
 		name: "no newline at end", base: "printf 'x' > n.txt", change: "printf 'y' > n.txt",
-		want: []FileChange{{Kind: ChangeModified, OldPath: "n.txt", NewPath: "n.txt", OldMode: "100644", NewMode: "100644", Added: []string{"y"}, Removed: []string{"x"}}},
+		want: []FileChange{{Kind: ChangeModified, OldPath: "n.txt", NewPath: "n.txt", OldMode: "100644", NewMode: "100644", Added: []string{"y"}, Removed: []string{"x"}, AddedAt: []int{1}, RemovedAt: []int{1}}},
 	},
 	{
 		name: "newline added at end", base: "printf 'x' > n.txt", change: "printf 'x\\n' > n.txt",
-		want: []FileChange{{Kind: ChangeModified, OldPath: "n.txt", NewPath: "n.txt", OldMode: "100644", NewMode: "100644", Added: []string{"x"}, Removed: []string{"x"}}},
+		want: []FileChange{{Kind: ChangeModified, OldPath: "n.txt", NewPath: "n.txt", OldMode: "100644", NewMode: "100644", Added: []string{"x"}, Removed: []string{"x"}, AddedAt: []int{1}, RemovedAt: []int{1}}},
 	},
 	{
 		name: "symlink retargeted", base: "ln -s a.txt link", change: "rm link && ln -s b.txt link",
-		want: []FileChange{{Kind: ChangeModified, OldPath: "link", NewPath: "link", OldMode: "120000", NewMode: "120000", Added: []string{"b.txt"}, Removed: []string{"a.txt"}}},
+		want: []FileChange{{Kind: ChangeModified, OldPath: "link", NewPath: "link", OldMode: "120000", NewMode: "120000", Added: []string{"b.txt"}, Removed: []string{"a.txt"}, AddedAt: []int{1}, RemovedAt: []int{1}}},
 	},
 	{
 		name: "symlink added", change: "ln -s ../../etc/passwd link",
-		want: []FileChange{{Kind: ChangeAdded, NewPath: "link", NewMode: "120000", Added: []string{"../../etc/passwd"}}},
+		want: []FileChange{{Kind: ChangeAdded, NewPath: "link", NewMode: "120000", Added: []string{"../../etc/passwd"}, AddedAt: []int{1}}},
 	},
 	{
 		name: "path with space", base: "printf 'k\\n' > 'sp ace.txt'", change: "printf 'n\\n' > 'sp ace.txt'",
-		want: []FileChange{{Kind: ChangeModified, OldPath: "sp ace.txt", NewPath: "sp ace.txt", OldMode: "100644", NewMode: "100644", Added: []string{"n"}, Removed: []string{"k"}}},
+		want: []FileChange{{Kind: ChangeModified, OldPath: "sp ace.txt", NewPath: "sp ace.txt", OldMode: "100644", NewMode: "100644", Added: []string{"n"}, Removed: []string{"k"}, AddedAt: []int{1}, RemovedAt: []int{1}}},
 	},
 	{
 		name: "new path with space", change: "printf 'n\\n' > 'new sp.txt'",
-		want: []FileChange{{Kind: ChangeAdded, NewPath: "new sp.txt", NewMode: "100644", Added: []string{"n"}}},
+		want: []FileChange{{Kind: ChangeAdded, NewPath: "new sp.txt", NewMode: "100644", Added: []string{"n"}, AddedAt: []int{1}}},
 	},
 	{
 		name: "path containing b/", change: "mkdir 'x b' && printf 'n\\n' > 'x b/y'",
-		want: []FileChange{{Kind: ChangeAdded, NewPath: "x b/y", NewMode: "100644", Added: []string{"n"}}},
+		want: []FileChange{{Kind: ChangeAdded, NewPath: "x b/y", NewMode: "100644", Added: []string{"n"}, AddedAt: []int{1}}},
 	},
 	{
 		name: "quoted path", change: "printf 'q\\n' > \"$(printf 'tab\\t\\303\\251 \"q\".txt')\"",
-		want: []FileChange{{Kind: ChangeAdded, NewPath: "tab\té \"q\".txt", NewMode: "100644", Added: []string{"q"}}},
+		want: []FileChange{{Kind: ChangeAdded, NewPath: "tab\té \"q\".txt", NewMode: "100644", Added: []string{"q"}, AddedAt: []int{1}}},
 	},
 	{
 		name: "quoted rename", base: "printf '1\\n2\\n3\\n' > plain.txt", change: "mv plain.txt \"$(printf 'na\\tme.txt')\"",
@@ -227,11 +227,11 @@ var realGitCases = []parseCase{
 	},
 	{
 		name: "crlf content", base: "printf 'a\\r\\nb\\r\\n' > w.txt", change: "printf 'a\\r\\nc\\r\\n' > w.txt",
-		want: []FileChange{{Kind: ChangeModified, OldPath: "w.txt", NewPath: "w.txt", OldMode: "100644", NewMode: "100644", Added: []string{"c\r"}, Removed: []string{"b\r"}}},
+		want: []FileChange{{Kind: ChangeModified, OldPath: "w.txt", NewPath: "w.txt", OldMode: "100644", NewMode: "100644", Added: []string{"c\r"}, Removed: []string{"b\r"}, AddedAt: []int{2}, RemovedAt: []int{2}}},
 	},
 	{
 		name: "two hunks", base: "i=1; while [ $i -le 30 ]; do echo $i; i=$((i+1)); done > h.txt", change: "sed -e 's/^2$/two/' -e 's/^29$/twenty-nine/' h.txt > h2 && mv h2 h.txt",
-		want: []FileChange{{Kind: ChangeModified, OldPath: "h.txt", NewPath: "h.txt", OldMode: "100644", NewMode: "100644", Added: []string{"two", "twenty-nine"}, Removed: []string{"2", "29"}}},
+		want: []FileChange{{Kind: ChangeModified, OldPath: "h.txt", NewPath: "h.txt", OldMode: "100644", NewMode: "100644", Added: []string{"two", "twenty-nine"}, Removed: []string{"2", "29"}, AddedAt: []int{2, 29}, RemovedAt: []int{2, 29}}},
 	},
 }
 
@@ -280,12 +280,12 @@ func TestParseDiff_Shapes(t *testing.T) {
 		{
 			name: "hunk section heading",
 			diff: "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@ func main() {\n-a\n+b\n",
-			want: []FileChange{{Kind: ChangeModified, OldPath: "f", NewPath: "f", OldMode: "100644", NewMode: "100644", Added: []string{"b"}, Removed: []string{"a"}}},
+			want: []FileChange{{Kind: ChangeModified, OldPath: "f", NewPath: "f", OldMode: "100644", NewMode: "100644", Added: []string{"b"}, Removed: []string{"a"}, AddedAt: []int{1}, RemovedAt: []int{1}}},
 		},
 		{
 			name: "no newline mid hunk",
 			diff: "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1 +1,2 @@\n-a\n\\ No newline at end of file\n+a\n+b\n",
-			want: []FileChange{{Kind: ChangeModified, OldPath: "f", NewPath: "f", OldMode: "100644", NewMode: "100644", Added: []string{"a", "b"}, Removed: []string{"a"}}},
+			want: []FileChange{{Kind: ChangeModified, OldPath: "f", NewPath: "f", OldMode: "100644", NewMode: "100644", Added: []string{"a", "b"}, Removed: []string{"a"}, AddedAt: []int{1, 2}, RemovedAt: []int{1}}},
 		},
 		{
 			name: "octal escapes",
@@ -315,6 +315,10 @@ var malformedDiffs = []struct{ name, diff string }{
 	{"hunk too short", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+b\n"},
 	{"hunk too long", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n+c\n"},
 	{"hunk extra context", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n c\n"},
+	{"new side starts at line 0", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1 +0,1 @@\n-a\n+b\n"},
+	{"old side starts at line 0", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -0,1 +1 @@\n-a\n+b\n"},
+	{"hunks out of order", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -10 +10 @@\n-a\n+b\n@@ -1 +1 @@\n-c\n+d\n"},
+	{"hunks overlap", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+b\n x\n@@ -2 +2 @@\n-c\n+d\n"},
 	{"hunk huge count", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1,999999999 +1 @@\n-a\n+b\n"},
 	{"empty hunk", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1,0 +1,0 @@\n"},
 	{"empty line in hunk", "diff --git a/f b/f\nindex 1111111..2222222 100644\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n-a\n+b\n\n"},
@@ -431,6 +435,10 @@ func FuzzParseDiff(f *testing.F) {
 // w1CheckChangeShape checks the invariants every parsed change keeps.
 func w1CheckChangeShape(t *testing.T, c FileChange) {
 	t.Helper()
+	// The secrets gate and the comment-boundary check rely on every
+	// changed line having a line number, from 1 and strictly increasing.
+	w1CheckLineNumbers(t, "added", len(c.Added), c.AddedAt)
+	w1CheckLineNumbers(t, "removed", len(c.Removed), c.RemovedAt)
 	switch c.Kind {
 	case ChangeAdded:
 		if c.OldPath != "" || c.NewPath == "" {
@@ -446,5 +454,19 @@ func w1CheckChangeShape(t *testing.T, c FileChange) {
 		}
 	default:
 		t.Fatalf("unknown kind %q", c.Kind)
+	}
+}
+
+// w1CheckLineNumbers checks that at holds one line number per line, each
+// at least 1 and greater than the one before.
+func w1CheckLineNumbers(t *testing.T, side string, lines int, at []int) {
+	t.Helper()
+	if len(at) != lines {
+		t.Fatalf("%d %s lines with %d line numbers", lines, side, len(at))
+	}
+	for i, n := range at {
+		if n < 1 || (i > 0 && n <= at[i-1]) {
+			t.Fatalf("%s line numbers %v are not from 1 and strictly increasing", side, at)
+		}
 	}
 }

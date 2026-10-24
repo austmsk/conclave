@@ -283,7 +283,7 @@ func realGitleaks(t *testing.T) *Gitleaks {
 }
 
 // TestGitleaks_Real scans through the pinned binary and the platform
-// config. A planted canary is found at the right file and added line, and
+// config. A planted canary is found at the right file and line, and
 // clean text passes.
 func TestGitleaks_Real(t *testing.T) {
 	g := realGitleaks(t)
@@ -297,8 +297,8 @@ func TestGitleaks_Real(t *testing.T) {
 		{"clean text passes", twoFiles, true, ""},
 		{"a planted canary fails", []FileChange{
 			twoFiles[0],
-			{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"b1", `const fixture = "` + canary + `"`}},
-		}, false, `conclave-canary at "src/b.go" added line 2`},
+			{Kind: ChangeAdded, NewPath: "src/b.go", Added: []string{"b1", `const fixture = "` + canary + `"`}, AddedAt: []int{1, 2}},
+		}, false, `conclave-canary at "src/b.go" line 2`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -85,7 +85,7 @@ func TestVerify(t *testing.T) {
 			results := newFakeResults()
 			results.put(tc.rows(hash)...)
 			results.forErr = tc.forErr
-			art, err := Verify(context.Background(), blobs, results, w3AttemptID, key)
+			art, err := Verify(context.Background(), blobs, results, w3AttemptID, w3RepoID, hash)
 			if tc.wantErr == nil {
 				if err != nil || art.Hash != hash || art.Key != key || art.Base != w3Base {
 					t.Fatalf("Verify = %+v, %v; want the artifact %s", art, err, hash)
@@ -105,10 +105,10 @@ func TestVerify(t *testing.T) {
 // TestVerifyRowsForAnotherAttempt: passing rows recorded under another
 // attempt, for the same artifact, do not verify this attempt.
 func TestVerifyRowsForAnotherAttempt(t *testing.T) {
-	blobs, _, key, hash := w3Blobs(t)
+	blobs, _, _, hash := w3Blobs(t)
 	results := newFakeResults()
 	results.put(passingRows("0e1d2c3b-4a59-4687-b7a6-958473625140", hash)...)
-	if _, err := Verify(context.Background(), blobs, results, w3AttemptID, key); !errors.Is(err, ErrNotVerified) {
+	if _, err := Verify(context.Background(), blobs, results, w3AttemptID, w3RepoID, hash); !errors.Is(err, ErrNotVerified) {
 		t.Fatalf("err = %v, want ErrNotVerified", err)
 	}
 }
@@ -133,8 +133,22 @@ func TestVerifyTamperedBlob(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	art, err := Verify(context.Background(), blobs, results, w3AttemptID, key)
+	art, err := Verify(context.Background(), blobs, results, w3AttemptID, w3RepoID, hash)
 	if !errors.Is(err, blob.ErrCorrupt) {
 		t.Fatalf("Verify = %+v, %v; want blob.ErrCorrupt", art, err)
+	}
+}
+
+// TestVerifyMissingBlob: passing rows do not verify an artifact whose
+// blob is gone. That is the store's failure, not the attempt's, so it is
+// ErrEnvironment, still recognisable as blob.ErrNotFound.
+func TestVerifyMissingBlob(t *testing.T) {
+	_, _, _, hash := w3Blobs(t)
+	results := newFakeResults()
+	results.put(passingRows(w3AttemptID, hash)...)
+	empty := newTestBlobs(t)
+	art, err := Verify(context.Background(), empty, results, w3AttemptID, w3RepoID, hash)
+	if !errors.Is(err, ErrEnvironment) || !errors.Is(err, blob.ErrNotFound) {
+		t.Fatalf("Verify = %+v, %v; want ErrEnvironment wrapping blob.ErrNotFound", art, err)
 	}
 }

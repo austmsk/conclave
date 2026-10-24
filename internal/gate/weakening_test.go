@@ -10,52 +10,80 @@ import (
 	"github.com/austmsk/conclave/internal/contracts"
 )
 
-// TestGateWeakening runs real-shaped diffs through ParseDiff and the gate
+// weakeningIdx is a modified file's index line.
+const weakeningIdx = "index 1111111..2222222 100644\n"
+
+// weakeningCases are diffs shaped as git writes them, each with whether
+// the gate passes it and a fragment of its detail.
+var weakeningCases = []struct {
+	name, diff string
+	pass       bool
+	detail     string
+}{
+	{"deleted_test_file", "diff --git a/src/FooTest.java b/src/FooTest.java\ndeleted file mode 100644\nindex 1111111..0000000\n" +
+		"--- a/src/FooTest.java\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-class FooTest {\n-    @Test void adds() {}\n-}\n", false, "test deleted"},
+	{"renamed_out_of_tests", "diff --git a/src/FooTest.java b/src/Foo.txt\nsimilarity index 100%\nrename from src/FooTest.java\nrename to src/Foo.txt\n",
+		false, "renamed out of the test paths"},
+	{"case_marker_removed", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,5 +1,3 @@\n class FooTest {\n     @Test void adds() {}\n-    @Test\n-    void subtracts() {}\n }\n",
+		false, "1 test cases removed, 0 added"},
+	{"commented_out_test", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,4 +1,4 @@\n class FooTest {\n-    @Test\n-    void adds() { assertEquals(2, add(1, 1)); }\n+    // @Test\n+    // void adds() { assertEquals(2, add(1, 1)); }\n }\n",
+		false, "1 test cases removed, 0 added"},
+	{"skip_marker_added", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,3 +1,4 @@\n class FooTest {\n+    @Disabled(\"flaky\")\n     @Test void adds() {}\n }\n",
+		false, "skip marker added"},
+	{"block_commented_out_test", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,4 +1,6 @@\n class FooTest {\n+    /*\n     @Test\n     void adds() { assertEquals(2, add(1, 1)); }\n+    */\n }\n",
+		false, "block comment boundary moved"},
+	{"comment closer removed", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,4 +1,3 @@\n class FooTest {\n     /** Adds.\n-     */\n     @Test void adds() {}\n",
+		false, "block comment boundary moved"},
+	{"comment left open over unchanged tests", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,3 +1,4 @@\n class FooTest {\n+    /*\n     @Test void adds() {}\n }\n",
+		false, "block comment boundary moved"},
+	{"dummy opener does not close the comment", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,3 +1,5 @@\n class FooTest {\n+    /*\n+    // /*\n     @Test void adds() {}\n }\n",
+		false, "block comment boundary moved"},
+	{"javadoc added above a test", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,3 +1,6 @@\n class FooTest {\n+    /**\n+     * Adds two numbers.\n+     */\n     @Test void adds() {}\n }\n",
+		true, "no tests deleted"},
+	{"javadoc removed whole", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,6 +1,3 @@\n class FooTest {\n-    /**\n-     * Adds two numbers.\n-     */\n     @Test void adds() {}\n }\n",
+		true, "no tests deleted"},
+	{"new test file with comments and globs", "diff --git a/src/BarTest.java b/src/BarTest.java\nnew file mode 100644\nindex 0000000..2222222\n" +
+		"--- /dev/null\n+++ b/src/BarTest.java\n@@ -0,0 +1,5 @@\n+/**\n+ * Bars.\n+ */\n+class BarTest { String g = \"src/*\";\n+    @Test void bars() {} }\n", true, "no tests deleted"},
+	{"one-line comment added", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,2 +1,3 @@\n class FooTest {\n+    /** Adds two numbers. */ int x = 1 / 2;\n     @Test void adds() {}\n",
+		true, "no tests deleted"},
+	{"test_config_changed", "diff --git a/lib/junit-platform.properties b/lib/junit-platform.properties\n" + weakeningIdx +
+		"--- a/lib/junit-platform.properties\n+++ b/lib/junit-platform.properties\n@@ -1 +1 @@\n-a=1\n+junit.jupiter.conditions.deactivate=*\n",
+		false, "test configuration changed"},
+	{"assumption added", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + weakeningIdx +
+		"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,2 +1,3 @@\n class FooTest {\n+    { assumeTrue(false); }\n }\n",
+		false, "skip marker added"},
+	{"test made binary", "diff --git a/src/FooTest.java b/src/FooTest.java\nindex 1111111..2222222 100644\nBinary files a/src/FooTest.java and b/src/FooTest.java differ\n",
+		false, "test changed as binary"},
+	{"test added", "diff --git a/src/BarTest.java b/src/BarTest.java\nnew file mode 100644\nindex 0000000..2222222\n" +
+		"--- /dev/null\n+++ b/src/BarTest.java\n@@ -0,0 +1,3 @@\n+class BarTest {\n+    @Test void bars() {}\n+}\n", true, "no tests deleted"},
+	{"test moved between files", "diff --git a/src/ATest.java b/src/ATest.java\n" + weakeningIdx +
+		"--- a/src/ATest.java\n+++ b/src/ATest.java\n@@ -1,3 +1,2 @@\n class ATest {\n-    @Test void moved() {}\n }\n" +
+		"diff --git a/src/BTest.java b/src/BTest.java\n" + weakeningIdx +
+		"--- a/src/BTest.java\n+++ b/src/BTest.java\n@@ -1,2 +1,3 @@\n class BTest {\n+    @Test void moved() {}\n }\n", true, "no tests deleted"},
+	{"test renamed within tests", "diff --git a/src/OldTest.java b/src/NewTest.java\nsimilarity index 100%\nrename from src/OldTest.java\nrename to src/NewTest.java\n",
+		true, "no tests deleted"},
+	{"skip marker outside tests", "diff --git a/src/App.java b/src/App.java\n" + weakeningIdx +
+		"--- a/src/App.java\n+++ b/src/App.java\n@@ -1 +1,2 @@\n class App {}\n+// @Disabled is a JUnit annotation\n", true, "no tests deleted"},
+	{"case-folded test path deleted", "diff --git a/SRC/FooTEST.java b/SRC/FooTEST.java\ndeleted file mode 100644\nindex 1111111..0000000\n" +
+		"--- a/SRC/FooTEST.java\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n", false, "test deleted"},
+}
+
+// TestGateWeakening runs weakeningCases through ParseDiff and the gate
 // under the ETS-like testPolicy: tests are src/*Test.java and lib/ is
 // test configuration.
 func TestGateWeakening(t *testing.T) {
-	const idx = "index 1111111..2222222 100644\n"
-	cases := []struct {
-		name, diff string
-		pass       bool
-		detail     string
-	}{
-		{"deleted_test_file", "diff --git a/src/FooTest.java b/src/FooTest.java\ndeleted file mode 100644\nindex 1111111..0000000\n" +
-			"--- a/src/FooTest.java\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-class FooTest {\n-    @Test void adds() {}\n-}\n", false, "test deleted"},
-		{"renamed_out_of_tests", "diff --git a/src/FooTest.java b/src/Foo.txt\nsimilarity index 100%\nrename from src/FooTest.java\nrename to src/Foo.txt\n",
-			false, "renamed out of the test paths"},
-		{"case_marker_removed", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + idx +
-			"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,5 +1,3 @@\n class FooTest {\n     @Test void adds() {}\n-    @Test\n-    void subtracts() {}\n }\n",
-			false, "1 test cases removed, 0 added"},
-		{"commented_out_test", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + idx +
-			"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,4 +1,4 @@\n class FooTest {\n-    @Test\n-    void adds() { assertEquals(2, add(1, 1)); }\n+    // @Test\n+    // void adds() { assertEquals(2, add(1, 1)); }\n }\n",
-			false, "1 test cases removed, 0 added"},
-		{"skip_marker_added", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + idx +
-			"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,3 +1,4 @@\n class FooTest {\n+    @Disabled(\"flaky\")\n     @Test void adds() {}\n }\n",
-			false, "skip marker added"},
-		{"test_config_changed", "diff --git a/lib/junit-platform.properties b/lib/junit-platform.properties\n" + idx +
-			"--- a/lib/junit-platform.properties\n+++ b/lib/junit-platform.properties\n@@ -1 +1 @@\n-a=1\n+junit.jupiter.conditions.deactivate=*\n",
-			false, "test configuration changed"},
-		{"assumption added", "diff --git a/src/FooTest.java b/src/FooTest.java\n" + idx +
-			"--- a/src/FooTest.java\n+++ b/src/FooTest.java\n@@ -1,2 +1,3 @@\n class FooTest {\n+    { assumeTrue(false); }\n }\n",
-			false, "skip marker added"},
-		{"test made binary", "diff --git a/src/FooTest.java b/src/FooTest.java\nindex 1111111..2222222 100644\nBinary files a/src/FooTest.java and b/src/FooTest.java differ\n",
-			false, "test changed as binary"},
-		{"test added", "diff --git a/src/BarTest.java b/src/BarTest.java\nnew file mode 100644\nindex 0000000..2222222\n" +
-			"--- /dev/null\n+++ b/src/BarTest.java\n@@ -0,0 +1,3 @@\n+class BarTest {\n+    @Test void bars() {}\n+}\n", true, "no tests deleted"},
-		{"test moved between files", "diff --git a/src/ATest.java b/src/ATest.java\n" + idx +
-			"--- a/src/ATest.java\n+++ b/src/ATest.java\n@@ -1,3 +1,2 @@\n class ATest {\n-    @Test void moved() {}\n }\n" +
-			"diff --git a/src/BTest.java b/src/BTest.java\n" + idx +
-			"--- a/src/BTest.java\n+++ b/src/BTest.java\n@@ -1,2 +1,3 @@\n class BTest {\n+    @Test void moved() {}\n }\n", true, "no tests deleted"},
-		{"test renamed within tests", "diff --git a/src/OldTest.java b/src/NewTest.java\nsimilarity index 100%\nrename from src/OldTest.java\nrename to src/NewTest.java\n",
-			true, "no tests deleted"},
-		{"skip marker outside tests", "diff --git a/src/App.java b/src/App.java\n" + idx +
-			"--- a/src/App.java\n+++ b/src/App.java\n@@ -1 +1,2 @@\n class App {}\n+// @Disabled is a JUnit annotation\n", true, "no tests deleted"},
-		{"case-folded test path deleted", "diff --git a/SRC/FooTEST.java b/SRC/FooTEST.java\ndeleted file mode 100644\nindex 1111111..0000000\n" +
-			"--- a/SRC/FooTEST.java\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n", false, "test deleted"},
-	}
 	p := testPolicy(t)
-	for _, tc := range cases {
+	for _, tc := range weakeningCases {
 		t.Run(tc.name, func(t *testing.T) {
 			v := checkWeakening(mustParse(t, []byte(tc.diff)), p)
 			if v.Gate != contracts.GateWeakening || v.Passed != tc.pass || v.Flagged {

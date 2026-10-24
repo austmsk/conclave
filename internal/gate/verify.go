@@ -14,17 +14,23 @@ import (
 // required gate. The artifact must not be pushed.
 var ErrNotVerified = errors.New("artifact has not passed every required gate")
 
-// Verify is the single check before an artifact is pushed (ticket 9). It
-// loads the artifact through blob.Get, which re-hashes it, so a blob
+// Verify is the single check before an artifact is pushed (ticket 9).
+// The caller names the artifact it means to push by repository and hash:
+// the attempt's own recorded artifact hash, never a key found elsewhere,
+// because after a finalization rebase one attempt has more than one
+// gated artifact.
+//
+// It loads the artifact through blob.Get, which re-hashes it, so a blob
 // changed on disk is refused here rather than pushed. It then requires
 // that every gate in RequiredGates has a recorded result for this attempt
-// whose ArtifactHash is the hash just computed and which passed. A missing
-// or failing gate is ErrNotVerified, naming each; a store failure is
-// ErrEnvironment.
+// whose ArtifactHash is that hash and which passed. A missing or failing
+// gate is ErrNotVerified, naming each; a missing, corrupt or unreachable
+// blob and a store failure are ErrEnvironment.
 //
 // It returns the artifact as loaded, so the caller pushes what was
 // verified rather than looking it up again.
-func Verify(ctx context.Context, blobs blob.Store, results Results, attemptID, key string) (Artifact, error) {
+func Verify(ctx context.Context, blobs blob.Store, results Results, attemptID, repoID, hash string) (Artifact, error) {
+	key := repoID + "/" + hash
 	art, _, err := Load(ctx, blobs, key)
 	if err != nil {
 		return Artifact{}, fmt.Errorf("verifying artifact for attempt %s: %w", attemptID, err)

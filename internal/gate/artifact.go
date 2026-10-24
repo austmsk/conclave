@@ -122,19 +122,21 @@ func Load(ctx context.Context, blobs blob.Store, key string) (Artifact, []byte, 
 	}
 	env, err := blobs.Get(ctx, key)
 	if err != nil {
-		if errors.Is(err, blob.ErrNotFound) {
-			return Artifact{}, nil, fmt.Errorf("loading artifact %s: %w", key, err)
-		}
-		// Both wrapped, so a caller can tell tampering (blob.ErrCorrupt)
-		// from an unreachable store.
+		// A frozen artifact that is missing, tampered with or unreachable
+		// is the store's failure, not the attempt's. Both errors are
+		// wrapped, so a caller can still tell blob.ErrNotFound and
+		// blob.ErrCorrupt from an unreachable store.
 		return Artifact{}, nil, fmt.Errorf("%w: loading artifact %s: %w", ErrEnvironment, key, err)
 	}
+	// Freeze wrote a well-formed envelope under its own hash, so anything
+	// else here was changed in storage, whether or not the store checks
+	// content on read.
 	base, diff, err := openEnvelope(env)
 	if err != nil {
-		return Artifact{}, nil, fmt.Errorf("loading artifact %s: %w", key, err)
+		return Artifact{}, nil, fmt.Errorf("%w: loading artifact %s: %w: %w", ErrEnvironment, key, blob.ErrCorrupt, err)
 	}
 	if HashArtifact(base, diff) != hash {
-		return Artifact{}, nil, fmt.Errorf("loading artifact %s: %w", key, blob.ErrCorrupt)
+		return Artifact{}, nil, fmt.Errorf("%w: loading artifact %s: %w", ErrEnvironment, key, blob.ErrCorrupt)
 	}
 	return Artifact{RepoID: repoID, Base: base, Hash: hash, Key: key, Size: int64(len(env))}, diff, nil
 }

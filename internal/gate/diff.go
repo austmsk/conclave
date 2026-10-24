@@ -53,6 +53,13 @@ type FileChange struct {
 	// Added and Removed are the text lines, without their +/- prefix.
 	Added   []string
 	Removed []string
+
+	// AddedAt[i] is the line number of Added[i] in the new file, and
+	// RemovedAt[i] that of Removed[i] in the old file, from 1 and
+	// strictly increasing, read from the hunk headers. They locate
+	// evidence and tell which changed lines are adjacent.
+	AddedAt   []int
+	RemovedAt []int
 }
 
 // Parser bounds. MaxArtifactBytes already caps what Freeze accepts; these
@@ -164,6 +171,11 @@ type fileEntry struct {
 
 	binary         bool
 	added, removed []string
+
+	// addedAt and removedAt parallel added and removed; newLine and
+	// oldLine are the line numbers of the next line on each side.
+	addedAt, removedAt []int
+	newLine, oldLine   int
 }
 
 func (p *diffParser) file() (FileChange, error) {
@@ -334,6 +346,9 @@ func (p *diffParser) hunk(e *fileEntry) error {
 		return errors.New("expected a hunk header")
 	}
 	oldN, newN := hunkCount(m[2]), hunkCount(m[4])
+	if err := e.startHunk(m[1], oldN, m[3], newN); err != nil {
+		return err
+	}
 	switch {
 	case oldN == 0 && newN == 0:
 		return errors.New("empty hunk")
@@ -361,6 +376,31 @@ func (p *diffParser) peekNoNewline(prevContent bool) bool {
 	return ok && prevContent && l == noNewline
 }
 
+// startHunk positions a hunk from its header. A side with lines starts
+// at line 1 or later, and each hunk starts no earlier than the previous
+// one ended, as git writes them; anything else is refused, so line
+// numbers stay strictly increasing. A side with no lines names the line
+// before the gap, which may be 0.
+func (e *fileEntry) startHunk(oldStart string, oldN int, newStart string, newN int) error {
+	// The regular expression bounds each start to nine digits.
+	o, _ := strconv.Atoi(oldStart)
+	n, _ := strconv.Atoi(newStart)
+	if (o == 0 && oldN > 0) || (n == 0 && newN > 0) {
+		return errors.New("hunk starts at line 0")
+	}
+	if oldN == 0 {
+		o++
+	}
+	if newN == 0 {
+		n++
+	}
+	if o < e.oldLine || n < e.newLine {
+		return errors.New("hunk overlaps or precedes the previous one")
+	}
+	e.oldLine, e.newLine = o, n
+	return nil
+}
+
 // hunkLine accounts for one line of a hunk and returns the counts still
 // expected.
 func (e *fileEntry) hunkLine(l string, oldN, newN int, prevContent bool) (int, int, error) {
@@ -369,18 +409,24 @@ func (e *fileEntry) hunkLine(l string, oldN, newN int, prevContent bool) (int, i
 		if oldN == 0 || newN == 0 {
 			return 0, 0, errors.New("hunk longer than its header")
 		}
+		e.oldLine++
+		e.newLine++
 		return oldN - 1, newN - 1, nil
 	case '-':
 		if oldN == 0 {
 			return 0, 0, errors.New("hunk removes more lines than its header")
 		}
 		e.removed = append(e.removed, l[1:])
+		e.removedAt = append(e.removedAt, e.oldLine)
+		e.oldLine++
 		return oldN - 1, newN, nil
 	case '+':
 		if newN == 0 {
 			return 0, 0, errors.New("hunk adds more lines than its header")
 		}
 		e.added = append(e.added, l[1:])
+		e.addedAt = append(e.addedAt, e.newLine)
+		e.newLine++
 		return oldN, newN - 1, nil
 	case '\\':
 		if l != noNewline || !prevContent {
@@ -469,7 +515,7 @@ func validBase85Line(l string) bool {
 // come from the unambiguous lines (rename/copy, ---/+++) and must agree
 // with the diff --git header wherever that header can be read.
 func (e *fileEntry) resolve() (FileChange, error) {
-	fc := FileChange{Binary: e.binary, Added: e.added, Removed: e.removed}
+	fc := FileChange{Binary: e.binary, Added: e.added, Removed: e.removed, AddedAt: e.addedAt, RemovedAt: e.removedAt}
 	isRename := e.renameFrom != "" || e.renameTo != ""
 	isCopy := e.copyFrom != "" || e.copyTo != ""
 	if e.similarity != "" && !isRename && !isCopy {
