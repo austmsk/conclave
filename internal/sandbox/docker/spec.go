@@ -3,7 +3,6 @@ package docker
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 
@@ -29,27 +28,14 @@ const (
 	// DiskBytes accounting.
 	shmBytes = 8 << 20
 
-	// minDiskBytes keeps every tmpfs split non-trivial.
-	minDiskBytes = 8 << 20
-
 	// initScript is PID 1. See the package documentation for why it, and
 	// not the provider, kills runaway processes.
 	initScript = `trap 'i=0; while [ $i -lt 64 ]; do kill -9 -1 2>/dev/null; i=$((i+1)); done' USR1
 while :; do sleep 3600 & wait $!; done`
 )
 
-var (
-	// digestImage accepts only references pinned by digest (FR-SEC30).
-	digestImage = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:-]*@sha256:[0-9a-f]{64}$`)
-	envKey      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
-	// reservedEnv is set by the provider and may not be overridden by a
-	// spec, because the values point at the writable mounts.
-	reservedEnv = map[string]bool{"HOME": true, "TMPDIR": true, "CI": true, "USER": true}
-)
-
 func validateSpec(spec contracts.SandboxSpec) error {
-	if !digestImage.MatchString(spec.Image) {
+	if !sandbox.DigestPinned(spec.Image) {
 		return fmt.Errorf("%w: image %q is not pinned by digest", ErrInvalidSpec, spec.Image)
 	}
 	if spec.Network != contracts.NetworkNone && spec.Network != contracts.NetworkRegistries {
@@ -70,44 +56,22 @@ func validateSpec(spec contracts.SandboxSpec) error {
 	return nil
 }
 
+// validateLimits applies sandbox.CheckLimits, the rules every backend
+// shares. The tmpfs disk is why DiskBytes must be below MemoryBytes: tmpfs
+// pages are charged to the memory cgroup.
 func validateLimits(l contracts.ResourceLimits) error {
-	fields := []struct {
-		name  string
-		value int64
-	}{
-		{"MemoryBytes", l.MemoryBytes},
-		{"CPUShares", l.CPUShares},
-		{"DiskBytes", l.DiskBytes},
-		{"MaxProcs", l.MaxProcs},
-		{"Timeout", int64(l.Timeout)},
-	}
-	for _, f := range fields {
-		if f.value <= 0 {
-			return fmt.Errorf("%w: limit %s must be positive", ErrInvalidSpec, f.name)
-		}
-	}
-	if l.DiskBytes < minDiskBytes {
-		return fmt.Errorf("%w: DiskBytes below %d", ErrInvalidSpec, minDiskBytes)
-	}
-	// The disk is tmpfs, and tmpfs pages are charged to the memory cgroup.
-	// A disk the memory limit cannot hold turns a full disk into an OOM
-	// kill at an arbitrary point instead of a clean ENOSPC.
-	if l.DiskBytes >= l.MemoryBytes {
-		return fmt.Errorf("%w: DiskBytes (%d) must be below MemoryBytes (%d): the disk is memory-backed", ErrInvalidSpec, l.DiskBytes, l.MemoryBytes)
-	}
-	// The init loop holds two pids; the agent needs some of its own.
-	if l.MaxProcs < 8 {
-		return fmt.Errorf("%w: MaxProcs below 8", ErrInvalidSpec)
+	if err := sandbox.CheckLimits(l); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, err)
 	}
 	return nil
 }
 
 func validateEnv(env map[string]string) error {
 	for k := range env {
-		if !envKey.MatchString(k) {
+		if !sandbox.ValidEnvKey(k) {
 			return fmt.Errorf("%w: env key %q is not an identifier", ErrInvalidSpec, k)
 		}
-		if reservedEnv[k] {
+		if sandbox.ReservedEnv(k) {
 			return fmt.Errorf("%w: env key %s is set by the provider", ErrInvalidSpec, k)
 		}
 	}

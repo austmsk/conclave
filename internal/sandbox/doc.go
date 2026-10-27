@@ -8,6 +8,13 @@
 // contracts; concrete providers live in subpackages: docker for the local
 // Milestone 1 implementation, daytona for the remote provider added later.
 //
+// It also holds the rules every backend applies to a SandboxSpec
+// (DigestPinned, ValidEnvKey, ReservedEnv, CheckLimits) and the
+// per-repository sandbox configuration that feeds one (LoadConfig, which
+// reads deploy/sandboxes.yaml). LoadConfig applies the same rules, so a
+// configuration a provider's Create would refuse stops the worker at
+// startup instead of failing every attempt.
+//
 // A sandbox holds no credentials, has no Docker socket, and gets no
 // network access during the agent phase. PrepareTree is where the first of
 // those is enforced (FR-SEC21): it strips remotes, credential helpers, and
