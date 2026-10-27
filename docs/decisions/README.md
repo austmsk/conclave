@@ -14,5 +14,6 @@ One record per non-obvious choice, written after the ticket merges ([0001](0001-
 | [0008](0008-provider-adapters-on-net-http.md) | Provider adapters are written on `net/http`, not vendor SDKs | proposed |
 | [0009](0009-budget-caps-route-to-needs-attention.md) | A stopped feature request goes to `needs_attention`, and `/retry` continues it | proposed |
 | [0010](0010-github-client-on-net-http.md) | GitHub App auth and REST are written on `net/http`, not `go-github` or `ghinstallation` | proposed |
+| [0011](0011-sandbox-release-by-id.md) | Sandboxes are released by ID, cancellation is a reason, and the trial image is built locally | proposed |
 
 New records take the next free number, and this table gains a row in the same change.

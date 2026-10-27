@@ -60,6 +60,8 @@ The workflow ID comes from the repository's numeric ID and the issue number (`gi
 
 Temporal holds execution state. Postgres holds the records people query: repos, feature requests, plans, tasks, attempts, gate results, cost events, and an audit log of every state change. Each record kind has a fixed set of legal moves, defined in `internal/contracts/state.go`. Every move goes through `store.Transition`, which only updates a row if it is still in the state and revision the caller last read. A database trigger writes the audit row. See [ticket 2](tickets/02-contracts-and-schema.md).
 
+The rows themselves are created by idempotent store functions (`EnsureRepo`, `CreateFeatureRequest`, `CreatePlan`, `CreateTask`, `CreateAttempt`): a retried create returns the existing row instead of adding a second one. See [ticket 8-pre](tickets/08-pre-workflow-prerequisites.md).
+
 A feature request has six statuses: `planning`, `awaiting_approval`, `executing`, `needs_attention`, `delivered`, `cancelled`. There is no `failed`. Every problem, including a budget cap, moves it to `needs_attention` with a reason, and the owner decides what happens next (`/retry`, `/revise`, `/cancel`).
 
 ### 4. Owner approves (tickets 6 and 8)
@@ -69,6 +71,8 @@ The owner comments `/approve`. Approval pins the base commit (`base_sha`), and e
 ### 5–6. Tree prepared, sandbox created (ticket 3, merged)
 
 The worker clones the repository into its own workspace. The installation token is passed only through environment variables for that one git command and is never written to disk. `sandbox.PrepareTree` then strips remotes, credential helpers and reflogs. The Docker provider copies the cleaned tree into a hardened container: non-root, no capabilities, read-only root, size-limited scratch space, no Docker socket, no bind mounts, and no inherited environment. Dependencies install with network access, then the network is cut before the agent gets control. See [ticket 3](tickets/03-docker-sandbox.md).
+
+The image, limits, install commands and environment for each repository come from `deploy/sandboxes.yaml`, which is checked at startup. The attempt records its sandbox ID as soon as the sandbox exists, so cleanup can release it by ID with `SandboxProvider.Release` even after the worker restarts. See [ticket 8-pre](tickets/08-pre-workflow-prerequisites.md).
 
 ### 7. Agent works (ticket 5), calling models through the router (ticket 4, merged)
 
