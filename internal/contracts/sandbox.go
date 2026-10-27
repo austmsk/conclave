@@ -99,6 +99,23 @@ type Sandbox interface {
 type SandboxProvider interface {
 	Create(ctx context.Context, spec SandboxSpec) (Sandbox, error)
 
+	// CreateWithInstall creates the sandbox, runs the install commands in
+	// order under the spec's network mode, cuts the network, and returns the
+	// sandbox ready for the agent phase. The results of every command run are
+	// returned in both outcomes. A command that exits non-zero, or a failure
+	// at any step, closes the sandbox and returns an error; the caller never
+	// receives a sandbox with a network.
+	CreateWithInstall(ctx context.Context, spec SandboxSpec, install []ExecRequest) (Sandbox, []ExecResult, error)
+
+	// Release removes the sandbox with the given ID and anything created for
+	// it, such as its network. It is idempotent: an ID that names nothing
+	// returns nil. An empty ID is a caller error, not a no-op: a caller with
+	// no recorded sandbox skips the call. It refuses an ID that names
+	// something the provider did not create. The workflow calls it from a
+	// disconnected context after cancellation, and the reaper calls it for
+	// attempts whose sandbox_released_at is still null (RL-3).
+	Release(ctx context.Context, id string) error
+
 	// Reap destroys sandboxes older than the given age that the provider still
 	// knows about. Backs the orphan reaper (NFR-R3).
 	Reap(ctx context.Context, olderThan time.Duration) (int, error)

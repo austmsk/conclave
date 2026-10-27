@@ -122,3 +122,32 @@ func TestSessionScopedActorIsStillAudited(t *testing.T) {
 		t.Error("db_user must be the login, not the SET ROLE target")
 	}
 }
+
+// TestAppRoleCannotDeleteWorkRows attempts, as the application role, to
+// delete a row from each work table. The role holds INSERT and UPDATE on
+// them, which the work-table functions need, and must not hold DELETE:
+// nothing in the design removes a domain record, and a deleted attempt
+// would take its sandbox ID, and with it the reaper's only lead, along.
+func TestAppRoleCannotDeleteWorkRows(t *testing.T) {
+	ctx, tx := testTx(t)
+	s := seed(t, ctx, tx)
+	cases := []struct {
+		table string
+		id    string
+	}{
+		{"repos", s.repo},
+		{"feature_requests", s.feature},
+		{"plans", s.plan},
+		{"tasks", s.task},
+		{"attempts", s.attempt},
+	}
+	for _, tc := range cases {
+		t.Run(tc.table, func(t *testing.T) {
+			sp := savepoint(t, ctx, tx)
+			_, err := sp.Exec(ctx, `DELETE FROM `+tc.table+` WHERE id = $1`, tc.id)
+			if got := sqlState(err); got != permissionDenied {
+				t.Fatalf("got %v (SQLSTATE %q), want permission denied", err, got)
+			}
+		})
+	}
+}

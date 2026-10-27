@@ -29,6 +29,16 @@ const (
 
 	ReasonSandboxError  FailureReason = "sandbox_error"
 	ReasonProviderError FailureReason = "provider_error"
+
+	// ReasonCancelled records an attempt the owner cancelled mid-run. It is
+	// a reason on an errored attempt rather than a fifth state: the attempt
+	// did not fail on its own, and nothing about its lifecycle differs.
+	ReasonCancelled FailureReason = "cancelled"
+
+	// ReasonBudgetCap records an attempt whose model call a platform cap
+	// (the feature request's or the month's) refused. The attempt did not
+	// fail on its own, and calling it a provider error would be false.
+	ReasonBudgetCap FailureReason = "budget_cap"
 )
 
 // Attempt is the durable record of one try at one task.

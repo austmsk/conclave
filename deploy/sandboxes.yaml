@@ -1,0 +1,61 @@
+# Repository sandboxes: the image, resource limits, install phase,
+# environment and default branch each repository's attempts run with.
+# Loaded and validated at startup by sandbox.LoadConfig
+# (internal/sandbox/config.go), which applies the same rules the sandbox
+# provider's Create applies, so a configuration that would fail every
+# attempt stops the worker instead.
+#
+# Repositories are keyed by full name, the same keys as deploy/repos.yaml.
+# Only the owner edits this file; never derive it from the target
+# repository.
+#
+# This shipped file is a placeholder and fails validation on purpose, so
+# the worker refuses to start until a real entry is filled in:
+#   owner/repo        replace with the repository's full name;
+#   the zero digest   replace with the image's real sha256 digest.
+# The real entry lives in deploy/local/sandboxes.yaml, which git ignores.
+#
+#   default_branch:   the branch the working tree is cloned from.
+#   image:            the sandbox image, pinned by digest as
+#                     name@sha256:<64 hex digits> (FR-SEC30). A tag is
+#                     refused. For the Milestone 1 trials this is the
+#                     digest of the locally built image (deploy/images).
+#   limits:           bound the whole sandbox:
+#     memory:         memory and swap, as a whole number of B, KiB, MiB or
+#                     GiB (2GiB). No other units, fractions or spaces.
+#     cpu_shares:     relative CPU weight (Docker's default is 1024).
+#     disk:           writable space, same units as memory. The disk is
+#                     memory-backed, so it must be below memory, and at
+#                     least 8MiB.
+#     max_procs:      process limit, at least 8.
+#     timeout:        the sandbox's whole lifetime, as a Go duration (25m).
+#                     It must be longer than command_timeout, and longer
+#                     than the agent's wall clock.
+#   command_timeout:  each gate command's limit (gate.Commands.Timeout).
+#   install:          a list of argv lists, run in order with registry
+#                     network access before the agent phase; the network
+#                     is cut before the agent starts. Empty means no
+#                     install phase and no network at any point. No
+#                     process survives between steps, so each step must be
+#                     self-contained.
+#   env:              the sandbox's whole environment beyond what the
+#                     provider sets. Names are identifiers; HOME, TMPDIR,
+#                     CI and USER are set by the provider and refused here.
+#                     Nothing is inherited from the worker. Values for
+#                     external services are canaries (canary_*), never
+#                     real credentials.
+
+repositories:
+  owner/repo:
+    default_branch: main
+    image: ghcr.io/owner/conclave-sandbox-java21@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    limits:
+      memory: 2GiB
+      cpu_shares: 1024
+      disk: 1GiB
+      max_procs: 256
+      timeout: 25m          # the whole sandbox; longer than the agent's wall clock
+    command_timeout: 5m     # each gate command (gate.Commands.Timeout)
+    install: []             # argv list run with registry network, or empty for no install phase
+    env:                    # allowlisted names only; values for external services are canaries
+      JAVA_TOOL_OPTIONS: "-Duser.timezone=UTC"

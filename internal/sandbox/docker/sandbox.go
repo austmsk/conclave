@@ -261,19 +261,39 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	// ErrClosed rather than a made-up exit status.
 	s.closing = true
 	if s.id != "" {
-		_, err := s.cli.ContainerRemove(ctx, s.id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
-		if err != nil && !cerrdefs.IsNotFound(err) {
+		if err := removeContainer(ctx, s.cli, s.id, s.name); err != nil {
 			s.closing = false
-			return fmt.Errorf("removing container for sandbox %s: %w", s.name, err)
+			return err
 		}
 	}
 	if s.networkID != "" {
-		_, err := s.cli.NetworkRemove(ctx, s.networkID, client.NetworkRemoveOptions{})
-		if err != nil && !cerrdefs.IsNotFound(err) {
-			return fmt.Errorf("removing network for sandbox %s: %w", s.name, err)
+		if err := removeNetwork(ctx, s.cli, s.networkID, s.name); err != nil {
+			return err
 		}
 	}
 	s.closed = true
+	return nil
+}
+
+// removeContainer force-removes a sandbox's container, ending any command
+// running in it. A container that is already gone is success. Close and
+// Provider.Release share it, and both call it before removeNetwork: a
+// network with a container still attached cannot be removed.
+func removeContainer(ctx context.Context, cli *client.Client, id, name string) error {
+	_, err := cli.ContainerRemove(ctx, id, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
+	if err != nil && !cerrdefs.IsNotFound(err) {
+		return fmt.Errorf("removing container for sandbox %s: %w", name, err)
+	}
+	return nil
+}
+
+// removeNetwork removes a sandbox's own network. A network that is already
+// gone is success.
+func removeNetwork(ctx context.Context, cli *client.Client, id, name string) error {
+	_, err := cli.NetworkRemove(ctx, id, client.NetworkRemoveOptions{})
+	if err != nil && !cerrdefs.IsNotFound(err) {
+		return fmt.Errorf("removing network for sandbox %s: %w", name, err)
+	}
 	return nil
 }
 

@@ -42,12 +42,17 @@ Test names are functions; `pkg:` gives the package under `internal/` unless stat
 | FR-SEC25 | Execution-surface changes flagged | 7 | gate: `TestExecutionSurface_Flags`, `TestCheckExecSurface_RepoAddition` |
 | FR-SEC27 | Gate-to-push integrity | 7 | gate: `TestHashBindsBase`, `TestGate_EveryResultCarriesCheckedHash`, `TestAttackPostFreezeMutationIgnored`, `TestGate_NotReproducedFails`, `TestVerifyTamperedBlob`, `TestGate_EnvironmentFailuresAreErrored`; store: `TestArtifactHashWriteOnce`, `TestGateResultsUpdateDenied` |
 | NFR-R2 | Idempotent actions (so far) | 6, 7, 8a | github: `TestCreatePullRequestIdempotent`, `TestPushRepeatedIsIdempotent`; gate: `TestGateTwiceRunsOnce`, `TestGate_PartialRecordRunsAgain`; store: `TestSettleIsIdempotent`, `TestGateResults_RecordIdempotentFirstWriterWins` |
+| NFR-R2 | Idempotent creates and attempt writes | 8-pre | store: `TestEnsureRepo`, `TestCreateFeatureRequest`, `TestCreatePlan`, `TestCreateTask`, `TestCreateAttempt`, `TestSetAttemptSandbox`, `TestMarkSandboxReleased`, `TestSetArtifactHash`, `TestFinishAttempt` |
+| NFR-R3 | Release by ID, release tracking (cleanup half) | 8-pre | sandbox/docker: `TestReleaseRemovesContainerAndNetwork`, `TestReleaseTwiceReturnsNil`, `TestReleaseOfUnknownIDReturnsNil`, `TestCloseAfterReleaseReturnsNil`, `TestReleaseRefusesUnlabelledContainer`, `TestReleaseLeavesUnlabelledNetwork`; store: `TestUnreleasedAttempts` |
+| FR-SEC12 | Configuration decides the stored tier | 8-pre | store: `TestEnsureRepo`, `TestWorkRowsOpenRouterScope` |
+| FR-SEC30 | Images by digest (validation half; CI build deferred, decision 0011) | 8-pre | sandbox: `TestLoadConfigRejects` (image by tag, all-zero digest), `TestLoadConfigShippedFile` |
+| NFR-M7 | Sandbox configuration and repo profile validated | 8-pre | sandbox: `TestLoadConfigRejects`, `TestLoadConfigAcceptsAValidFile`, `TestParseSize`; agent: `TestLoadToolchains` |
+| FR-SEC10 | Work rows cannot be deleted by the application role; a finished attempt's actor reaches the audit trail | 8-pre | store: `TestAppRoleCannotDeleteWorkRows`, `TestFinishAttempt` |
 
 ## Unmerged tickets
 
 | ID | Requirement | Ticket | Proof |
 |---|---|---|---|
-| NFR-R2, NFR-R3, FR-SEC12, FR-SEC30, NFR-M7 | Prerequisites: release by ID, idempotent creates, repo seeding, validated sandbox config | 8-pre | *named in the PR* |
 | NFR-R1, NFR-R2, NFR-R3, FR-S5, FR-S12, FR-S19 (pinning) | Workflow survives crash, retry and cancellation; approval pins the base; every problem routes to `needs_attention` | 8 | *named in the PR*; must include the outcome-table test, the canary-not-in-history test, and the traceability join test from `ticket-8-pre-plan.md` |
 | FR-S11, FR-S12, FR-SEC10 | `/retry`, invalid-command replies, `/status`, `/help`, status comment, command audit | 8b | *named in the PR* |
 | FR-S10, FR-S16, FR-S17, FR-S19 (rebase), FR-A5, FR-A7, FR-SEC27 (push), FR-C3 | PR delivery, bot commits, rebase and re-gate, CI result observed | 9 | *named in the PR* |

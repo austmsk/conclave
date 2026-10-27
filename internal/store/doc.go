@@ -22,6 +22,26 @@
 // configured tier. ToolCalls is the agent's audit recorder over the
 // append-only tool_calls table (FR-SEC24).
 //
+// The work-table functions create the rows a run hangs off: EnsureRepo
+// makes a repository's row match the owner's configuration, and
+// CreateFeatureRequest, CreatePlan, CreateTask and CreateAttempt insert a
+// record in its initial state. Each is idempotent on the table's natural
+// key (RL-2): a repeated call returns the existing row, reports that it
+// did not create it, and overwrites nothing. Like Transition, they need
+// READ COMMITTED, Postgres's default: on a conflict they read the existing
+// row back in a new statement, which sees a row another transaction has
+// just committed only under that level. Under REPEATABLE READ the read
+// misses it and the create reports the parent as not found. Inserting a
+// row is not a transition and writes no audit row. The attempt's cleanup columns are
+// written through SetAttemptSandbox, before any agent step, and
+// MarkSandboxReleased, and UnreleasedAttempts lists the sandboxes the
+// reaper must still release (RL-3). SetArtifactHash records the frozen
+// artifact once, and FinishAttempt moves an attempt to its terminal state
+// and records its usage and report in the same transaction. Every input
+// these functions can check is checked before any SQL runs, so a refusal
+// leaves the caller's transaction usable. ActorWorkflow, ActorGitHub and
+// ActorWorker are the actor strings for the audit trigger.
+//
 // These grants are a control only when the application connects as a
 // non-owner LOGIN role that is a member of conclave_app. SET ROLE
 // conclave_app is acceptable from such a role, never from the owner: a
