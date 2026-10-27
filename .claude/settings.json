@@ -25,9 +25,12 @@
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Bash(git push --force:*)",
-      "Bash(git push:*)",
+      "Bash(git push -f:*)",
       "Bash(curl:*)",
       "Bash(wget:*)"
+    ],
+    "ask": [
+      "Bash(git push:*)"
     ]
   },
   "hooks": {
