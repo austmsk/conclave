@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -19,6 +20,11 @@ import (
 // ErrInstallFailed reports an install command that exited non-zero. The
 // sandbox has been closed; the results carry its output.
 var ErrInstallFailed = errors.New("install command failed")
+
+// ErrNotSandbox reports a Release of something the provider did not
+// create: a container without the conclave.sandbox label. Nothing is
+// removed.
+var ErrNotSandbox = errors.New("not a conclave sandbox")
 
 // Config tunes a Provider. The zero value is usable.
 type Config struct {
@@ -338,8 +344,64 @@ func randomSuffix() string {
 	return hex.EncodeToString(b[:])
 }
 
-// Release is implemented in the next commit of ticket 8-pre; this stub
-// keeps the contract batch building on its own.
+// Release removes the sandbox whose container ID is id, and then its
+// network, the same way Sandbox.Close does, for a caller that holds only
+// the ID: the workflow's deferred cleanup after a worker restart, and the
+// reaper for attempts whose sandbox_released_at is still null (RL-3,
+// NFR-R3). An ID that names nothing is success, so Release is idempotent
+// and safe after Close or Reap. A container without the conclave.sandbox
+// label is refused with ErrNotSandbox and left alone; so is an empty ID.
+//
+// Release honours any namespace. The ID comes from an attempt row, and the
+// worker that created the sandbox may have run under a namespace this
+// provider no longer uses; the label, not the namespace, is what makes a
+// container the provider's.
+//
+// The network is found by the sandbox's name, which it shares with the
+// container, not through the container's endpoints: the install phase
+// disconnects it before the agent starts. It is removed only when it
+// carries the conclave.sandbox label and the container's namespace, so a
+// network the provider did not create is never removed. If the container
+// goes and the network removal then fails, a retry finds no container and
+// returns nil; the labelled network is left for Reap's age sweep.
 func (p *Provider) Release(ctx context.Context, id string) error {
-	return errors.New("release by ID not implemented")
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%w: empty sandbox ID", ErrNotSandbox)
+	}
+	res, err := p.cli.ContainerInspect(ctx, id, client.ContainerInspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspecting container %s for release: %w", id, err)
+	}
+	var labels map[string]string
+	if res.Container.Config != nil {
+		labels = res.Container.Config.Labels
+	}
+	if labels[labelSandbox] != "true" {
+		return fmt.Errorf("%w: container %s lacks the %s label", ErrNotSandbox, id, labelSandbox)
+	}
+	name := strings.TrimPrefix(res.Container.Name, "/")
+	if err := removeContainer(ctx, p.cli, res.Container.ID, name); err != nil {
+		return err
+	}
+	return p.releaseNetwork(ctx, name, labels[labelNamespace])
+}
+
+// releaseNetwork removes the network named for a released sandbox, if
+// there is one and the provider created it.
+func (p *Provider) releaseNetwork(ctx context.Context, name, namespace string) error {
+	res, err := p.cli.NetworkInspect(ctx, name, client.NetworkInspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspecting network for sandbox %s: %w", name, err)
+	}
+	n := res.Network
+	if n.Name != name || n.Labels[labelSandbox] != "true" || n.Labels[labelNamespace] != namespace {
+		return nil
+	}
+	return removeNetwork(ctx, p.cli, n.ID, name)
 }

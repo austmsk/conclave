@@ -94,8 +94,14 @@
 //
 // Close removes the container and its network, is safe to call more than
 // once, and never waits for a running command: force removal ends the
-// command, whose Exec then returns ErrClosed. Every container and network
-// carries the labels conclave.sandbox and conclave.sandbox.namespace.
+// command, whose Exec then returns ErrClosed. Release does the same for a
+// caller holding only the container ID, such as the workflow's deferred
+// cleanup after a worker restart or the reaper working from attempt rows.
+// It finds the network by the sandbox's name, because the install phase
+// has already disconnected it, and it removes nothing without the
+// conclave.sandbox label: an unlabelled container is refused with
+// ErrNotSandbox. Every container and network carries the labels
+// conclave.sandbox and conclave.sandbox.namespace.
 // Reap sweeps the provider's namespace at the requested age and every
 // namespace at Config.StaleAge, continuing past any removal that fails,
 // so a worker that died mid-attempt, a renamed namespace, or one wedged
