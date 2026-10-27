@@ -2,10 +2,13 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/austmsk/conclave/internal/contracts"
 )
 
 func TestLoadToolchains(t *testing.T) {
@@ -43,39 +46,71 @@ func TestLoadToolchains(t *testing.T) {
 type toolchainsCase struct {
 	name string
 	yaml string
-	want map[string]Commands
+	want map[string]Toolchain
 	// errPart is a substring of the error; empty means it loads.
 	errPart string
+}
+
+// profileYAML is a valid profile block for an entry under repositories.
+const profileYAML = "    profile:\n      language: Go\n      layout_hint: Packages under internal/\n      conventions: Table-driven tests\n"
+
+// allCommands configures every command the implementer role offers.
+const allCommands = "    test: [make, test]\n    build: [make]\n    lint: [make, lint]\n"
+
+// testProfile is profileYAML as LoadToolchains returns it for name.
+func testProfile(name string) contracts.RepoProfile {
+	return contracts.RepoProfile{FullName: name, Language: "Go", LayoutHint: "Packages under internal/", Conventions: "Table-driven tests"}
+}
+
+// withProfile is repository a/b with every command and a profile holding
+// the given values, quoted so that blank and whitespace values survive.
+func withProfile(language, layout, conventions string) string {
+	return "repositories:\n  a/b:\n" + allCommands +
+		fmt.Sprintf("    profile:\n      language: %q\n      layout_hint: %q\n      conventions: %q\n", language, layout, conventions)
 }
 
 // toolchainsCases takes the shipped deploy/toolchains.yaml and the same
 // file with its placeholder filled in.
 func toolchainsCases(shipped, filled string) []toolchainsCase {
+	return append(commandCases(shipped, filled), profileCases()...)
+}
+
+func commandCases(shipped, filled string) []toolchainsCase {
 	return []toolchainsCase{
 		{
 			name: "valid",
-			yaml: "repositories:\n  austmsk/election-tally:\n    test: [go, test, ./...]\n    build: [go, build, ./...]\n    lint: [sh, -c, \"golangci-lint run\"]\n",
-			want: map[string]Commands{"austmsk/election-tally": {
-				Test: []string{"go", "test", "./..."}, Build: []string{"go", "build", "./..."}, Lint: []string{"sh", "-c", "golangci-lint run"},
+			yaml: "repositories:\n  austmsk/election-tally:\n    test: [go, test, ./...]\n    build: [go, build, ./...]\n    lint: [sh, -c, \"golangci-lint run\"]\n" + profileYAML,
+			want: map[string]Toolchain{"austmsk/election-tally": {
+				Commands: Commands{Test: []string{"go", "test", "./..."}, Build: []string{"go", "build", "./..."}, Lint: []string{"sh", "-c", "golangci-lint run"}},
+				Profile:  testProfile("austmsk/election-tally"),
 			}},
 		},
 		{
 			name: "no linter configured as true",
-			yaml: "repositories:\n  a/b:\n    test: [make, test]\n    build: [make]\n    lint: [\"true\"]\n",
-			want: map[string]Commands{"a/b": {Test: []string{"make", "test"}, Build: []string{"make"}, Lint: []string{"true"}}},
+			yaml: "repositories:\n  a/b:\n    test: [make, test]\n    build: [make]\n    lint: [\"true\"]\n" + profileYAML,
+			want: map[string]Toolchain{"a/b": {
+				Commands: Commands{Test: []string{"make", "test"}, Build: []string{"make"}, Lint: []string{"true"}},
+				Profile:  testProfile("a/b"),
+			}},
 		},
 		// The implementer role offers all three tools, and the runner
 		// refuses a role it cannot equip, so a gap fails here at startup.
-		{name: "lint missing", yaml: "repositories:\n  a/b:\n    test: [make, test]\n    build: [make]\n",
+		{name: "lint missing", yaml: "repositories:\n  a/b:\n    test: [make, test]\n    build: [make]\n" + profileYAML,
 			errPart: `repositories."a/b".lint: missing, but role implementer offers run_lint`},
-		{name: "build missing", yaml: "repositories:\n  a/b:\n    test: [make, test]\n    lint: [make, lint]\n",
+		{name: "build missing", yaml: "repositories:\n  a/b:\n    test: [make, test]\n    lint: [make, lint]\n" + profileYAML,
 			errPart: `repositories."a/b".build: missing, but role implementer offers run_build`},
 		{name: "placeholder fails validation", yaml: shipped, errPart: `repositories."owner/repo": placeholder`},
 		{
 			name: "placeholder filled in loads",
 			yaml: filled,
-			want: map[string]Commands{"austmsk/election-tally": {
-				Test: []string{"go", "test", "./..."}, Build: []string{"go", "build", "./..."}, Lint: []string{"golangci-lint", "run"},
+			want: map[string]Toolchain{"austmsk/election-tally": {
+				Commands: Commands{Test: []string{"go", "test", "./..."}, Build: []string{"go", "build", "./..."}, Lint: []string{"golangci-lint", "run"}},
+				Profile: contracts.RepoProfile{
+					FullName:    "austmsk/election-tally",
+					Language:    "Go",
+					LayoutHint:  "Packages under internal/, commands under cmd/, tests beside the code they test",
+					Conventions: "Table-driven tests; errors wrapped with context; standard library first",
+				},
 			}},
 		},
 		{name: "unknown top-level field", yaml: "repos:\n  a/b:\n    test: [make]\n", errPart: "field repos not found"},
@@ -85,16 +120,47 @@ func toolchainsCases(shipped, filled string) []toolchainsCase {
 		{name: "empty file", yaml: "", errPart: "parsing YAML"},
 		{name: "two documents", yaml: "repositories:\n  a/b:\n    test: [make]\n---\nrepositories: {}\n", errPart: "more than one YAML document"},
 		{name: "duplicate key", yaml: "repositories:\n  a/b:\n    test: [make]\n  a/b:\n    test: [make]\n", errPart: "already defined"},
-		{name: "same repository in another case", yaml: "repositories:\n  a/b:\n    test: [make]\n  A/B:\n    test: [make]\n    build: [make]\n    lint: [make]\n",
+		{name: "same repository in another case", yaml: "repositories:\n  a/b:\n    test: [make]\n  A/B:\n" + allCommands + profileYAML,
 			errPart: `repositories."a/b": same repository as "A/B"`},
 		{name: "name without owner", yaml: "repositories:\n  election-tally:\n    test: [make]\n", errPart: `repositories."election-tally": not a repository full name`},
 		{name: "name with two slashes", yaml: "repositories:\n  a/b/c:\n    test: [make]\n", errPart: `repositories."a/b/c": not a repository full name`},
 		{name: "name with a dot-dot repo", yaml: "repositories:\n  a/..:\n    test: [make]\n", errPart: `repositories."a/..": not a valid repository name`},
 		{name: "name with a space", yaml: "repositories:\n  \"a/b c\":\n    test: [make]\n", errPart: `repositories."a/b c": not a repository full name`},
-		{name: "no commands", yaml: "repositories:\n  a/b: {}\n", errPart: `repositories."a/b".test/build/lint: no commands`},
-		{name: "null commands", yaml: "repositories:\n  a/b:\n    test:\n", errPart: `repositories."a/b".test/build/lint: no commands`},
-		{name: "empty argv", yaml: "repositories:\n  a/b:\n    test: [make]\n    lint: []\n", errPart: `repositories."a/b".lint: empty command`},
-		{name: "empty program", yaml: "repositories:\n  a/b:\n    build: [\"\", build]\n", errPart: `repositories."a/b".build: the first element`},
-		{name: "blank program", yaml: "repositories:\n  a/b:\n    build: [\" \"]\n", errPart: `repositories."a/b".build: the first element`},
+		{name: "no commands", yaml: "repositories:\n  a/b:\n" + profileYAML, errPart: `repositories."a/b".test/build/lint: no commands`},
+		{name: "null commands", yaml: "repositories:\n  a/b:\n    test:\n" + profileYAML, errPart: `repositories."a/b".test/build/lint: no commands`},
+		{name: "empty argv", yaml: "repositories:\n  a/b:\n    test: [make]\n    lint: []\n" + profileYAML, errPart: `repositories."a/b".lint: empty command`},
+		{name: "empty program", yaml: "repositories:\n  a/b:\n    build: [\"\", build]\n" + profileYAML, errPart: `repositories."a/b".build: the first element`},
+		{name: "blank program", yaml: "repositories:\n  a/b:\n    build: [\" \"]\n" + profileYAML, errPart: `repositories."a/b".build: the first element`},
+	}
+}
+
+func profileCases() []toolchainsCase {
+	return []toolchainsCase{
+		{name: "profile missing", yaml: "repositories:\n  a/b:\n" + allCommands,
+			errPart: `repositories."a/b".profile: missing`},
+		{name: "profile null", yaml: "repositories:\n  a/b:\n" + allCommands + "    profile:\n",
+			errPart: `repositories."a/b".profile: missing`},
+		{name: "language empty", yaml: withProfile("", "Packages under internal/", "Table-driven tests"),
+			errPart: `repositories."a/b".profile.language: missing or blank`},
+		{name: "layout_hint empty", yaml: withProfile("Go", "", "Table-driven tests"),
+			errPart: `repositories."a/b".profile.layout_hint: missing or blank`},
+		{name: "conventions empty", yaml: withProfile("Go", "Packages under internal/", ""),
+			errPart: `repositories."a/b".profile.conventions: missing or blank`},
+		{name: "layout_hint absent", yaml: "repositories:\n  a/b:\n" + allCommands + "    profile:\n      language: Go\n      conventions: Table-driven tests\n",
+			errPart: `repositories."a/b".profile.layout_hint: missing or blank`},
+		{name: "conventions whitespace only", yaml: withProfile("Go", "Packages under internal/", " \t\n "),
+			errPart: `repositories."a/b".profile.conventions: missing or blank`},
+		{name: "unknown profile field", yaml: "repositories:\n  a/b:\n" + allCommands + "    profile:\n      languag: Go\n",
+			errPart: "field languag not found"},
+		{name: "profile as a string", yaml: "repositories:\n  a/b:\n" + allCommands + "    profile: Go\n",
+			errPart: "parsing YAML"},
+		{
+			name: "profile values trimmed",
+			yaml: withProfile(" Go ", "\tPackages under internal/\n", "Table-driven tests\n"),
+			want: map[string]Toolchain{"a/b": {
+				Commands: Commands{Test: []string{"make", "test"}, Build: []string{"make"}, Lint: []string{"make", "lint"}},
+				Profile:  testProfile("a/b"),
+			}},
+		},
 	}
 }

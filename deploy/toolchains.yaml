@@ -1,6 +1,7 @@
 # Repository toolchains: each repository's configured test, build and lint
 # commands (FR-I4), offered to the agent as run_tests, run_build and
-# run_lint. Loaded and validated at startup by agent.LoadToolchains
+# run_lint, and its profile, which the agent prompt describes. Loaded and
+# validated at startup by agent.LoadToolchains
 # (internal/agent/toolchains.go).
 #
 # Repositories are keyed by full name, the same keys as deploy/repos.yaml.
@@ -33,9 +34,25 @@
 #   [sh, -c, "mkdir -p /tmp/conclave-junit && exec gotestsum --junitfile /tmp/conclave-junit/go.xml -- ./..."]
 # with gotestsum in the sandbox image. A JUnit 5 project adds
 # --reports-dir=/tmp/conclave-junit to the console launcher.
+#
+# Each repository also has a profile block, beside the commands, telling
+# the agent what the repository is. The agent prompt renders all three
+# fields under "Repository", with the full name taken from the key, so
+# write them for a model reading them cold, in a line or two each:
+#   language:     the main language, e.g. Java or Go
+#   layout_hint:  where sources, tests and anything vendored live
+#   conventions:  naming, error handling and test style; the build tool
+#                 or its absence
+# All three are required and must not be blank. The owner maintains them
+# by hand until Milestone 3's generated codebase brief replaces them. Like
+# the commands, they come from the owner, never from the repository.
 
 repositories:
   owner/repo:
     test: [go, test, ./...]   # writes no JUnit report: replace it (see above)
     build: [go, build, ./...]
     lint: [golangci-lint, run]
+    profile:
+      language: Go
+      layout_hint: "Packages under internal/, commands under cmd/, tests beside the code they test"
+      conventions: "Table-driven tests; errors wrapped with context; standard library first"
