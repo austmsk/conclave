@@ -337,3 +337,9 @@ func randomSuffix() string {
 	}
 	return hex.EncodeToString(b[:])
 }
+
+// Release is implemented in the next commit of ticket 8-pre; this stub
+// keeps the contract batch building on its own.
+func (p *Provider) Release(ctx context.Context, id string) error {
+	return errors.New("release by ID not implemented")
+}
