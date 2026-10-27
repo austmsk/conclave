@@ -6,7 +6,7 @@
 
 ## Working the list
 
-Each ticket is one Claude Code session. Before starting, read the review-list items it names. After CI passes, run `/review-ticket <n>`, fix what the reviewer finds, then merge and write the decision record.
+Each ticket is one Claude Code session. Before starting, read the review-list items it names and `m1-exit-checklist.md`, which maps every requirement to its ticket and proving test and lists what Milestone 2 must find in place. After CI passes, run `/review-ticket <n>`, fix what the reviewer finds, then merge and write the decision record. The PR description names the test for each requirement ID and updates the checklist.
 
 Model column: **F** = Fable 5.1 (tickets with review-list items or subtle correctness), **S** = Sonnet 5 (mechanical). Refine each ticket with Opus in plan mode first.
 
@@ -20,6 +20,7 @@ Model column: **F** = Fable 5.1 (tickets with review-list items or subtle correc
 | 6 | GitHub App and webhooks | F | RL-7, RL-8 |
 | 7 | Gates and artifact integrity | F | RL-2 |
 | 8a | Budgets and attribution | F | RL-2 |
+| 8-pre | Workflow prerequisites | F | RL-2, RL-3, RL-13, RL-14 |
 | 8 | Feature workflow core | F | RL-1, RL-2, RL-3, RL-13, RL-14, RL-16 |
 | 8b | Commands and status surface | F | RL-9, RL-13 |
 | 9 | Pull request delivery | F | RL-2, RL-21 |
@@ -27,7 +28,7 @@ Model column: **F** = Fable 5.1 (tickets with review-list items or subtle correc
 
 \* Path validation does not yet have its own review-list ID; see `FR-SEC29`.
 
-**Working order:** 1–4, then **8a**, 5, 6, 7, 8, **8b**, 9, 10. Ticket 8 is split three ways (see `Ticket 8 Split — Conclave.md` for the rationale). 8a goes before Ticket 5 because the runner has to tell an attempt budget hit from a platform cap hit, and 8a takes migration 00005.
+**Working order:** 1–4, then **8a**, 5, 6, 7, **8-pre**, 8, **8b**, 9, 10. Ticket 8 is split three ways (see `Ticket 8 Split — Conclave.md` for the rationale), and 8-pre was added on 2026-10-26 after a review of the merged code found the workflow had nothing to call for its first steps (see `ticket-8-pre-plan.md`, whose second half also binds ticket 8). 8a goes before Ticket 5 because the runner has to tell an attempt budget hit from a platform cap hit, and 8a takes migration 00005.
 
 ---
 
@@ -155,6 +156,18 @@ Cap values come from owner configuration in `deploy/router.yaml`, validated at s
 
 ---
 
+## Ticket 8-pre — Workflow prerequisites
+
+Everything ticket 8's first activities need and the merged code lacks, with no Temporal code. Full plan: `ticket-8-pre-plan.md`.
+
+Contract batch for hand review: `SandboxProvider.Release(ctx, id)`, `SandboxProvider.CreateWithInstall` lifted from the Docker provider, `ReasonCancelled`, and (proposed) `ReasonBudgetCap`. Docker `Release` by ID, idempotent, refusing unlabelled containers. Store functions for repos (upsert from configuration), feature requests, plans, tasks and attempts, each idempotent on its natural key, plus write-ahead `sandbox_id`, `sandbox_released_at`, an idempotent `artifact_hash` write, `FinishAttempt`, and `UnreleasedAttempts` for the reaper. `deploy/sandboxes.yaml` with image digest, limits, install, env and default branch, validated at startup; a `profile` block in `deploy/toolchains.yaml`. Actor-string helpers for the audit trigger.
+
+**Done when:** `Release` removes a sandbox by ID and is idempotent; every store function has a run-twice test; a feature request and attempt created through the store satisfy `llm.Router.Scope`; the configuration loaders reject each placeholder and bad value with a clear message; `conclave_app` cannot delete work rows; `make check` passes.
+
+**Requirements:** NFR-R2, NFR-R3, FR-SEC12, FR-SEC30, NFR-M7 · **Review list:** RL-2, RL-3, RL-13, RL-14
+
+---
+
 ## Ticket 8 — Feature workflow core
 
 The feature workflow: analyze, implement, gate, deliver. Activities for every side effect; deliver is a stub until Ticket 9. Signal handlers for `/approve`, which pins the base SHA, and `/cancel`. Workflow ID derived from the issue number. Deferred cleanup using `workflow.NewDisconnectedContext`.
@@ -167,7 +180,9 @@ Decide the activity granularity. Set `StartToCloseTimeout` above the 10-minute a
 
 Milestone 1 statuses only: feature requests use the six-status model; tasks use `running`, `done`, `needs_attention`, `cancelled`; attempts use `running`, `passed`, `failed`, `errored`.
 
-**Done when:** `workflowcheck` passes; no map is ranged over without sorting; the workflow is tested with `testsuite` without a server; a replay test over a history captured mid-attempt finishes without re-running completed activities; a workflow waiting on `/approve` resumes after a long wait using time skipping; a cancellation during the agent phase still releases the sandbox; a `/cancel` during `needs_attention` reaches `cancelled`; a feature request or monthly cap hit moves to `needs_attention` with `reason: budget_cap` naming the cap, keeping its attempts; a non-retryable error moves to `needs_attention` rather than failing the workflow; every activity has an idempotency test that runs it twice and asserts one effect; a permanent router error is not retried.
+Added 2026-10-26, binding (see `ticket-8-pre-plan.md`, "Carried into ticket 8"): the task phase is a child workflow, `TaskWorkflow`, with serializable inputs and no GitHub call, so Milestone 2's benchmark starts it directly; one attempt is one activity with `MaximumAttempts: 1`; the analyze step parses owner-written issue sections with no model call and posts the plan comment; the deliver stub routes to `needs_attention` rather than `delivered`; config-file digests go into the plan body; the outcome table has a test per row.
+
+**Done when:** `workflowcheck` passes; cancelling the parent cancels the child and still releases the sandbox; no map is ranged over without sorting; the workflow is tested with `testsuite` without a server; a replay test over a history captured mid-attempt finishes without re-running completed activities; a workflow waiting on `/approve` resumes after a long wait using time skipping; a cancellation during the agent phase still releases the sandbox; a `/cancel` during `needs_attention` reaches `cancelled`; a feature request or monthly cap hit moves to `needs_attention` with `reason: budget_cap` naming the cap, keeping its attempts; a non-retryable error moves to `needs_attention` rather than failing the workflow; every activity has an idempotency test that runs it twice and asserts one effect; a permanent router error is not retried.
 
 **Requirements:** NFR-R1, NFR-R2, NFR-R3, FR-S5, FR-S12, FR-S19 (pinning) · **Review list:** RL-1, RL-2, RL-3, RL-13, RL-14, RL-16
 
@@ -195,9 +210,11 @@ One status comment on the issue, edited in place through Ticket 6's client, name
 
 Minimal `pr_writer` role. Branch model: integration branch pushed after the task lands, `pr-1` cut from it. Commits authored by the App's bot identity, one squashed commit per task, Conventional Commits with `Task`, `Plan`, `Model`, and `Generated-by` trailers. Rebase onto the default branch, rerun gates, then open the PR as a draft; flip to ready when the repository's CI passes.
 
-Record each PR's base SHA for later restacking. Push refuses any artifact whose hash does not match a passing gate result.
+Record each PR's base SHA. Push refuses any artifact whose hash does not match a passing gate result. The CI result is observed through a mechanism this ticket chooses and records (a `check_suite` or `workflow_run` webhook, or polling the checks API) and written to the PR record; the webhook receiver today knows only `ping`, `issues` and `issue_comment`.
 
-**Done when:** a PR opens with the described body including the risk section; the push path rejects a tampered artifact; a base SHA is recorded; branch cleanup runs after merge; commits show the bot as author.
+Trimmed 2026-10-26: restacking (FR-S18a) and branch cleanup on merge and after 30 days (FR-S20) are deferred to Milestone 4, since Milestones 2 and 3 never produce a stack. The base SHA is still recorded so restacking needs no migration later. The rebase-and-re-gate step calls `gate.Gate` unchanged.
+
+**Done when:** a PR opens with the described body including the risk section; the push path rejects a tampered artifact; a base SHA is recorded; the CI result is recorded on the PR record and the draft is flipped to ready on success; commits show the bot as author; every run that reaches delivery ends `delivered` and no run before this ticket could.
 
 **Requirements:** FR-S10, FR-S16, FR-S17, FR-S19, FR-A5, FR-A7, FR-SEC27 · **Review list:** RL-2, RL-21
 
@@ -207,7 +224,9 @@ Record each PR's base SHA for later restacking. Push refuses any artifact whose 
 
 Run the full path against the Election Tally repository ten times, including two cancellations. Fix what breaks. Add the orphan reaper as a scheduled workflow. Add the kill switch. Add the local append-only alert log and the alert-issue path.
 
-**Done when:** the 7-of-10 success criterion is met; a worker killed mid-attempt resumes on a second worker without repeating completed activities (NFR-R1, moved here from Ticket 8, whose testsuite has no workers); no orphaned containers remain; the kill switch cancels everything in flight; a deliberately triggered alert opens an issue and is written to the local log; a `docs/decisions/` record exists for every non-obvious choice made during the milestone.
+The ten trial issues are written in the owner-section format (Task, Acceptance criteria, Hints) and saved under `docs/trials/` with base SHA, attempt, gate results, PR, CI result, cost and duration, so they seed Milestone 2's replay benchmark. The trial report is produced by one documented SQL query over the schema (resolve rate, cost per resolved task, time per task), which Milestone 2's report generator starts from. Deferrals in `m1-exit-checklist.md` item 10 are each recorded as a decision.
+
+**Done when:** the 7-of-10 success criterion is met and the trial log and query exist; a worker killed mid-attempt resumes on a second worker without repeating completed activities (NFR-R1, moved here from Ticket 8, whose testsuite has no workers); no orphaned containers remain; the kill switch cancels everything in flight; a deliberately triggered alert opens an issue and is written to the local log; a `docs/decisions/` record exists for every non-obvious choice made during the milestone.
 
 **Requirements:** FR-SEC11, FR-SEC31, NFR-R3, NFR-M9 · **Review list:** RL-18
 

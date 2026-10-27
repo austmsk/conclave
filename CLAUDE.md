@@ -9,6 +9,7 @@ Read [`ARCHITECTURE.md`](ARCHITECTURE.md) before making design decisions. Requir
 - **One ticket per session.** Tickets are in `docs/tickets`. Start a new session for a new ticket rather than continuing a long one.
 - **Circuit breaker.** After two failed attempts at the same error, stop and report what you tried and what you observed. Do not keep guessing.
 - **Ask before widening scope.** If a ticket appears to require changes outside its stated files, say so and stop.
+- **Name the test per requirement.** A ticket's PR description lists each requirement ID the ticket claims and the test that proves it, and updates [`docs/tickets/m1-exit-checklist.md`](docs/tickets/m1-exit-checklist.md), whose last section says what Milestone 2 must find in place.
 - **Every ticket writes its guide page.** A ticket's page in `docs/guide/tickets/` is always in scope, though no ticket lists it. Write it from `_template.md` in the ticket's own pull request. When review fixes change the code, update the page to match. See [`docs/guide/README.md`](docs/guide/README.md).
 
 ## Commands
