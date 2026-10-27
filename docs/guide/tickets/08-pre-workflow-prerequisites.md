@@ -39,7 +39,7 @@ Inputs are checked before any SQL runs:
 - text fields for NUL bytes and invalid UTF-8;
 - JSON for validity, and for `\u0000`, which jsonb refuses.
 
-Without these checks, a refusal from Postgres would abort the caller's transaction. A missing parent is `ErrNotFound` for the same reason, rather than a foreign-key violation.
+Without these checks, a refusal from Postgres would abort the caller's transaction. A missing parent is `ErrNotFound` for the same reason, rather than a foreign-key violation. Like `Transition`, the creates need READ COMMITTED: on a conflict they read the existing row back in a new statement, and only that level lets it see a row another transaction has just committed.
 
 The functions:
 
@@ -72,7 +72,8 @@ On top of those rules it refuses:
 - the placeholder `owner/repo` and the all-zero digest;
 - sizes that aren't a whole number of B, KiB, MiB or GiB;
 - a sandbox timeout that isn't longer than the command timeout;
-- an empty install step.
+- an empty install step;
+- a default branch git would refuse or misread: whitespace, a control character, a leading `-` (git would take it for a flag), `..`, or a `.lock` suffix. The branch is stored trimmed.
 
 The real entry lives in git-ignored `deploy/local/sandboxes.yaml`.
 
@@ -98,14 +99,14 @@ The real entry lives in git-ignored `deploy/local/sandboxes.yaml`.
 - **Release removes the container and its network.** `TestReleaseRemovesContainerAndNetwork` covers both a plain sandbox and a networked `CreateWithInstall` sandbox.
 - **Release is idempotent.** `TestReleaseTwiceReturnsNil`, `TestReleaseOfUnknownIDReturnsNil` and `TestCloseAfterReleaseReturnsNil`.
 - **Release never removes what the provider didn't create.** `TestReleaseRefusesUnlabelledContainer` (the container survives), `TestReleaseLeavesUnlabelledNetwork` and `TestReleaseRefusesEmptyID`.
-- **Every create is idempotent and never overwrites.** `TestEnsureRepo`, `TestCreateFeatureRequest`, `TestCreatePlan`, `TestCreateTask` and `TestCreateAttempt` each run their function twice in one application-role transaction and assert one row, no audit rows, and the first call's values. They also cover the `ErrInvalidID`, `ErrNotFound` and `ErrWorkflowMismatch` refusals without aborting the transaction.
+- **Every create is idempotent and never overwrites.** `TestEnsureRepo`, `TestCreateFeatureRequest`, `TestCreatePlan`, `TestCreateTask` and `TestCreateAttempt` each run their function twice in one application-role transaction and assert one row and the first call's values. The four creates on state tables also assert no audit rows (`repos` has no state column, so `EnsureRepo` can't write one). They also cover the `ErrInvalidID`, `ErrNotFound` and `ErrWorkflowMismatch` refusals without aborting the transaction.
 - **Configuration decides the tier, and the rows satisfy the router.** In `TestWorkRowsOpenRouterScope`, a row seeded as `sensitive` becomes `public` through `EnsureRepo`. `llm.Router.Scope` then succeeds on rows the new functions created, and a call is charged to that attempt.
 - **Sandbox and hash writes are write-once.** `TestSetAttemptSandbox` (`ErrSandboxMismatch`), `TestMarkSandboxReleased` and `TestSetArtifactHash`. The last checks both `ErrArtifactMismatch` and that the trigger still refuses a direct UPDATE.
 - **Finishing twice changes nothing.** `TestFinishAttempt` checks a retry gets `ErrAlreadyApplied`, there is one audit row, and the usage is the first call's.
 - **The reaper's query is exact.** `TestUnreleasedAttempts` returns the old unreleased row only. It excludes released rows, recent rows and rows with no sandbox recorded.
 - **The application role can't delete work rows.** `TestAppRoleCannotDeleteWorkRows`.
 - **Actor strings have a fixed format.** `TestActorStrings`.
-- **The sandbox loader refuses bad configuration.** `TestLoadConfigRejects` covers the placeholder, the zero digest, an image by tag, zero limits, bad sizes, a reserved env name, a timeout not longer than the command timeout, unknown fields and more. `TestLoadConfigAcceptsAValidFile` checks the parsed bytes and durations. `TestLoadConfigShippedFile` checks the shipped file fails until both placeholders are replaced. `TestParseSize` covers the size parser.
+- **The sandbox loader refuses bad configuration.** `TestLoadConfigRejects` covers the placeholder, the zero digest, an image by tag, zero limits, bad sizes, a reserved env name, a timeout not longer than the command timeout, unknown fields and more. `TestLoadConfigAcceptsAValidFile` checks the parsed bytes and durations, and `TestLoadConfigTrimsDefaultBranch` checks the branch reaches git without surrounding whitespace. `TestLoadConfigShippedFile` checks the shipped file fails until both placeholders are replaced. `TestParseSize` covers the size parser.
 - **The profile is required.** `TestLoadToolchains` fails on a missing profile block, each blank field, and an unknown profile key, and returns the trimmed profile with `FullName` set.
 
 ## Left open

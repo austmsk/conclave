@@ -159,8 +159,9 @@ func validateRepoName(name string) error {
 // buildRepo validates one entry and converts it. Errors start with the
 // key path below the repository, for LoadConfig to prefix.
 func buildRepo(e repoEntry) (RepoSandbox, error) {
-	if strings.TrimSpace(e.DefaultBranch) == "" {
-		return RepoSandbox{}, errors.New("default_branch: missing or empty")
+	branch := strings.TrimSpace(e.DefaultBranch)
+	if err := checkBranch(branch); err != nil {
+		return RepoSandbox{}, fmt.Errorf("default_branch: %w", err)
 	}
 	if err := checkImage(e.Image); err != nil {
 		return RepoSandbox{}, fmt.Errorf("image: %w", err)
@@ -186,13 +187,36 @@ func buildRepo(e repoEntry) (RepoSandbox, error) {
 		return RepoSandbox{}, fmt.Errorf("env.%w", err)
 	}
 	return RepoSandbox{
-		DefaultBranch:  e.DefaultBranch,
+		DefaultBranch:  branch,
 		Image:          e.Image,
 		Limits:         limits,
 		CommandTimeout: cmdTimeout,
 		Install:        e.Install,
 		Env:            e.Env,
 	}, nil
+}
+
+// checkBranch refuses a branch name git would refuse or misread. The name
+// reaches git as an argument, so a leading '-' would be taken for a flag,
+// and whitespace or a control character would fail every attempt instead
+// of startup. The rest follows git check-ref-format.
+func checkBranch(b string) error {
+	switch {
+	case b == "":
+		return errors.New("missing or empty")
+	case strings.HasPrefix(b, "-"):
+		return fmt.Errorf("%q starts with '-', which git reads as a flag", b)
+	case strings.Contains(b, "..") || strings.Contains(b, "@{") || strings.Contains(b, "//"):
+		return fmt.Errorf("%q is not a valid git branch name", b)
+	case strings.HasPrefix(b, "/") || strings.HasSuffix(b, "/") || strings.HasSuffix(b, ".") || strings.HasSuffix(b, ".lock"):
+		return fmt.Errorf("%q is not a valid git branch name", b)
+	}
+	for _, r := range b {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune(`~^:?*[\`, r) {
+			return fmt.Errorf("%q contains %q, which a git branch name cannot", b, r)
+		}
+	}
+	return nil
 }
 
 func checkImage(image string) error {

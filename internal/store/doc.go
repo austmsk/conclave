@@ -27,8 +27,12 @@
 // CreateFeatureRequest, CreatePlan, CreateTask and CreateAttempt insert a
 // record in its initial state. Each is idempotent on the table's natural
 // key (RL-2): a repeated call returns the existing row, reports that it
-// did not create it, and overwrites nothing. Inserting a row is not a
-// transition and writes no audit row. The attempt's cleanup columns are
+// did not create it, and overwrites nothing. Like Transition, they need
+// READ COMMITTED, Postgres's default: on a conflict they read the existing
+// row back in a new statement, which sees a row another transaction has
+// just committed only under that level. Under REPEATABLE READ the read
+// misses it and the create reports the parent as not found. Inserting a
+// row is not a transition and writes no audit row. The attempt's cleanup columns are
 // written through SetAttemptSandbox, before any agent step, and
 // MarkSandboxReleased, and UnreleasedAttempts lists the sandboxes the
 // reaper must still release (RL-3). SetArtifactHash records the frozen

@@ -47,7 +47,7 @@ Test names are functions; `pkg:` gives the package under `internal/` unless stat
 | FR-SEC12 | Configuration decides the stored tier | 8-pre | store: `TestEnsureRepo`, `TestWorkRowsOpenRouterScope` |
 | FR-SEC30 | Images by digest (validation half; CI build deferred, decision 0011) | 8-pre | sandbox: `TestLoadConfigRejects` (image by tag, all-zero digest), `TestLoadConfigShippedFile` |
 | NFR-M7 | Sandbox configuration and repo profile validated | 8-pre | sandbox: `TestLoadConfigRejects`, `TestLoadConfigAcceptsAValidFile`, `TestParseSize`; agent: `TestLoadToolchains` |
-| FR-SEC10 | Work rows cannot be deleted by the application role | 8-pre | store: `TestAppRoleCannotDeleteWorkRows`, `TestActorStrings` |
+| FR-SEC10 | Work rows cannot be deleted by the application role; a finished attempt's actor reaches the audit trail | 8-pre | store: `TestAppRoleCannotDeleteWorkRows`, `TestFinishAttempt` |
 
 ## Unmerged tickets
 

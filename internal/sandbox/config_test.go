@@ -70,6 +70,19 @@ func TestLoadConfigAcceptsAValidFile(t *testing.T) {
 	}
 }
 
+// TestLoadConfigTrimsDefaultBranch checks the branch is returned as git
+// will be given it, without the surrounding whitespace a quoted YAML value
+// can carry.
+func TestLoadConfigTrimsDefaultBranch(t *testing.T) {
+	got, err := LoadConfig(strings.NewReader(edit(t, "default_branch: main", `default_branch: " main "`)))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if b := got["austmsk/election-tally"].DefaultBranch; b != "main" {
+		t.Fatalf("DefaultBranch = %q, want %q", b, "main")
+	}
+}
+
 // rejectCase edits validConfig by replacing old with new, or, when raw is
 // set, loads raw instead.
 type rejectCase struct {
@@ -105,6 +118,13 @@ func TestLoadConfigRejects(t *testing.T) {
 		{"reserved env name", "      TALLY_API_KEY:", "      HOME:", "", repo + "env.HOME: set by the sandbox provider"},
 		{"env key not an identifier", "      TALLY_API_KEY:", "      TALLY-API-KEY:", "", repo + `env."TALLY-API-KEY": not an identifier`},
 		{"empty default branch", "default_branch: main", `default_branch: ""`, "", repo + "default_branch: missing or empty"},
+		{"blank default branch", "default_branch: main", `default_branch: "  "`, "", repo + "default_branch: missing or empty"},
+		{"default branch with a space", "default_branch: main", `default_branch: "release main"`, "", repo + `default_branch: "release main" contains ' '`},
+		{"default branch like a flag", "default_branch: main", "default_branch: --upload-pack=x", "", repo + `default_branch: "--upload-pack=x" starts with '-'`},
+		{"default branch with dot-dot", "default_branch: main", "default_branch: main..dev", "", repo + `default_branch: "main..dev" is not a valid git branch name`},
+		{"default branch ending in .lock", "default_branch: main", "default_branch: main.lock", "", repo + `default_branch: "main.lock" is not a valid git branch name`},
+		{"default branch with a colon", "default_branch: main", `default_branch: "a:b"`, "", repo + `default_branch: "a:b" contains ':'`},
+		{"default branch with a control character", "default_branch: main", `default_branch: "ma\tin"`, "", repo + `default_branch: "ma\tin" contains '\t'`},
 		{"empty install step", "      - [sh, -c,", "      - []\n      - [sh, -c,", "", repo + "install[0]: empty command"},
 		{"install step with an empty program", "      - [sh, -c,", `      - ["", -c,`, "", repo + "install[0]: the first element, the program, is empty"},
 		{"unknown repository field", "    default_branch:", "    branch: main\n    default_branch:", "", "field branch not found"},
