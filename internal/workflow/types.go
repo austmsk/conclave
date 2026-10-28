@@ -91,7 +91,10 @@ type TaskResult struct {
 	ArtifactHash string
 	Reason       contracts.FailureReason
 	BudgetKind   llm.BudgetKind
-	Attempts     int
+	// Detail says what went wrong when Outcome is errored for a reason
+	// other than the attempt's own: a permanent refusal, a failed step.
+	Detail   string
+	Attempts int
 }
 
 // acts names the activities. Its methods are never called here: a method

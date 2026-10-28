@@ -190,7 +190,7 @@ func (r *attemptRun) sessionInput() contracts.SessionInput {
 // error.
 func (r *attemptRun) sessionError(ctx context.Context, reason contracts.FailureReason, err error) (AttemptOutcome, error) {
 	var budget llm.BudgetError
-	if ctx.Err() == nil && errors.As(err, &budget) {
+	if !cancelled(ctx) && errors.As(err, &budget) {
 		out, ferr := r.finish(ctx, contracts.AttemptErrored, contracts.ReasonBudgetCap)
 		if ferr != nil {
 			return out, ferr
@@ -235,12 +235,13 @@ func (r *attemptRun) gate(ctx context.Context) (AttemptOutcome, error) {
 	return r.finish(ctx, contracts.AttemptPassed, "")
 }
 
-// errored records the attempt errored. A cancelled context overrides the
-// reason with cancelled and returns the context's error; a permanent
+// errored records the attempt errored. A cancelled context (not one past
+// its deadline, which is a timeout, not the owner) overrides the reason
+// with cancelled and returns the context's error; a permanent
 // cause returns as permanent, so the workflow starts no new ordinal for
 // it; any other cause returns the recorded outcome as a value.
 func (r *attemptRun) errored(ctx context.Context, reason contracts.FailureReason, cause error) (AttemptOutcome, error) {
-	if ctx.Err() != nil {
+	if cancelled(ctx) {
 		reason = contracts.ReasonCancelled
 	}
 	r.log.Warn("attempt errored", "attempt_id", r.in.AttemptID, "reason", string(reason), "error", cause)
@@ -248,7 +249,7 @@ func (r *attemptRun) errored(ctx context.Context, reason contracts.FailureReason
 	switch {
 	case err != nil:
 		return out, err
-	case ctx.Err() != nil:
+	case cancelled(ctx):
 		return out, ctx.Err()
 	case IsPermanent(cause):
 		return out, cause
@@ -280,4 +281,10 @@ func (r *attemptRun) finish(ctx context.Context, to contracts.AttemptState, reas
 		return AttemptOutcome{}, err
 	}
 	return row.outcome(), nil
+}
+
+// cancelled reports whether ctx was cancelled, as Temporal cancels an
+// activity whose workflow asked for it, rather than timed out.
+func cancelled(ctx context.Context) bool {
+	return errors.Is(ctx.Err(), context.Canceled)
 }
