@@ -3,6 +3,7 @@ package github_test
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -61,6 +62,57 @@ func TestEditCommentRefusesCommentNotAuthoredByApp(t *testing.T) {
 				t.Fatalf("comment rewritten to %q", got[0].Body)
 			}
 		})
+	}
+}
+
+// TestListIssueCommentsKeepsOnlyAppComments seeds a thread longer than
+// one page, mixing this App's comments with the owner's, another App's,
+// and comments on another issue. Only this App's comments on the issue
+// come back, in order, with their bodies, across the page boundary.
+func TestListIssueCommentsKeepsOnlyAppComments(t *testing.T) {
+	api, app := restFixture(t, restOptions(), nil)
+	var want []int64
+	for i := range 150 {
+		switch i % 3 {
+		case 0:
+			want = append(want, api.SeedComment(7, "platform "+strconv.Itoa(i), restAppID))
+		case 1:
+			api.SeedComment(7, "platform marker quoted by the owner "+strconv.Itoa(i), 0)
+		default:
+			api.SeedComment(7, "platform marker from another App", 999)
+		}
+	}
+	api.SeedComment(8, "platform on another issue", restAppID)
+
+	got, err := app.ListIssueComments(t.Context(), restRepo, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d comments, want %d", len(got), len(want))
+	}
+	for i, c := range got {
+		if c.ID != want[i] || !strings.HasPrefix(c.Body, "platform ") || strings.Contains(c.Body, "quoted") {
+			t.Fatalf("comment %d: %+v, want ID %d with its body", i, c, want[i])
+		}
+	}
+	if n := countRequests(api, http.MethodGet, "/repos/octo/tally/issues/7/comments"); n != 2 {
+		t.Fatalf("%d list requests, want 2 pages", n)
+	}
+}
+
+func TestListIssueCommentsRefusesBadInput(t *testing.T) {
+	api, app := restFixture(t, restOptions(), nil)
+	if _, err := app.ListIssueComments(t.Context(), restRepo, 0); !errors.Is(err, github.ErrRefused) {
+		t.Fatalf("issue 0: got %v, want ErrRefused", err)
+	}
+	bad := restRepo
+	bad.FullName = "../etc"
+	if _, err := app.ListIssueComments(t.Context(), bad, 7); err == nil {
+		t.Fatal("bad full name accepted")
+	}
+	if n := len(api.RequestsTo("/repos/")); n != 0 {
+		t.Fatalf("%d repository requests sent", n)
 	}
 }
 
