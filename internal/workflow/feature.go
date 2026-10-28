@@ -46,7 +46,7 @@ func FeatureWorkflow(ctx workflow.Context, in FeatureInput) error {
 		err = f.awaitCancel(ctx)
 	}
 	if ctx.Err() != nil {
-		f.closeCancelled(cleanupContext(ctx))
+		_ = f.closeCancelled(cleanupContext(ctx))
 		return ctx.Err()
 	}
 	if errors.Is(err, errStopped) {

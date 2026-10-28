@@ -30,10 +30,10 @@ var _ github.WorkflowStarter = temporalStarter{}
 // expected outcome of a duplicate (Milestone 1 does not rerun an issue).
 func (s temporalStarter) StartFeature(ctx context.Context, req github.FeatureStart) error {
 	_, err := s.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-		ID:                       req.WorkflowID,
-		TaskQueue:                workflow.TaskQueue,
-		WorkflowIDReusePolicy:    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
-		WorkflowIDConflictPolicy: enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
+		ID:                                       req.WorkflowID,
+		TaskQueue:                                workflow.TaskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, workflow.FeatureWorkflow, workflow.FeatureInput{Start: req, OwnerUserID: s.ownerID})
 	var started *serviceerror.WorkflowExecutionAlreadyStarted

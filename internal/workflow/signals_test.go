@@ -57,74 +57,82 @@ func TestRecentIDs(t *testing.T) {
 	equal(t, "newest kept", r.seen(maxRecentComments+1), true)
 }
 
+// stranger is an /approve from an account other than the owner.
+var stranger = func() github.CommandSignal {
+	sig := command(github.CommandApprove, 50)
+	sig.ActorID = ownerID + 1
+	return sig
+}()
+
+// signalCases send commands in the wrong status, twice, or from someone
+// else.
+var signalCases = []struct {
+	name         string
+	signals      []timedSignal
+	wantApproved int
+	wantMoves    []string
+}{
+	{
+		name: "/approve before the plan is posted is dropped, and its redelivery too",
+		signals: []timedSignal{
+			{0, command(github.CommandApprove, 10)},
+			{time.Hour, command(github.CommandApprove, 10)},
+			{2 * time.Hour, command(github.CommandCancel, 11)},
+		},
+		wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
+	},
+	{
+		name: "/approve from someone other than the owner is dropped",
+		signals: []timedSignal{
+			{time.Hour, stranger},
+			{2 * time.Hour, command(github.CommandCancel, 11)},
+		},
+		wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
+	},
+	{
+		name: "a duplicated /approve approves once",
+		signals: []timedSignal{
+			{time.Hour, command(github.CommandApprove, 20)},
+			{time.Hour, command(github.CommandApprove, 20)},
+			{time.Hour, command(github.CommandApprove, 21)},
+			{24 * time.Hour, command(github.CommandCancel, 22)},
+		},
+		wantApproved: 1,
+		wantMoves:    []string{toApproval, toExecuting, "executing>needs_attention attempt_failed", toCancelled},
+	},
+	{
+		name: "/approve in needs_attention is dropped",
+		signals: []timedSignal{
+			{time.Hour, command(github.CommandApprove, 30)},
+			{12 * time.Hour, command(github.CommandApprove, 31)},
+			{24 * time.Hour, command(github.CommandCancel, 32)},
+		},
+		wantApproved: 1,
+		wantMoves:    []string{toApproval, toExecuting, "executing>needs_attention attempt_failed", toCancelled},
+	},
+	{
+		name: "ticket 8b's commands are dropped",
+		signals: []timedSignal{
+			{time.Hour, command(github.CommandRetry, 40)},
+			{time.Hour, command(github.CommandStatus, 41)},
+			{2 * time.Hour, command(github.CommandCancel, 42)},
+		},
+		wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
+	},
+	{
+		name: "a redelivered /cancel after cancelled does nothing",
+		signals: []timedSignal{
+			{time.Hour, command(github.CommandCancel, 60)},
+			{time.Hour, command(github.CommandCancel, 60)},
+		},
+		wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
+	},
+}
+
 // TestSignals sends commands in the wrong status, twice, or from someone
 // else, and checks that only the one that applies acts, exactly once.
 func TestSignals(t *testing.T) {
-	stranger := command(github.CommandApprove, 50)
-	stranger.ActorID = ownerID + 1
-	tests := []struct {
-		name         string
-		signals      []timedSignal
-		wantApproved int
-		wantMoves    []string
-	}{
-		{
-			name: "/approve before the plan is posted is dropped, and its redelivery too",
-			signals: []timedSignal{
-				{0, command(github.CommandApprove, 10)},
-				{time.Hour, command(github.CommandApprove, 10)},
-				{2 * time.Hour, command(github.CommandCancel, 11)},
-			},
-			wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
-		},
-		{
-			name: "/approve from someone other than the owner is dropped",
-			signals: []timedSignal{
-				{time.Hour, stranger},
-				{2 * time.Hour, command(github.CommandCancel, 11)},
-			},
-			wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
-		},
-		{
-			name: "a duplicated /approve approves once",
-			signals: []timedSignal{
-				{time.Hour, command(github.CommandApprove, 20)},
-				{time.Hour, command(github.CommandApprove, 20)},
-				{time.Hour, command(github.CommandApprove, 21)},
-				{24 * time.Hour, command(github.CommandCancel, 22)},
-			},
-			wantApproved: 1,
-			wantMoves:    []string{toApproval, toExecuting, "executing>needs_attention attempt_failed", toCancelled},
-		},
-		{
-			name: "/approve in needs_attention is dropped",
-			signals: []timedSignal{
-				{time.Hour, command(github.CommandApprove, 30)},
-				{12 * time.Hour, command(github.CommandApprove, 31)},
-				{24 * time.Hour, command(github.CommandCancel, 32)},
-			},
-			wantApproved: 1,
-			wantMoves:    []string{toApproval, toExecuting, "executing>needs_attention attempt_failed", toCancelled},
-		},
-		{
-			name: "ticket 8b's commands are dropped",
-			signals: []timedSignal{
-				{time.Hour, command(github.CommandRetry, 40)},
-				{time.Hour, command(github.CommandStatus, 41)},
-				{2 * time.Hour, command(github.CommandCancel, 42)},
-			},
-			wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
-		},
-		{
-			name: "a redelivered /cancel after cancelled does nothing",
-			signals: []timedSignal{
-				{time.Hour, command(github.CommandCancel, 60)},
-				{time.Hour, command(github.CommandCancel, 60)},
-			},
-			wantMoves: []string{toApproval, "awaiting_approval>cancelled"},
-		},
-	}
-	for _, tt := range tests {
+	for _, tt := range signalCases {
 		t.Run(tt.name, func(t *testing.T) {
 			w := newWorld()
 			w.run = returns(contracts.AttemptFailed, contracts.ReasonGateFailed)

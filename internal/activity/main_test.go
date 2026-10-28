@@ -334,7 +334,9 @@ func (g *fakeGitHub) ListIssueComments(context.Context, github.RepoRef, int) ([]
 	return append([]github.Comment(nil), g.comments...), nil
 }
 
-func (g *fakeGitHub) Push(context.Context, github.PushSpec) error { return errors.New("not in ticket 8") }
+func (g *fakeGitHub) Push(context.Context, github.PushSpec) error {
+	return errors.New("not in ticket 8")
+}
 func (g *fakeGitHub) CreatePullRequest(context.Context, github.PullRequestSpec) (github.PullRequest, error) {
 	return github.PullRequest{}, errors.New("not in ticket 8")
 }

@@ -162,4 +162,3 @@ func serve(srv *http.Server, disp *github.Dispatcher, log *slog.Logger) error {
 	log.Info("conclave server stopped")
 	return err
 }
-

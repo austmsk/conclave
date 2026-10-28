@@ -69,16 +69,21 @@ func TestParseIssue(t *testing.T) {
 			if spec.Key != TaskKey || spec.Description != tt.wantDesc {
 				t.Errorf("spec = %q %q, want %q %q", spec.Key, spec.Description, TaskKey, tt.wantDesc)
 			}
-			if len(spec.Criteria) != len(tt.wantAC) {
-				t.Fatalf("criteria = %+v, want %q", spec.Criteria, tt.wantAC)
-			}
-			for i, c := range spec.Criteria {
-				want := contracts.AcceptanceCriteria{ID: "AC" + string(rune('1'+i)), Text: tt.wantAC[i]}
-				if c != want {
-					t.Errorf("criterion %d = %+v, want %+v", i, c, want)
-				}
-			}
+			checkCriteria(t, spec.Criteria, tt.wantAC)
 		})
+	}
+}
+
+func checkCriteria(t *testing.T, got []contracts.AcceptanceCriteria, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("criteria = %+v, want %q", got, want)
+	}
+	for i, c := range got {
+		w := contracts.AcceptanceCriteria{ID: "AC" + string(rune('1'+i)), Text: want[i]}
+		if c != w {
+			t.Errorf("criterion %d = %+v, want %+v", i, c, w)
+		}
 	}
 }
 
