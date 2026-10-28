@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.temporal.io/sdk/client"
+
 	"github.com/austmsk/conclave/internal/github"
 	"github.com/austmsk/conclave/internal/llm"
 )
@@ -38,6 +40,8 @@ func run() error {
 	addr := flag.String("addr", "127.0.0.1:8080", "address to listen on")
 	githubPath := flag.String("github-config", "deploy/github.yaml", "GitHub App configuration file")
 	reposPath := flag.String("repos", "deploy/repos.yaml", "repository access file; its repositories are the enabled ones")
+	temporalAddr := flag.String("temporal-address", client.DefaultHostPort, "Temporal frontend address")
+	namespace := flag.String("temporal-namespace", client.DefaultNamespace, "Temporal namespace")
 	flag.Parse()
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{ReplaceAttr: github.RedactAttr}))
@@ -52,7 +56,12 @@ func run() error {
 		return fmt.Errorf("unsetting %s: %w", github.WebhookSecretEnv, err)
 	}
 
-	disp := github.NewDispatcher(noEngine{log: log}, log, dispatchDepth)
+	tc, err := client.Dial(client.Options{HostPort: *temporalAddr, Namespace: *namespace, Logger: log})
+	if err != nil {
+		return fmt.Errorf("connecting to Temporal at %s: %w", *temporalAddr, err)
+	}
+	defer tc.Close()
+	disp := github.NewDispatcher(temporalStarter{client: tc, ownerID: cfg.OwnerUserID, log: log}, log, dispatchDepth)
 	recv, err := github.NewReceiver(cfg, enabled, webhookSecret, disp, log)
 	if err != nil {
 		return err
@@ -154,18 +163,3 @@ func serve(srv *http.Server, disp *github.Dispatcher, log *slog.Logger) error {
 	return err
 }
 
-// noEngine stands in for the workflow engine until ticket 8 wires Temporal.
-// It logs what it would have started or signalled and reports success.
-type noEngine struct{ log *slog.Logger }
-
-func (e noEngine) StartFeature(_ context.Context, req github.FeatureStart) error {
-	e.log.Warn("no workflow engine until ticket 8; feature start not run",
-		"workflow_id", req.WorkflowID, "delivery", req.DeliveryID)
-	return nil
-}
-
-func (e noEngine) SignalCommand(_ context.Context, req github.CommandSignal) error {
-	e.log.Warn("no workflow engine until ticket 8; command not delivered",
-		"workflow_id", req.WorkflowID, "delivery", req.DeliveryID, "command", string(req.Command.Name))
-	return nil
-}
