@@ -1,37 +1,26 @@
 package sandbox
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"math"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"go.yaml.in/yaml/v3"
-
 	"github.com/austmsk/conclave/internal/contracts"
+	"github.com/austmsk/conclave/internal/deployfile"
 )
 
 // ErrInvalidConfig wraps every sandboxes.yaml validation failure.
 var ErrInvalidConfig = errors.New("invalid sandbox configuration")
 
-// placeholderRepo is the key deploy/sandboxes.yaml ships with. It fails
-// validation, so the worker refuses to start until the owner fills it in.
-const placeholderRepo = "owner/repo"
-
 // placeholderDigest is the all-zero digest the shipped file carries. It is
 // well formed, so DigestPinned accepts it; LoadConfig refuses it by name.
 const placeholderDigest = "@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-
-// fullName is a GitHub owner/repo: an owner of letters, digits and
-// hyphens, and a repository name of letters, digits, '.', '_' and '-'.
-var fullName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
 
 // RepoSandbox is one repository's sandbox configuration: what the worker
 // needs, beyond the prepared tree, to build a contracts.SandboxSpec and
@@ -98,24 +87,18 @@ type limitsEntry struct {
 // ErrInvalidConfig and names the offending key.
 func LoadConfig(r io.Reader) (map[string]RepoSandbox, error) {
 	var f configFile
-	if err := decodeConfig(r, &f); err != nil {
-		return nil, err
+	if err := deployfile.Decode(r, &f, ErrInvalidConfig); err != nil {
+		return nil, fmt.Errorf("sandbox configuration: %w", err)
 	}
 	if len(f.Repositories) == 0 {
 		return nil, fmt.Errorf("%w: no repositories configured", ErrInvalidConfig)
 	}
+	names, err := deployfile.RepoKeys(f.Repositories)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
 	out := make(map[string]RepoSandbox, len(f.Repositories))
-	seen := make(map[string]string, len(f.Repositories))
-	for _, name := range slices.Sorted(maps.Keys(f.Repositories)) {
-		if err := validateRepoName(name); err != nil {
-			return nil, fmt.Errorf("%w: repositories.%q: %w", ErrInvalidConfig, name, err)
-		}
-		// GitHub names are case-insensitive, so two keys that differ only
-		// in case would be one repository with two configurations.
-		if other, dup := seen[strings.ToLower(name)]; dup {
-			return nil, fmt.Errorf("%w: repositories.%q: same repository as %q", ErrInvalidConfig, name, other)
-		}
-		seen[strings.ToLower(name)] = name
+	for _, name := range names {
 		repo, err := buildRepo(f.Repositories[name])
 		if err != nil {
 			return nil, fmt.Errorf("%w: repositories.%q.%w", ErrInvalidConfig, name, err)
@@ -123,37 +106,6 @@ func LoadConfig(r io.Reader) (map[string]RepoSandbox, error) {
 		out[name] = repo
 	}
 	return out, nil
-}
-
-// decodeConfig decodes exactly one YAML document, rejecting unknown keys
-// as the other deploy loaders do.
-func decodeConfig(r io.Reader, v any) error {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return fmt.Errorf("sandbox configuration: reading: %w", err)
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("%w: parsing YAML: %w", ErrInvalidConfig, err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%w: more than one YAML document", ErrInvalidConfig)
-	}
-	return nil
-}
-
-func validateRepoName(name string) error {
-	switch {
-	case name == placeholderRepo:
-		return errors.New("placeholder: replace owner/repo with the repository's full name")
-	case !fullName.MatchString(name):
-		return errors.New("not a repository full name of the form owner/repo")
-	case strings.HasSuffix(name, "/.") || strings.HasSuffix(name, "/.."):
-		return errors.New("not a valid repository name")
-	}
-	return nil
 }
 
 // buildRepo validates one entry and converts it. Errors start with the
