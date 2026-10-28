@@ -30,8 +30,8 @@ func smallOptions(ctx workflow.Context) workflow.Context {
 	})
 }
 
-// attemptOptions are RunAttempt's: its own task queue, which the worker
-// polls one at a time, a timeout computed by PrepareAttempt from
+// attemptOptions are RunAttempt's: the attempt queue paired with the
+// workflow's own, which the worker polls one at a time, a timeout computed by PrepareAttempt from
 // configuration and recorded in history (decision 0012), a heartbeat
 // timeout, and a single try. An attempt cannot restart: artifact_hash is
 // write-once, and a second run would repeat the agent's spend. The
@@ -39,7 +39,7 @@ func smallOptions(ctx workflow.Context) workflow.Context {
 // errored/cancelled and releases its sandbox before the workflow moves on.
 func attemptOptions(ctx workflow.Context, timeout time.Duration) workflow.Context {
 	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:           AttemptTaskQueue,
+		TaskQueue:           AttemptQueue(workflow.GetInfo(ctx).TaskQueueName),
 		StartToCloseTimeout: timeout,
 		HeartbeatTimeout:    activity.HeartbeatTimeout,
 		WaitForCancellation: true,

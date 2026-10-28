@@ -334,6 +334,15 @@ func (w *world) Deliver(_ context.Context, attempt, hash, base string) (activity
 // register puts every world method in env under the activity's name, so
 // the workflow's calls through acts reach the fake.
 func (w *world) register(env *testsuite.TestWorkflowEnvironment) {
+	w.registerOn(env)
+}
+
+// registrar is a test environment or a worker.
+type registrar interface {
+	RegisterActivityWithOptions(a any, options sdkactivity.RegisterOptions)
+}
+
+func (w *world) registerOn(r registrar) {
 	fakes := []struct {
 		name string
 		fn   any
@@ -345,7 +354,7 @@ func (w *world) register(env *testsuite.TestWorkflowEnvironment) {
 		{"CancelTask", w.CancelTask}, {"Deliver", w.Deliver},
 	}
 	for _, f := range fakes {
-		env.RegisterActivityWithOptions(f.fn, sdkactivity.RegisterOptions{Name: f.name})
+		r.RegisterActivityWithOptions(f.fn, sdkactivity.RegisterOptions{Name: f.name})
 	}
 }
 

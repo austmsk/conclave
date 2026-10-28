@@ -8,12 +8,21 @@ import (
 )
 
 // Task queues. Workflows and the small activities share TaskQueue;
-// RunAttempt runs on AttemptTaskQueue, which the worker polls with one
-// slot, so two issues labelled at once queue their attempts.
+// RunAttempt runs on the attempt queue beside it, which the worker polls
+// with one slot, so two issues labelled at once queue their attempts. A
+// workflow on any queue sends its attempts to that queue's attempt queue,
+// so a test or a benchmark on its own queue never reaches another
+// worker's.
 const (
-	TaskQueue        = "conclave"
-	AttemptTaskQueue = "conclave-attempt"
+	TaskQueue          = "conclave"
+	attemptQueueSuffix = "-attempt"
+	AttemptTaskQueue   = TaskQueue + attemptQueueSuffix
 )
+
+// AttemptQueue is the attempt queue that pairs with a workflow task queue.
+func AttemptQueue(taskQueue string) string {
+	return taskQueue + attemptQueueSuffix
+}
 
 // QueryStatus names the query that returns the feature workflow's Status.
 const QueryStatus = "status"
