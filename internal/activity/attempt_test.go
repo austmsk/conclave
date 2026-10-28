@@ -144,3 +144,36 @@ func TestSweepOrphansSparesLiveAttempts(t *testing.T) {
 	f.must(err)
 	equalInt(t, "this attempt unreleased", f.count(`SELECT count(*) FROM attempts WHERE id = $1 AND sandbox_released_at IS NULL`, ref.AttemptID), 1)
 }
+
+// TestTraceableFromWorkflowID walks the join from the workflow ID down
+// to an attempt's evidence after a fake run: feature_requests.workflow_id
+// to plans, tasks and attempts, then the attempt's tool calls, cost
+// events and state transitions. The run stops before the gate, so
+// gate_results is joined but empty; ticket 10 walks it over a gated run.
+func TestTraceableFromWorkflowID(t *testing.T) {
+	f := newFixture(t, ReadFileTurn("NOTES.md"))
+	f.sandboxes.files["NOTES.md"] = "notes"
+	task, ref, ap := f.attempt()
+	_, err := f.runAttempt(f.runInput(task, ref, ap))
+	f.must(err)
+	const join = `FROM feature_requests fr
+		JOIN plans p ON p.feature_request_id = fr.id
+		JOIN tasks t ON t.plan_id = p.id
+		JOIN attempts a ON a.task_id = t.id
+		WHERE fr.workflow_id = $1`
+	counts := []struct {
+		what  string
+		query string
+		want  int
+	}{
+		{"attempts", `SELECT count(*) ` + join, 1},
+		{"tool calls", `SELECT count(*) ` + join + ` AND EXISTS (SELECT 1 FROM tool_calls c WHERE c.attempt_id = a.id)`, 1},
+		{"cost events", `SELECT count(*) FROM cost_events c WHERE c.attempt_id IN (SELECT a.id ` + join + `)`, 1},
+		{"attempt transitions", `SELECT count(*) FROM state_transitions s WHERE s.entity_id IN (SELECT a.id ` + join + `)`, 1},
+		{"feature request transitions", `SELECT count(*) FROM state_transitions s WHERE s.entity_id IN (SELECT fr.id ` + join + `)`, 2},
+		{"gate results", `SELECT count(*) FROM gate_results g WHERE g.attempt_id IN (SELECT a.id ` + join + `)`, 0},
+	}
+	for _, c := range counts {
+		equalInt(t, c.what, f.count(c.query, f.workflowID()), c.want)
+	}
+}

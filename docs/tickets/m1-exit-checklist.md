@@ -53,7 +53,15 @@ Test names are functions; `pkg:` gives the package under `internal/` unless stat
 
 | ID | Requirement | Ticket | Proof |
 |---|---|---|---|
-| NFR-R1, NFR-R2, NFR-R3, FR-S5, FR-S12, FR-S19 (pinning) | Workflow survives crash, retry and cancellation; approval pins the base; every problem routes to `needs_attention` | 8 | *named in the PR*; must include the outcome-table test, the canary-not-in-history test, and the traceability join test from `ticket-8-pre-plan.md` |
+| NFR-R1 | Workflow survives a restart mid-attempt: replay schedules nothing already done | 8 | workflow: `TestReplayMidAttempt` (histories captured from Temporal mid-attempt), `TestAttemptResultLostAfterRecording`, `TestAttemptWorkerDied` |
+| NFR-R2 | Every activity idempotent; the attempt never retried | 8 | activity: `TestAnalyzeTwice`, `TestPostPlanCommentTwice`, `TestTransitionTwice`, `TestApproveTwice`, `TestCreateTaskTwice`, `TestPrepareAttemptTwice`, `TestSettleAttemptTwice`, `TestRunAttemptTwice`, `TestReleaseAttemptSandboxTwice`, `TestReleaseFeatureSandboxesTwice`, `TestCancelTaskTwice`, `TestDeliverRefusesUnpassed`; workflow: `TestAttemptNotRetried` |
+| NFR-R3 | Cleanup survives cancellation; startup sweep releases recorded and reaps unrecorded sandboxes | 8 | workflow: `TestCancelDuringAgentPhase`, `TestCancelParentReleasesChildSandbox`, `TestCancelTaskWorkflowDirectly`, `TestCancelInNeedsAttentionReleasesSandbox`; activity: `TestRunAttemptSandboxIDNotRecorded`, `TestSweepOrphans`, `TestSweepOrphansSparesLiveAttempts` |
+| FR-S5 | `/approve` only in `awaiting_approval`, never blind | 8 | workflow: `TestCommandApplies`, `TestSignals`, `TestApproveAfterLongWait`, `TestAnalyzeProblem` |
+| FR-S12 | Every problem routes to `needs_attention` with a reason; `/cancel` from there | 8 | workflow: `TestOutcomeTable` (one case per outcome-table row), `TestOutcomeTaskStatusBeforeCancel`, `TestNonRetryableErrorOutsideAttempt`, `TestPermanentAttemptErrorStartsNoOrdinal`, `TestPermanentRouterErrorNotRetried`, `TestRateLimitRetriedAfterRetryAfter`; activity: `TestTemporal`, `TestBudgetKindOf` |
+| FR-S19 | Approval pins the base once (pinning half) | 8 | activity: `TestApproveTwice`, `TestRunAttemptRefusesWrongBase` |
+| RL-14 | No transcript or tool output in workflow history | 8 | activity: `TestCanaryNotInHistory` |
+| — | Traceable end to end from the workflow ID | 8 | activity: `TestTraceableFromWorkflowID` (`gate_results` empty: the fake run stops before the gate) |
+| — | Server starts and signals through Temporal; worker validates its deploy files | 8 | cmd/server: `TestStartFeature`, `TestSignalCommand`; cmd/worker: `TestSameRepositories`, `TestLoadDeployRefusesShippedPlaceholders` |
 | FR-S11, FR-S12, FR-SEC10 | `/retry`, invalid-command replies, `/status`, `/help`, status comment, command audit | 8b | *named in the PR* |
 | FR-S10, FR-S16, FR-S17, FR-S19 (rebase), FR-A5, FR-A7, FR-SEC27 (push), FR-C3 | PR delivery, bot commits, rebase and re-gate, CI result observed | 9 | *named in the PR* |
 | FR-SEC11, FR-SEC31, NFR-R3 (reaper), NFR-M9 | Kill switch, alerts, scheduled reaper, decision records; the 10 trials | 10 | *named in the PR*; trial log under `docs/trials/` |
