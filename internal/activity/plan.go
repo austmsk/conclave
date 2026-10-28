@@ -47,7 +47,8 @@ var (
 )
 
 // section is one heading's text: everything up to the next heading of the
-// same or a higher level. Deeper headings belong to it.
+// same or a higher level, or the next recognised section's heading at any
+// level. Other deeper headings belong to it.
 type section struct {
 	level int
 	lines []string
@@ -91,8 +92,9 @@ func splitSections(body string) map[string]*section {
 			inFence = !inFence
 		}
 		level, name, ok := heading(line, inFence)
+		_, known := out[name]
 		switch {
-		case ok && cur != nil && level > cur.level:
+		case ok && cur != nil && level > cur.level && !known:
 			cur.lines = append(cur.lines, line)
 		case ok:
 			cur = nil

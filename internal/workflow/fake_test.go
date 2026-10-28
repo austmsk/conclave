@@ -447,3 +447,8 @@ func equalSlices(t *testing.T, what string, got, want []string) {
 		t.Errorf("%s = %q, want %q", what, got, want)
 	}
 }
+
+// sdkRegister replaces the fake registered under name.
+func sdkRegister(name string) sdkactivity.RegisterOptions {
+	return sdkactivity.RegisterOptions{Name: name, DisableAlreadyRegisteredCheck: true}
+}
