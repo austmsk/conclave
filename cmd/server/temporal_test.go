@@ -113,8 +113,9 @@ func TestSignalCommand(t *testing.T) {
 }
 
 // TestStartClosedCommand starts the closed-run workflow under the ID
-// derived from the comment, with RejectDuplicate, and maps a duplicate
-// start to ErrAlreadyStarted, so a redelivered comment is answered once.
+// derived from the comment, reusable only after a failure, and maps a
+// duplicate start to ErrAlreadyStarted, so a redelivered comment is
+// answered once and a failed answer can be retried.
 func TestStartClosedCommand(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -136,8 +137,9 @@ func TestStartClosedCommand(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
 			if c.opts.ID != "command/99/7/5" || c.opts.TaskQueue != workflow.TaskQueue ||
-				c.opts.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE {
-				t.Errorf("options = %+v, want the comment's ID, the feature queue and RejectDuplicate", c.opts)
+				c.opts.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY ||
+				c.opts.WorkflowIDConflictPolicy != enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL {
+				t.Errorf("options = %+v, want the comment's ID, the feature queue, reuse after failure only, and no second run alongside", c.opts)
 			}
 			if c.closed.OwnerUserID != 4242 || c.closed.Signal.CommentID != 5 {
 				t.Errorf("input = %+v", c.closed)

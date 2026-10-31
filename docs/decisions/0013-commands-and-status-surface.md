@@ -24,9 +24,9 @@ The owner decided, on 2026-10-30:
 
 - **One command table.** `workflow.validCommands(status)` mirrors the `ARCHITECTURE.md` table plus `/help`, as a fixed, ordered slice per status. The signal gate (`commandApplies`), the `/help` reply and the status comment all read it, so they cannot disagree. `TestCommandApplies` checks all seven commands in all six statuses against a copy of the table written out in the test. `/revise` and `/ask` pass the gate and are then answered "not available in Milestone 1" (`not_available`).
 - **A closed-run workflow, `ClosedCommandWorkflow`.** When `SignalCommand` returns `ErrNoWorkflow`, the dispatcher calls the new `WorkflowStarter.StartClosedCommand`.
-  - It starts the workflow under `command/<repoID>/<issue>/<commentID>` with REJECT_DUPLICATE, so a redelivered comment is answered once.
+  - It starts the workflow under `command/<repoID>/<issue>/<commentID>` with ALLOW_DUPLICATE_FAILED_ONLY and conflict policy FAIL. A redelivery while that workflow runs, or after it completed, is refused as a duplicate, so the comment is answered once. A redelivery after it failed (an outage past its activity bounds) starts it again, so an outage cannot lose the command.
   - The workflow runs on the worker. It looks up the feature request by `feature_requests.workflow_id`, replies, and records the command as rejected: `closed_run`, `not_available` for `/revise` on `delivered`, `no_run`, or `no_workflow` (live status, nothing running).
-  - A comment already in the audit was decided by its live run, so it is left alone.
+  - It records the row under its own workflow ID. A comment recorded by another workflow was decided by its live run, so it is left alone. A comment it recorded itself is an earlier try that failed after the row, and the re-run goes on to the reply, which is idempotent by its marker.
   - The server keeps no database access and no App key.
 - **A version gate.** `FeatureWorkflow` reads `GetVersion("commands-8b", DefaultVersion, 1)` once, at the start.
   - At `DefaultVersion` (a run started before 8b) it behaves exactly as ticket 8 did: only `/approve` and `/cancel` act, and there is no reply, no audit and no status comment.
@@ -40,7 +40,7 @@ The owner decided, on 2026-10-30:
 - **The audit scope.** Every owner command that dispatches gets one row in the append-only `commands` table (migration 00008, keyed on comment ID with `ON CONFLICT DO NOTHING`). The row holds the outcome, the reason, and the status it was decided in.
   - Commands from anyone else, malformed commands and redeliveries stay log-only, as in ticket 6.
   - A `/retry` is audited after its cap check, so the row records the final decision.
-  - An `/approve` or `/cancel` that arrives while one is already pending is recorded as rejected `already_pending`.
+  - Every rejection gets a reply. An `/approve` or `/cancel` that arrives while one is already pending is rejected `already_pending` and told so. A `/retry` overtaken by a `/cancel` is rejected `cancelled` and told the cancel takes precedence. That covers a `/cancel` during its cap check, a `/retry` still queued as the run ends, and one sent while a failed close waits for another `/cancel`. A `/retry` whose cap check or move back fails is rejected `resume_failed`, and the run keeps waiting.
 - **Cap re-check semantics.** `CheckCaps` reads `CostLedger.Spend` (settled plus live reservations) for the feature request and the month. It compares that spend with `Deps.RouterConfig.Budgets`, which is the configuration as of worker startup.
   - Spend **at or over** a cap counts as exceeded, because the router admits no call there.
   - The feature request cap is named before the monthly one.

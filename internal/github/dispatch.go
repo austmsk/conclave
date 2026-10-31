@@ -21,8 +21,9 @@ type WorkflowStarter interface {
 	SignalCommand(ctx context.Context, req CommandSignal) error
 	// StartClosedCommand starts the short workflow that answers a command
 	// no running feature workflow could take, under
-	// ClosedCommandWorkflowID. A start for a comment already answered
-	// returns ErrAlreadyStarted.
+	// ClosedCommandWorkflowID. A start for a comment being answered or
+	// already answered returns ErrAlreadyStarted; one whose answer failed
+	// starts again.
 	StartClosedCommand(ctx context.Context, req CommandSignal) error
 }
 

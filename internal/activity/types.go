@@ -215,7 +215,8 @@ const (
 	// RejectResumeFailed: /retry passed the cap check, but the caps could
 	// not be read or the move out of needs_attention failed.
 	RejectResumeFailed = "resume_failed"
-	// RejectCancelled: a /retry overtaken by a /cancel.
+	// RejectCancelled: a /retry overtaken by a /cancel, or by the run's
+	// end.
 	RejectCancelled = "cancelled"
 	// RejectClosedRun: the run is delivered or cancelled.
 	RejectClosedRun = "closed_run"
@@ -248,6 +249,11 @@ const (
 	ReplyClosedRun    ReplyKind = "closed_run"
 	ReplyNoRun        ReplyKind = "no_run"
 	ReplyNoWorkflow   ReplyKind = "no_workflow"
+	// ReplyAlreadyPending answers an /approve or /cancel sent while an
+	// earlier one is still being acted on.
+	ReplyAlreadyPending ReplyKind = "already_pending"
+	// ReplyCancelled answers a /retry that a /cancel overtook.
+	ReplyCancelled ReplyKind = "cancelled"
 )
 
 // RunView is the feature request as the owner is shown it: its status,
@@ -309,11 +315,12 @@ type LookupFeatureInput struct {
 }
 
 // LookupFeatureResult is the feature request recorded under a workflow
-// ID, if any, and whether the command is already in the audit.
+// ID, if any, and the workflow that recorded the command, if it is
+// already in the audit.
 type LookupFeatureResult struct {
 	Found            bool
 	FeatureRequestID string
 	Status           contracts.FeatureRequestStatus
 	Reason           string
-	Recorded         bool
+	RecordedBy       string
 }

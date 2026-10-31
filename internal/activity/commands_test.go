@@ -241,7 +241,7 @@ func TestLookupFeature(t *testing.T) {
 	in := LookupFeatureInput{WorkflowID: f.workflowID(), CommentID: ref.CommentID}
 	none, err := f.a.LookupFeature(f.ctx, in)
 	f.must(err)
-	if none.Found || none.Recorded {
+	if none.Found || none.RecordedBy != "" {
 		t.Fatalf("before analysis = %+v, want nothing", none)
 	}
 	res := f.analyzed()
@@ -254,7 +254,7 @@ func TestLookupFeature(t *testing.T) {
 		Status: contracts.FeatureCancelled, Outcome: CommandRejected, Reason: RejectClosedRun}))
 	got, err := f.a.LookupFeature(f.ctx, in)
 	f.must(err)
-	if !got.Found || got.FeatureRequestID != res.FeatureRequestID || got.Status != contracts.FeatureCancelled || !got.Recorded {
-		t.Errorf("after analysis = %+v, want the cancelled feature request and the command recorded", got)
+	if !got.Found || got.FeatureRequestID != res.FeatureRequestID || got.Status != contracts.FeatureCancelled || got.RecordedBy != ref.WorkflowID {
+		t.Errorf("after analysis = %+v, want the cancelled feature request and the command recorded by %s", got, ref.WorkflowID)
 	}
 }

@@ -66,8 +66,10 @@ type world struct {
 	// fail permanently, as a move Postgres refuses would.
 	refuseMovesTo map[contracts.FeatureRequestStatus]int
 
-	// caps is what CheckCaps reports.
-	caps activity.CapCheck
+	// caps is what CheckCaps reports; duringCheckCaps, when set, runs
+	// inside CheckCaps before it returns.
+	caps            activity.CapCheck
+	duringCheckCaps func()
 	// status is the one status comment on the issue, nil until posted;
 	// statusPosts counts creates, statusEdits edits.
 	status      *activity.RunView
@@ -413,6 +415,9 @@ func (w *world) CheckCaps(_ context.Context, _ string) (activity.CapCheck, error
 	if err := w.count("CheckCaps"); err != nil {
 		return activity.CapCheck{}, err
 	}
+	if w.duringCheckCaps != nil {
+		w.duringCheckCaps()
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.caps, nil
@@ -444,7 +449,9 @@ func (w *world) LookupFeature(_ context.Context, in activity.LookupFeatureInput)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	res := w.lookup
-	_, res.Recorded = w.audit[in.CommentID]
+	if row, ok := w.audit[in.CommentID]; ok {
+		res.RecordedBy = row.Ref.WorkflowID
+	}
 	return res, nil
 }
 

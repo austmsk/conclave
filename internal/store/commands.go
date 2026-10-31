@@ -61,15 +61,15 @@ func RecordCommand(ctx context.Context, db DBTX, rec CommandRecord) (bool, error
 	return tag.RowsAffected() == 1, nil
 }
 
-// CommandRecorded reports whether the command with this comment ID is
-// already in the audit.
-func CommandRecorded(ctx context.Context, db DBTX, commentID int64) (bool, error) {
-	var found bool
-	err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM commands WHERE comment_id = $1)`, commentID).Scan(&found)
+// CommandRecordedBy returns the workflow that recorded the command with
+// this comment ID, or "" when it is not in the audit.
+func CommandRecordedBy(ctx context.Context, db DBTX, commentID int64) (string, error) {
+	var by string
+	err := db.QueryRow(ctx, `SELECT coalesce(max(workflow_id), '') FROM commands WHERE comment_id = $1`, commentID).Scan(&by)
 	if err != nil {
-		return false, fmt.Errorf("looking up command %d: %w", commentID, err)
+		return "", fmt.Errorf("looking up command %d: %w", commentID, err)
 	}
-	return found, nil
+	return by, nil
 }
 
 func checkCommandRecord(rec CommandRecord) error {

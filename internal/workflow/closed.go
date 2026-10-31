@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"errors"
+	"fmt"
 
 	"go.temporal.io/sdk/workflow"
 
@@ -25,9 +26,12 @@ type ClosedCommandInput struct {
 // instead of answering itself. The command is rejected, replied to, and
 // audited; nothing else changes.
 //
-// A command already in the audit, decided by the live workflow and
-// delivered again after the run closed, is left alone: it has its reply
-// and its row.
+// The row is recorded under this workflow's own ID. A command another
+// workflow recorded, decided by the live run and delivered again after it
+// closed, is left alone: it has its reply and its row. One this workflow
+// recorded is an earlier try that failed after the row, started again by
+// a redelivery (the starter allows a failed ID to be reused), and it goes
+// on to the reply, which is idempotent by its marker.
 func ClosedCommandWorkflow(ctx workflow.Context, in ClosedCommandInput) error {
 	log := workflow.GetLogger(ctx)
 	sig := in.Signal
@@ -41,14 +45,16 @@ func ClosedCommandWorkflow(ctx workflow.Context, in ClosedCommandInput) error {
 		WorkflowID: sig.WorkflowID, CommentID: sig.CommentID,
 	}).Get(ctx, &fr)
 	if err != nil {
-		return err
+		return fmt.Errorf("looking up the run of comment %d: %w", sig.CommentID, err)
 	}
-	if fr.Recorded {
-		log.Info("command already decided by its run", "comment_id", sig.CommentID)
+	self := workflow.GetInfo(ctx).WorkflowExecution.ID
+	if fr.RecordedBy != "" && fr.RecordedBy != self {
+		log.Info("command already decided by its run", "comment_id", sig.CommentID, "recorded_by", fr.RecordedBy)
 		return nil
 	}
 	kind, reason := closedDecision(sig.Command.Name, fr)
 	ref := activity.CommandRefOf(sig)
+	ref.WorkflowID = self
 	view := activity.RunView{FeatureRequestID: fr.FeatureRequestID, Status: fr.Status, Reason: fr.Reason}
 	recordErr := workflow.ExecuteActivity(actx, acts.RecordCommand, activity.RecordCommandInput{
 		Ref: ref, FeatureRequestID: fr.FeatureRequestID, Status: fr.Status, Outcome: activity.CommandRejected, Reason: reason,
@@ -56,7 +62,10 @@ func ClosedCommandWorkflow(ctx workflow.Context, in ClosedCommandInput) error {
 	replyErr := workflow.ExecuteActivity(responseOptions(ctx), acts.ReplyToCommand, activity.ReplyInput{
 		Ref: ref, Kind: kind, View: view,
 	}).Get(ctx, nil)
-	return errors.Join(recordErr, replyErr)
+	if err := errors.Join(recordErr, replyErr); err != nil {
+		return fmt.Errorf("answering comment %d on issue %d: %w", sig.CommentID, sig.IssueNumber, err)
+	}
+	return nil
 }
 
 // closedDecision is why a command to a closed run is rejected and how the

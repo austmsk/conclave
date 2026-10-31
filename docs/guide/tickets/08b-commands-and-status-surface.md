@@ -31,7 +31,7 @@ Three constraints shaped it:
 2. Not in the table: reply `not_valid`, row `rejected not_valid_in_status`.
 3. `/revise` or `/ask` where the table lists them: reply `not_available`, row `rejected not_available`.
 4. Otherwise `accept`:
-   - `/approve` and `/cancel` set their latch, with row `accepted`. A second one while the first is pending is `rejected already_pending`.
+   - `/approve` and `/cancel` set their latch, with row `accepted`. A second one while the first is pending is `rejected already_pending` and gets a reply saying so.
    - `/status` and `/help` reply, with row `accepted`.
    - `/retry` is queued in `f.retries` and audited later, once its cap check has decided it.
 
@@ -42,7 +42,7 @@ Decisions don't call activities. They append a `commandEvent` (the command's `ac
 - for a command: `RecordCommand`, then `ReplyToCommand` if a reply is due;
 - for a status refresh: `UpsertStatusComment`. A refresh that a later one in the outbox supersedes is skipped.
 
-These use `responseOptions`, with a 10-minute schedule-to-close. Failures are logged and never route the run. Every return of `FeatureWorkflow` calls `drain`, which records any `/retry` still queued as `rejected cancelled`, then waits for the responder to finish. An accepted `/cancel`, or a `/help` just before Temporal cancels the workflow, therefore has its row before the workflow closes.
+These use `responseOptions`, with a 10-minute schedule-to-close. Failures are logged and never route the run. Every return of `FeatureWorkflow` calls `drain`, which refuses any `/retry` still queued (`refuseRetriesForCancel`: row `rejected cancelled`, decided in the status the run ends in, and a reply that the cancel takes precedence), then waits for the responder to finish. An accepted `/cancel`, or a `/help` just before Temporal cancels the workflow, therefore has its row before the workflow closes.
 
 **The status comment.** `transitionAs` records `Reason` and `PhaseLeft` when the move is to `needs_attention`, clears them on any other move, and queues `refreshStatus(f.view())`. So the comment follows every move. `UpsertStatusComment` (`internal/activity/comment.go`) finds the App's own comment carrying `conclave-status:<feature request ID>` and edits it, or creates it. The body comes from `statusComment` in `internal/activity/status.go`:
 
@@ -55,8 +55,8 @@ These use `responseOptions`, with a 10-minute schedule-to-close. Failures are lo
 **`/retry`.** Ticket 8's `awaitCancel` became `awaitOwner`. It waits for `/cancel` (which wins) or a queued `/retry`, and calls `retry` (`internal/workflow/retry.go`):
 
 1. **`CheckCaps`** reads `CostLedger.Spend` (settled plus reserved) against `Deps.RouterConfig.Budgets`. Spend at or over a cap counts as exceeded, and the feature request cap is named before the monthly one. While over, `overCap` queues a reply naming the cap, a row `rejected over_cap:<kind>`, and a status refresh carrying the figures. The run stays put, and `awaitOwner` waits again.
-   - If the caps could not be read, the reply is `resume_failed`.
-   - If a `/cancel` arrived meanwhile, the `/retry` is `rejected cancelled`.
+   - If the caps could not be read, `refuseRetry` replies `resume_failed`, records `rejected resume_failed`, and the run keeps waiting in `needs_attention`. A failed move back out of `needs_attention` takes the same path.
+   - If a `/cancel` arrived meanwhile, the `/retry` is `rejected cancelled` and told the cancel takes precedence.
 2. **`resume`** compare-and-sets `needs_attention → PhaseLeft` as `github:<actor>`, queues the row `accepted` (status `needs_attention`), and refuses any other `/retry` still queued (`not_valid`).
 3. **It returns the steps to run.**
    - From planning, the whole `planSteps` list again, with `f.approval` cleared. `Analyze` and `PostPlanComment` are idempotent, so they return the existing plan and comment, and the run waits for a new `/approve` (FR-S5).
@@ -67,11 +67,13 @@ These use `responseOptions`, with a 10-minute schedule-to-close. Failures are lo
 
 `run(ctx, steps)` is the same loop ticket 8 had, now re-enterable: each step does nothing when its status doesn't apply.
 
-**Terminal statuses.** `Dispatcher.dispatch` (`internal/github/dispatch.go`) handles a signal that returns `ErrNoWorkflow` by calling the new `WorkflowStarter.StartClosedCommand`. `cmd/server`'s `temporalStarter` starts `ClosedCommandWorkflow` under `ClosedCommandWorkflowID` (`command/<repoID>/<issue>/<commentID>`) with REJECT_DUPLICATE. So a redelivery is logged `duplicate` and answered once; the first is logged `closed_run`. The workflow (`internal/workflow/closed.go`):
+**A `/cancel` whose close fails** leaves the status as it was, and `closeCancelled` waits for another `/cancel` (`awaitAnotherCancel`). `/retry` is still valid in that status, so the wait also wakes on a queued `/retry` and refuses it with the `cancelled` reply, rather than leaving it unread.
+
+**Terminal statuses.** `Dispatcher.dispatch` (`internal/github/dispatch.go`) handles a signal that returns `ErrNoWorkflow` by calling the new `WorkflowStarter.StartClosedCommand`. `cmd/server`'s `temporalStarter` starts `ClosedCommandWorkflow` under `ClosedCommandWorkflowID` (`command/<repoID>/<issue>/<commentID>`), reusable only after a failure (ALLOW_DUPLICATE_FAILED_ONLY, conflict policy FAIL). A redelivery while it runs, or after it completed, is logged `duplicate` and answered once; the first is logged `closed_run`. A redelivery after it failed starts it again. The workflow (`internal/workflow/closed.go`):
 
 1. drops a non-owner command;
-2. runs `LookupFeature`, which reads the feature request by `feature_requests.workflow_id` and whether the comment is already in `commands`. An already-audited comment was decided by its live run and is left alone;
-3. otherwise records the command `rejected` and replies, with `closedDecision`:
+2. runs `LookupFeature`, which reads the feature request by `feature_requests.workflow_id`, and `RecordedBy`, the workflow that recorded the comment in `commands`, if any. A comment recorded by another workflow was decided by its live run and is left alone. One it recorded itself is an earlier failed try, which goes on to the reply;
+3. otherwise records the command `rejected` under its own workflow ID and replies, with `closedDecision`:
    - `closed_run` for delivered or cancelled;
    - `not_available` for `/revise` on delivered;
    - `no_run` for no feature request;
@@ -105,7 +107,7 @@ These use `responseOptions`, with a 10-minute schedule-to-close. Failures are lo
 | `internal/activity/status.go` | The words: `statusComment`, `replyBody`, `describeReason`, `codeSpan` |
 | `internal/activity/task.go` | `ResumeTask` |
 | `internal/activity/types.go` | `CommandRef`, rejection reasons, `RunView`, `CapCheck` and the inputs |
-| `internal/store/commands.go`, `migrations/00008_commands.sql` | The audit table and `RecordCommand`/`CommandRecorded` |
+| `internal/store/commands.go`, `migrations/00008_commands.sql` | The audit table and `RecordCommand`/`CommandRecordedBy` |
 | `internal/github/dispatch.go` | `StartClosedCommand` on `WorkflowStarter`, `ClosedCommandWorkflowID`, the `closed_run` path |
 | `cmd/server/temporal.go`, `cmd/worker/main.go` | Starting and registering `ClosedCommandWorkflow` |
 
@@ -115,14 +117,16 @@ These use `responseOptions`, with a 10-minute schedule-to-close. Failures are lo
 - All seven commands in all six statuses match the table written out in the test (workflow: `TestCommandApplies`, `TestValidCommandsOrder`).
 - In each live status, every command the table doesn't list gets a reply and a rejected row, and the run moves exactly as without it (`TestInvalidCommandPerLiveStatus`, four sub-tests).
 - `/revise` and `/ask` are answered "not available" (`TestRevAskNotAvailable`). `/status` reports the status (`TestStatusReply`). `/help` lists exactly the valid commands in each live status (`TestHelpListsValidCommands`).
-- Terminal statuses: `TestClosedCommandWorkflow` covers delivered, `/revise` on delivered, cancelled, no run, and live-without-workflow. `TestClosedCommandWorkflowIgnores` covers a stranger and an already-audited comment.
-- The dispatcher hands a no-workflow command to the closed-run workflow under the comment's ID, and a redelivery is a duplicate (github: `TestNoWorkflowStartsClosedCommand`). The starter uses RejectDuplicate (`cmd/server`: `TestStartClosedCommand`).
+- Terminal statuses: `TestClosedCommandWorkflow` covers delivered, `/revise` on delivered, cancelled, no run, and live-without-workflow. `TestClosedCommandWorkflowIgnores` covers a stranger and a comment its live run recorded. `TestClosedCommandRecordsItsOwnID` and `TestClosedCommandRerunAfterFailedReply` cover a re-run of a failed answer.
+- The dispatcher hands a no-workflow command to the closed-run workflow under the comment's ID, and a redelivery is a duplicate (github: `TestNoWorkflowStartsClosedCommand`). The starter reuses the ID only after a failure (`cmd/server`: `TestStartClosedCommand`).
 
 **`/retry`**
 - After a raised cap, the run continues in executing at ordinal 2, and attempt 1 is intact (`TestRetryAfterCapRaised`).
 - Still over the cap, the run stays in `needs_attention`; the reply and the comment name the cap, and the row is `over_cap:feature_request` (`TestRetryStillOverCap`).
 - After a planning stop, the run waits for `/approve` with no task (`TestRetryFromPlanningWaitsForApprove`). An `/approve` accepted before an approval that failed doesn't carry over (`TestRetryAfterFailedApproveNeedsNewApprove`).
 - After a delivery stop, delivery is retried without a new attempt (`TestRetryAfterDeliverStop`). A second simultaneous `/retry` is refused, not saved (`TestSecondRetryRefusedAfterResume`).
+- A `/retry` whose cap check or move back fails is answered `resume_failed`, and the run keeps waiting and decides the next one afresh (`TestRetryResumeFailed`).
+- A `/retry` overtaken by a `/cancel` is answered, whether queued at the run's end or caught during its cap check (`TestRetryOvertakenByCancel`). So is one sent while a failed close waits for another `/cancel` (`TestRetryWhileCancelFailsIsAnswered`).
 - In the database, `ResumeTask` twice makes one transition, returns the same ordinal, and leaves the cost intact (activity: `TestResumeTaskTwice`). It refuses a running attempt or a cancelled task (`TestResumeTaskRefuses`). `CheckCaps` treats under as passing and at or over as exceeded, for each cap, in order (`TestCheckCaps`).
 
 **The status comment**
@@ -131,8 +135,8 @@ These use `responseOptions`, with a 10-minute schedule-to-close. Failures are lo
 - No platform comment parses as a command, even when an error detail carries `\n/cancel` and backticks (`TestPlatformCommentsNeverReadAsCommands`, NFR-U2a).
 
 **The audit**
-- One row per owner comment, none for a redelivery or a stranger (`TestEveryCommandAudited`). The row is written before the workflow closes, by `/cancel` and by Temporal cancellation (`TestCancelAuditedBeforeClose`).
-- In the database, the row is recorded once with the first decision standing (`TestRecordCommandTwice`, `TestRecordCommandBeforeFeatureRequest`). Bad rows are refused permanently (`TestRecordCommandRefusesBadRecord`). `LookupFeature` returns the feature request and reports an already-audited comment (`TestLookupFeature`). `ReplyToCommand` posts one reply (`TestReplyToCommandTwice`).
+- One row per owner comment, none for a redelivery or a stranger, and a reply for `already_pending` (`TestEveryCommandAudited`). The row is written before the workflow closes, by `/cancel` and by Temporal cancellation (`TestCancelAuditedBeforeClose`).
+- In the database, the row is recorded once with the first decision standing (`TestRecordCommandTwice`, `TestRecordCommandBeforeFeatureRequest`). Bad rows are refused permanently (`TestRecordCommandRefusesBadRecord`). `LookupFeature` returns the feature request and the workflow that recorded the comment (`TestLookupFeature`). `ReplyToCommand` posts one reply (`TestReplyToCommandTwice`).
 - In the store, `conclave_app` cannot UPDATE, DELETE or TRUNCATE `commands` (`TestAppRoleCannotAlterAppendOnlyRows`). The CHECKs refuse what the audit must not hold (`TestCommandsSchemaChecks`). `RecordCommand` absorbs a repeat (`TestRecordCommandOncePerComment`).
 
 **Replay**

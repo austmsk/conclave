@@ -85,7 +85,8 @@ func (f *FakeStarter) SignalCommand(ctx context.Context, req github.CommandSigna
 }
 
 // StartClosedCommand records req and starts its closed-command workflow
-// ID, refusing a second start under the same ID as REJECT_DUPLICATE does.
+// ID, refusing a second start under the same ID, as the engine does for
+// a run that is open or completed. The fake has no failed runs.
 func (f *FakeStarter) StartClosedCommand(ctx context.Context, req github.CommandSignal) error {
 	if err := f.wait(ctx); err != nil {
 		return err

@@ -16,6 +16,8 @@ CREATE TABLE commands (
     id                 uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     comment_id         bigint      NOT NULL UNIQUE CHECK (comment_id > 0),
     delivery_id        text        NOT NULL,
+    -- The workflow that decided the command: the issue's feature workflow,
+    -- or the closed-run workflow that answered it after the run ended.
     workflow_id        text        NOT NULL CHECK (workflow_id <> ''),
     repo_github_id     bigint      NOT NULL CHECK (repo_github_id > 0),
     issue_number       integer     NOT NULL CHECK (issue_number > 0),

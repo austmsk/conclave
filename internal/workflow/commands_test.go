@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
@@ -442,6 +443,7 @@ func TestEveryCommandAudited(t *testing.T) {
 	wantAudit(t, w, testCommentBase+1, contracts.FeatureAwaitingApproval, activity.CommandRejected, activity.RejectNotValid)
 	wantAudit(t, w, testCommentBase+2, contracts.FeatureAwaitingApproval, activity.CommandAccepted, "")
 	wantAudit(t, w, testCommentBase+3, contracts.FeatureAwaitingApproval, activity.CommandRejected, activity.RejectAlreadyPending)
+	wantReply(t, w, testCommentBase+3, activity.ReplyAlreadyPending)
 	wantAudit(t, w, cancelID, contracts.FeatureNeedsAttention, activity.CommandAccepted, "")
 	equal(t, "approvals", w.approved, 1)
 }
@@ -520,11 +522,11 @@ func TestClosedCommandWorkflowIgnores(t *testing.T) {
 		equal(t, "LookupFeature calls", w.called("LookupFeature"), 0)
 		equal(t, "RecordCommand calls", w.called("RecordCommand"), 0)
 	})
-	t.Run("already audited", func(t *testing.T) {
+	t.Run("already audited by its live run", func(t *testing.T) {
 		w := newWorld()
 		w.lookup = activity.LookupFeatureResult{Found: true, FeatureRequestID: frID, Status: contracts.FeatureCancelled}
 		sig := command(github.CommandCancel, testCommentBase)
-		w.audit[sig.CommentID] = activity.RecordCommandInput{Outcome: activity.CommandAccepted}
+		w.audit[sig.CommentID] = activity.RecordCommandInput{Ref: activity.CommandRefOf(sig), Outcome: activity.CommandAccepted}
 		te := newEnv(t, w)
 		te.ExecuteWorkflow(ClosedCommandWorkflow, ClosedCommandInput{Signal: sig, OwnerUserID: ownerID})
 		checkCompleted(t, te)
@@ -566,4 +568,172 @@ func TestRetryAfterFailedApproveNeedsNewApprove(t *testing.T) {
 	mu.Lock()
 	equal(t, "Approve tries", tries, 1)
 	mu.Unlock()
+}
+
+// TestClosedCommandRerunAfterFailedReply starts the closed-run workflow
+// again for a comment whose earlier try recorded the row and then failed
+// to reply, as a redelivery does once that try has failed: it goes on to
+// the reply instead of treating its own row as an answer.
+func TestClosedCommandRerunAfterFailedReply(t *testing.T) {
+	w := newWorld()
+	w.lookup = activity.LookupFeatureResult{Found: true, FeatureRequestID: frID, Status: contracts.FeatureCancelled}
+	sig := command(github.CommandRetry, testCommentBase)
+	id := github.ClosedCommandWorkflowID(repoID, issueNum, sig.CommentID)
+	earlier := activity.CommandRefOf(sig)
+	earlier.WorkflowID = id
+	w.audit[sig.CommentID] = activity.RecordCommandInput{Ref: earlier, Outcome: activity.CommandRejected, Reason: activity.RejectClosedRun}
+	te := newEnv(t, w)
+	te.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: id})
+	te.ExecuteWorkflow(ClosedCommandWorkflow, ClosedCommandInput{Signal: sig, OwnerUserID: ownerID})
+	checkCompleted(t, te)
+	wantReply(t, w, sig.CommentID, activity.ReplyClosedRun)
+	row, _ := w.auditRow(sig.CommentID)
+	equal(t, "row recorded by", row.Ref.WorkflowID, id)
+}
+
+// TestClosedCommandRecordsItsOwnID records the row under the closed-run
+// workflow's ID, so a later try can tell its own row from the live run's.
+func TestClosedCommandRecordsItsOwnID(t *testing.T) {
+	w := newWorld()
+	sig := command(github.CommandStatus, testCommentBase)
+	id := github.ClosedCommandWorkflowID(repoID, issueNum, sig.CommentID)
+	te := newEnv(t, w)
+	te.SetStartWorkflowOptions(client.StartWorkflowOptions{ID: id})
+	te.ExecuteWorkflow(ClosedCommandWorkflow, ClosedCommandInput{Signal: sig, OwnerUserID: ownerID})
+	checkCompleted(t, te)
+	row, ok := w.auditRow(sig.CommentID)
+	if !ok {
+		t.Fatal("no audit row")
+	}
+	equal(t, "row recorded by", row.Ref.WorkflowID, id)
+}
+
+// stoppedOnFailure is a run whose attempt failed, so it waits in
+// needs_attention from about a minute in.
+func stoppedOnFailure(t *testing.T) (*world, *testsuite.TestWorkflowEnvironment) {
+	t.Helper()
+	w := newWorld()
+	w.run = returns(contracts.AttemptFailed, contracts.ReasonGateFailed)
+	te := newEnv(t, w)
+	signalAfter(te, time.Minute, command(github.CommandApprove, approveID))
+	return w, te
+}
+
+// TestRetryWhileCancelFailsIsAnswered has the move to cancelled fail, so
+// the run waits in needs_attention for another /cancel. A /retry sent in
+// that wait is answered and refused, since the cancel takes precedence,
+// rather than left unread; a second /cancel then closes the run.
+func TestRetryWhileCancelFailsIsAnswered(t *testing.T) {
+	w, te := stoppedOnFailure(t)
+	w.refuseMovesTo[contracts.FeatureCancelled] = 1
+	retry := command(github.CommandRetry, testCommentBase)
+	signalAfter(te, 2*time.Hour, command(github.CommandCancel, cancelID))
+	signalAfter(te, 3*time.Hour, retry)
+	var between Status
+	answered := false
+	te.RegisterDelayedCallback(func() {
+		between = queryStatus(t, te)
+		_, answered = w.reply(retry.CommentID)
+	}, 4*time.Hour)
+	signalAfter(te, 5*time.Hour, command(github.CommandCancel, cancelID+1))
+	te.ExecuteWorkflow(FeatureWorkflow, featureInput())
+	checkCompleted(t, te)
+
+	equal(t, "status while the cancel is retried", between.Status, contracts.FeatureNeedsAttention)
+	equal(t, "/retry answered before the second /cancel", answered, true)
+	wantReply(t, w, retry.CommentID, activity.ReplyCancelled)
+	wantAudit(t, w, retry.CommentID, contracts.FeatureNeedsAttention, activity.CommandRejected, activity.RejectCancelled)
+	equal(t, "RunAttempt calls", w.called("RunAttempt"), 1)
+	equalSlices(t, "moves", w.moves(), []string{toApproval, toExecuting, "executing>needs_attention attempt_failed", toCancelled})
+}
+
+// TestRetryOvertakenByCancel sends /cancel and /retry together, so the
+// /retry is still queued when the run ends, and a /cancel during a
+// /retry's cap check: either way the /retry is answered,
+// says the cancel took precedence, and is audited rejected cancelled.
+func TestRetryOvertakenByCancel(t *testing.T) {
+	t.Run("sent together, the cancel first", func(t *testing.T) {
+		// Both signals in one workflow task: the owner wait takes the
+		// cancel, and the /retry is still queued when the run ends.
+		w, te := stoppedOnFailure(t)
+		retry := command(github.CommandRetry, testCommentBase)
+		te.RegisterDelayedCallback(func() {
+			te.SignalWorkflow(SignalName(github.CommandCancel), command(github.CommandCancel, cancelID))
+			te.SignalWorkflow(SignalName(github.CommandRetry), retry)
+		}, 2*time.Hour)
+		te.ExecuteWorkflow(FeatureWorkflow, featureInput())
+		checkCompleted(t, te)
+		wantReply(t, w, retry.CommentID, activity.ReplyCancelled)
+		// Decided as the run ends, after the move to cancelled.
+		wantAudit(t, w, retry.CommentID, contracts.FeatureCancelled, activity.CommandRejected, activity.RejectCancelled)
+	})
+	t.Run("cancel during the cap check", func(t *testing.T) {
+		w, te := stoppedOnFailure(t)
+		w.duringCheckCaps = func() { te.SignalWorkflow(SignalName(github.CommandCancel), command(github.CommandCancel, cancelID)) }
+		retry := command(github.CommandRetry, testCommentBase)
+		signalAfter(te, 2*time.Hour, retry)
+		te.ExecuteWorkflow(FeatureWorkflow, featureInput())
+		checkCompleted(t, te)
+		wantReply(t, w, retry.CommentID, activity.ReplyCancelled)
+		wantAudit(t, w, retry.CommentID, contracts.FeatureNeedsAttention, activity.CommandRejected, activity.RejectCancelled)
+		equal(t, "RunAttempt calls", w.called("RunAttempt"), 1)
+		equalSlices(t, "moves", w.moves(), []string{toApproval, toExecuting, "executing>needs_attention attempt_failed", toCancelled})
+	})
+}
+
+// TestRetryResumeFailed has a /retry pass nothing it could act on: the
+// caps cannot be read, or the move out of needs_attention is refused.
+// The /retry is answered and audited resume_failed, the run stays in
+// needs_attention and keeps waiting, and a later /retry is decided
+// afresh.
+func TestRetryResumeFailed(t *testing.T) {
+	tests := []struct {
+		name         string
+		arrange      func(*world)
+		wantSecond   string
+		wantAttempts int
+	}{
+		{
+			name: "caps unreadable",
+			arrange: func(w *world) {
+				w.fail["CheckCaps"] = temporal.NewNonRetryableApplicationError("ledger down", activity.ErrTypePermanent, nil)
+			},
+			wantSecond:   activity.RejectResumeFailed,
+			wantAttempts: 1,
+		},
+		{
+			name:         "move back refused once",
+			arrange:      func(w *world) { w.refuseMovesTo[contracts.FeatureExecuting] = 1 },
+			wantSecond:   "",
+			wantAttempts: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, te := stoppedOnFailure(t)
+			tt.arrange(w)
+			first, second := command(github.CommandRetry, testCommentBase), command(github.CommandRetry, testCommentBase+1)
+			signalAfter(te, 2*time.Hour, first)
+			var between Status
+			te.RegisterDelayedCallback(func() { between = queryStatus(t, te) }, 3*time.Hour)
+			signalAfter(te, 4*time.Hour, second)
+			signalAfter(te, 24*time.Hour, command(github.CommandCancel, cancelID))
+			te.ExecuteWorkflow(FeatureWorkflow, featureInput())
+			checkCompleted(t, te)
+
+			equal(t, "status after the failed /retry", between.Status, contracts.FeatureNeedsAttention)
+			equal(t, "phase left kept", between.PhaseLeft, contracts.FeatureExecuting)
+			r := wantReply(t, w, first.CommentID, activity.ReplyResumeFailed)
+			if r.Detail == "" {
+				t.Error("the resume_failed reply carries no detail")
+			}
+			wantAudit(t, w, first.CommentID, contracts.FeatureNeedsAttention, activity.CommandRejected, activity.RejectResumeFailed)
+			outcome := activity.CommandAccepted
+			if tt.wantSecond != "" {
+				outcome = activity.CommandRejected
+			}
+			wantAudit(t, w, second.CommentID, contracts.FeatureNeedsAttention, outcome, tt.wantSecond)
+			equal(t, "RunAttempt calls", w.called("RunAttempt"), tt.wantAttempts)
+		})
+	}
 }

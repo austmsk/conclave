@@ -24,7 +24,7 @@ func (f *featureRun) retry(ctx workflow.Context, sig github.CommandSignal) []ste
 	err := workflow.ExecuteActivity(smallOptions(ctx), acts.CheckCaps, f.st.FeatureRequestID).Get(ctx, &caps)
 	switch {
 	case ctx.Err() != nil || f.cancel != nil:
-		f.record(sig, activity.CommandRejected, activity.RejectCancelled)
+		f.reply(sig, activity.CommandRejected, activity.RejectCancelled, activity.ReplyCancelled)
 		return nil
 	case err != nil:
 		f.refuseRetry(sig, "checking the caps: "+errorDetail(err))

@@ -181,6 +181,11 @@ func replyText(in ReplyInput) string {
 		return fmt.Sprintf("%s refused: %s The run stays `%s`.", cmd, describeCapCheck(derefCap(v.Cap)), v.Status)
 	case ReplyResumeFailed:
 		return fmt.Sprintf("%s could not resume the run: %s The run stays `%s`; reply `/retry` to try again.", cmd, codeSpan(in.Detail), v.Status)
+	case ReplyAlreadyPending:
+		return fmt.Sprintf("An earlier %s is already being acted on; this one changed nothing.", cmd)
+	case ReplyCancelled:
+		return fmt.Sprintf("%s was not applied: this run is being cancelled, and the cancel takes precedence. "+
+			"If the run does not reach `cancelled`, reply `/cancel` again.", cmd)
 	case ReplyClosedRun:
 		if v.Status == contracts.FeatureDelivered && in.Ref.Command == github.CommandRevise {
 			return cmd + " on a delivered run is not available in Milestone 1; nothing changed."

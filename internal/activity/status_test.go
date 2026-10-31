@@ -29,7 +29,7 @@ func renderedComments() map[string]string {
 	out := map[string]string{"status comment": statusComment(7, view)}
 	kinds := []ReplyKind{
 		ReplyNotValid, ReplyNotAvailable, ReplyStatus, ReplyHelp, ReplyOverCap, ReplyResumeFailed,
-		ReplyClosedRun, ReplyNoRun, ReplyNoWorkflow,
+		ReplyClosedRun, ReplyNoRun, ReplyNoWorkflow, ReplyAlreadyPending, ReplyCancelled,
 	}
 	for _, k := range kinds {
 		ref := CommandRef{CommentID: 9, Issue: 7, Command: github.CommandRevise}

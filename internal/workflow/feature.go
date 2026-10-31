@@ -388,10 +388,24 @@ func (f *featureRun) closeCancelled(ctx workflow.Context) error {
 		}
 		f.log.Error("closing the cancelled feature request failed; waiting for another /cancel", "status", string(f.st.Status), "error", err)
 		f.cancel = nil
-		if err := workflow.Await(ctx, func() bool { return f.cancel != nil }); err != nil {
+		if err := f.awaitAnotherCancel(ctx); err != nil {
 			return err
 		}
 	}
+}
+
+// awaitAnotherCancel waits for the /cancel that retries a failed close.
+// The status still allows /retry, so one may be queued meanwhile; the
+// cancel the owner already sent takes precedence, and each such /retry
+// is answered and refused as it arrives rather than left unread.
+func (f *featureRun) awaitAnotherCancel(ctx workflow.Context) error {
+	for f.cancel == nil {
+		if err := workflow.Await(ctx, func() bool { return f.cancel != nil || len(f.retries) > 0 }); err != nil {
+			return err
+		}
+		f.refuseRetriesForCancel()
+	}
+	return nil
 }
 
 // closeAfterWorkflowCancel closes the feature request after Temporal

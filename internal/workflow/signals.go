@@ -135,7 +135,7 @@ func (f *featureRun) accept(name github.CommandName, sig github.CommandSignal) {
 	switch name {
 	case github.CommandApprove, github.CommandCancel:
 		if !f.acceptLatch(name, sig) {
-			f.record(sig, activity.CommandRejected, activity.RejectAlreadyPending)
+			f.reply(sig, activity.CommandRejected, activity.RejectAlreadyPending, activity.ReplyAlreadyPending)
 			return
 		}
 		f.record(sig, activity.CommandAccepted, "")
@@ -281,21 +281,29 @@ func (f *featureRun) statusQueued() bool {
 	return slices.ContainsFunc(f.outbox, func(it outboxItem) bool { return it.status != nil })
 }
 
-// drain records every /retry still waiting as overtaken, then waits for
-// the responder to send everything queued, on a context that survives
-// cancellation. Every return of FeatureWorkflow passes through it, so a
-// decided command always has its audit row before the workflow closes.
+// drain refuses every /retry still waiting, overtaken by the run's end,
+// then waits for the responder to send everything queued, on a context
+// that survives cancellation. Every return of FeatureWorkflow passes
+// through it, so a decided command always has its audit row and its reply
+// before the workflow closes.
 func (f *featureRun) drain(ctx workflow.Context) {
 	if !f.v8b {
 		return
 	}
-	for _, sig := range f.retries {
-		f.record(sig, activity.CommandRejected, activity.RejectCancelled)
-	}
-	f.retries = nil
+	f.refuseRetriesForCancel()
 	f.closing = true
 	dctx, _ := workflow.NewDisconnectedContext(ctx)
 	_ = workflow.Await(dctx, func() bool { return f.responderDone })
+}
+
+// refuseRetriesForCancel answers every /retry still queued that a cancel
+// overtook: the reply says the cancel takes precedence, and the row is
+// rejected cancelled.
+func (f *featureRun) refuseRetriesForCancel() {
+	for _, sig := range f.retries {
+		f.reply(sig, activity.CommandRejected, activity.RejectCancelled, activity.ReplyCancelled)
+	}
+	f.retries = nil
 }
 
 // refusePendingRetries answers every /retry still queued once the feature

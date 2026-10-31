@@ -69,14 +69,15 @@ func (s temporalStarter) SignalCommand(ctx context.Context, req github.CommandSi
 // StartClosedCommand starts the workflow that answers a command for an
 // issue with no running feature workflow, on the worker, which holds the
 // database and the App key this server does not. The ID derives from the
-// comment, and a duplicate is refused, so a redelivered comment is
-// answered once.
+// comment. A start while that workflow runs, or after it completed, is
+// refused, so a redelivered comment is answered once; after it failed, a
+// redelivery starts it again, so an outage cannot lose the command.
 func (s temporalStarter) StartClosedCommand(ctx context.Context, req github.CommandSignal) error {
 	id := github.ClosedCommandWorkflowID(req.Repo.ID, req.IssueNumber, req.CommentID)
 	_, err := s.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                                       id,
 		TaskQueue:                                s.taskQueue,
-		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, workflow.ClosedCommandWorkflow, workflow.ClosedCommandInput{Signal: req, OwnerUserID: s.ownerID})
