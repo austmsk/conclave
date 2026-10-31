@@ -67,7 +67,7 @@ func TestCancelTaskWorkflowDirectly(t *testing.T) {
 	w.task = contracts.TaskRunning
 	env := newEnv(t, w)
 	w.run = blocksUntilCancelled(env.CancelWorkflow)
-	env.ExecuteWorkflow(TaskWorkflow, TaskInput{TaskID: taskID, Ordinal: 1, BaseSHA: baseSHA, Repo: featureInput().Start.Repo, Role: contracts.RoleImplementer})
+	env.ExecuteWorkflow(TaskWorkflow, TaskInput{TaskID: taskID, Ordinal: 1, BaseSHA: baseSHA, RepoFullName: featureInput().Start.Repo.FullName, Role: contracts.RoleImplementer})
 	equalSlices(t, "attempts", w.attemptStates(), []string{"errored/cancelled"})
 	equal(t, "task", w.taskStatus(), contracts.TaskCancelled)
 	equalSlices(t, "unreleased sandboxes", w.unreleased(), nil)
@@ -80,7 +80,7 @@ func TestTaskWorkflowDirectly(t *testing.T) {
 	w.task = contracts.TaskRunning
 	w.run = returns(contracts.AttemptPassed, "")
 	env := newEnv(t, w)
-	env.ExecuteWorkflow(TaskWorkflow, TaskInput{TaskID: taskID, Ordinal: 1, BaseSHA: baseSHA, Repo: featureInput().Start.Repo, Role: contracts.RoleImplementer})
+	env.ExecuteWorkflow(TaskWorkflow, TaskInput{TaskID: taskID, Ordinal: 1, BaseSHA: baseSHA, RepoFullName: featureInput().Start.Repo.FullName, Role: contracts.RoleImplementer})
 	checkCompleted(t, env)
 	var res TaskResult
 	if err := env.GetWorkflowResult(&res); err != nil {

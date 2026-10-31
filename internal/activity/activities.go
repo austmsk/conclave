@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/austmsk/conclave/internal/agent"
@@ -68,6 +69,13 @@ type Deps struct {
 	GitHub    github.Client
 	Sandboxes contracts.SandboxProvider
 	Router    *llm.Router
+	// Trees prepares the tree an attempt runs on. The attempt names its
+	// repository by full name only, so a task needs no GitHub state of
+	// its own; GitHubTrees clones through the App.
+	Trees TreeSource
+	// Roles maps each role a task may run to its spec. The worker fills
+	// it; an attempt for a role not in it is refused.
+	Roles map[contracts.Role]contracts.RoleSpec
 	// RouterConfig is the router's validated configuration; attempts
 	// record the model and provider it routes their role to.
 	RouterConfig llm.Config
@@ -109,6 +117,7 @@ func New(d Deps) (*Activities, error) {
 		d.HeartbeatEvery = HeartbeatEvery
 	}
 	d.Repos = maps.Clone(d.Repos)
+	d.Roles = maps.Clone(d.Roles)
 	d.ConfigDigests = maps.Clone(d.ConfigDigests)
 	return &Activities{
 		d:           d,
@@ -120,17 +129,24 @@ func New(d Deps) (*Activities, error) {
 
 func (d Deps) validate() error {
 	switch {
-	case d.DB == nil || d.GitHub == nil || d.Sandboxes == nil || d.Router == nil || d.Blobs == nil || d.Gate == nil:
-		return errors.New("activities need a database, GitHub, sandbox provider, router, blob store and gate")
+	case d.DB == nil || d.GitHub == nil || d.Trees == nil || d.Sandboxes == nil || d.Router == nil || d.Blobs == nil || d.Gate == nil:
+		return errors.New("activities need a database, GitHub, tree source, sandbox provider, router, blob store and gate")
 	case len(d.Repos) == 0:
 		return errors.New("activities need at least one configured repository")
+	case len(d.Roles) == 0:
+		return errors.New("activities need at least one role spec")
 	case d.OwnerUserID <= 0:
 		return errors.New("activities need the owner's GitHub user ID")
 	case d.WorkDir == "":
 		return errors.New("activities need a work directory for clones")
 	}
-	if _, err := d.provenance(contracts.RoleImplementer); err != nil {
-		return fmt.Errorf("activities: %w", err)
+	for _, role := range slices.Sorted(maps.Keys(d.Roles)) {
+		if spec := d.Roles[role]; spec.Role != role {
+			return fmt.Errorf("activities: role %s maps to the spec for %s", role, spec.Role)
+		}
+		if _, err := d.provenance(role); err != nil {
+			return fmt.Errorf("activities: %w", err)
+		}
 	}
 	return nil
 }
@@ -144,21 +160,37 @@ func (a *Activities) repo(fullName string) (Repo, error) {
 	return r, nil
 }
 
-// roleSpec returns the role spec an attempt runs. Milestone 1 has the
-// implementer; Milestone 2 adds the test writer here, and the workflow
-// already passes the role through.
-func roleSpec(role contracts.Role) (contracts.RoleSpec, error) {
-	if role == contracts.RoleImplementer {
-		return agent.Implementer, nil
+// roleSpec returns the spec the worker configured for role. Milestone 1's
+// worker configures the implementer; Milestone 2 adds the test writer to
+// the worker's map, with no change here.
+func (d Deps) roleSpec(role contracts.Role) (contracts.RoleSpec, error) {
+	spec, ok := d.Roles[role]
+	if !ok {
+		return contracts.RoleSpec{}, fmt.Errorf("%w: no role spec for role %q on this worker", errNonRetryable, role)
 	}
-	return contracts.RoleSpec{}, fmt.Errorf("%w: no role spec for role %q", errNonRetryable, role)
+	return spec, nil
+}
+
+// LongestAttempt is the longest StartToCloseTimeout any attempt on this
+// worker can be given. The startup sweep's cutoff must exceed it, or the
+// sweep would release a live attempt's sandbox.
+// It is a method on Deps, not Activities, because the worker registers
+// every exported method of Activities as an activity.
+func (d Deps) LongestAttempt() time.Duration {
+	var longest time.Duration
+	for _, spec := range d.Roles {
+		for _, r := range d.Repos {
+			longest = max(longest, AttemptTimeout(spec, r.Sandbox.CommandTimeout))
+		}
+	}
+	return longest
 }
 
 // provenance is what the router is configured to use for role: the
 // prompt version from its spec, and its primary model and that model's
 // provider. FinishAttempt later records the model that actually answered.
 func (d Deps) provenance(role contracts.Role) (contracts.Provenance, error) {
-	spec, err := roleSpec(role)
+	spec, err := d.roleSpec(role)
 	if err != nil {
 		return contracts.Provenance{}, err
 	}

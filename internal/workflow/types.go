@@ -71,15 +71,15 @@ type Status struct {
 }
 
 // TaskInput starts a task workflow. Every field is serializable and none
-// is GitHub state the child would have to fetch: Milestone 2's benchmark
-// starts the workflow directly. Repo carries the full name, and the
-// numeric ID and installation the clone needs.
+// is GitHub state: the repository is named by full name, and the
+// attempt's tree source reads the rest from the plan body, so Milestone
+// 2's benchmark starts the workflow directly, with no GitHub App.
 type TaskInput struct {
-	TaskID  string
-	Ordinal int
-	BaseSHA string
-	Repo    github.RepoRef
-	Role    contracts.Role
+	TaskID       string
+	Ordinal      int
+	BaseSHA      string
+	RepoFullName string
+	Role         contracts.Role
 }
 
 // TaskOutcome is how a task workflow ended.

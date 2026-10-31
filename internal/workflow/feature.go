@@ -189,7 +189,7 @@ func (f *featureRun) runTask(ctx workflow.Context) (TaskResult, error) {
 		WaitForCancellation: true,
 	})
 	fut := workflow.ExecuteChildWorkflow(childCtx, TaskWorkflow, TaskInput{
-		TaskID: f.st.TaskID, Ordinal: 1, BaseSHA: f.st.BaseSHA, Repo: f.in.Start.Repo, Role: contracts.RoleImplementer,
+		TaskID: f.st.TaskID, Ordinal: 1, BaseSHA: f.st.BaseSHA, RepoFullName: f.in.Start.Repo.FullName, Role: contracts.RoleImplementer,
 	})
 	var res TaskResult
 	var childErr error

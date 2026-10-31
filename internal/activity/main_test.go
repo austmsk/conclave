@@ -149,19 +149,22 @@ func newFixture(t *testing.T, turns ...faketest.Turn) *fixture {
 		Models: map[string]llm.ModelConfig{fakeModel: {
 			Provider: llm.ProviderAnthropic, InputUSDPerMTok: 3, OutputUSDPerMTok: 15, MaxOutputTokens: 4096,
 		}},
-		Roles: map[contracts.Role]llm.RoleRoute{contracts.RoleImplementer: {Model: fakeModel}},
+		// The test writer is routed and allowed, but only the tests that
+		// add it to Deps.Roles can run it.
+		Roles: map[contracts.Role]llm.RoleRoute{contracts.RoleImplementer: {Model: fakeModel}, contracts.RoleTestWriter: {Model: fakeModel}},
 	}
-	access := map[string]llm.RepoAccess{testRepo: {Tier: contracts.TierPublic, Roles: []contracts.Role{contracts.RoleImplementer}}}
+	access := map[string]llm.RepoAccess{testRepo: {Tier: contracts.TierPublic, Roles: []contracts.Role{contracts.RoleImplementer, contracts.RoleTestWriter}}}
 	router, err := llm.New(cfg, map[string]llm.Provider{llm.ProviderAnthropic: f.model},
 		llm.NewDirectoryRepos(store.NewRepoDirectory(appPool), access), store.NewCostLedger(appPool))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.a, err = New(Deps{
-		DB: appPool, GitHub: f.gh, Sandboxes: f.sandboxes, Router: router, RouterConfig: cfg, Blobs: blobs,
+		DB: appPool, GitHub: f.gh, Trees: GitHubTrees{Client: f.gh, InstallationID: 5}, Sandboxes: f.sandboxes, Router: router, RouterConfig: cfg, Blobs: blobs,
 		Gate: func(context.Context, gate.Input) (gate.Outcome, error) {
 			return gate.Outcome{}, errors.New("the fixture's gate is never reached")
 		},
+		Roles:       map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer},
 		Repos:       map[string]Repo{testRepo: testRepoConfig()},
 		OwnerUserID: testOwner, ConfigDigests: map[string]string{"repos.yaml": "sha256:00"},
 		WorkDir: t.TempDir(),
@@ -354,6 +357,7 @@ type fakeSandboxes struct {
 	next     int
 	live     map[string]bool
 	creates  int
+	installs int
 	releases int
 	reaps    int
 	files    map[string]string
@@ -376,6 +380,9 @@ func (s *fakeSandboxes) Create(_ context.Context, _ contracts.SandboxSpec) (cont
 }
 
 func (s *fakeSandboxes) CreateWithInstall(ctx context.Context, spec contracts.SandboxSpec, _ []contracts.ExecRequest) (contracts.Sandbox, []contracts.ExecResult, error) {
+	s.mu.Lock()
+	s.installs++
+	s.mu.Unlock()
 	sb, err := s.Create(ctx, spec)
 	return sb, nil, err
 }

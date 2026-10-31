@@ -21,6 +21,15 @@ type PlanBody struct {
 	Constraints   contracts.Constraints `json:"constraints"`
 	ConfigDigests map[string]string     `json:"config_digests"`
 	Issue         PlanIssue             `json:"issue"`
+	Repository    PlanRepository        `json:"repository"`
+}
+
+// PlanRepository is the repository a plan's tasks run against. A task
+// carries only the full name; the attempt's TreeSource reads the rest
+// from here.
+type PlanRepository struct {
+	FullName string `json:"full_name"`
+	GitHubID int64  `json:"github_id,omitempty"`
 }
 
 // PlanIssue identifies the issue a plan was parsed from.

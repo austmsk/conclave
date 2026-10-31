@@ -81,6 +81,7 @@ func (a *Activities) planBody(in AnalyzeInput, cfg Repo) ([]byte, string, error)
 		Constraints:   cfg.Gates.Constraints(),
 		ConfigDigests: a.d.ConfigDigests,
 		Issue:         PlanIssue{Number: in.Issue.Number, Title: in.Issue.Title, AuthorID: in.Issue.Author.ID},
+		Repository:    PlanRepository{FullName: in.Repo.FullName, GitHubID: in.Repo.ID},
 	}
 	doc, err := json.Marshal(body)
 	if err != nil {

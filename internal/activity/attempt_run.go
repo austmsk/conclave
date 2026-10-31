@@ -15,7 +15,6 @@ import (
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/gate"
 	"github.com/austmsk/conclave/internal/llm"
-	"github.com/austmsk/conclave/internal/sandbox"
 	"github.com/austmsk/conclave/internal/store"
 )
 
@@ -55,20 +54,21 @@ func (r *attemptRun) execute(ctx context.Context) (AttemptOutcome, error) {
 	return r.gate(ctx)
 }
 
-// prepareTree clones the repository at the pinned base commit into the
-// worker's scratch space and checks that its head is that commit.
+// prepareTree has the tree source prepare the plan's repository at the
+// pinned base commit in the worker's scratch space, and checks that its
+// head is that commit.
 func (r *attemptRun) prepareTree(ctx context.Context) error {
 	scratch, err := os.MkdirTemp(r.a.d.WorkDir, "attempt-")
 	if err != nil {
 		return fmt.Errorf("creating scratch directory: %w", err)
 	}
 	r.scratch, r.tree = scratch, filepath.Join(scratch, "tree")
-	if err := r.a.d.GitHub.Clone(ctx, r.in.Repo, r.tree, r.in.BaseSHA); err != nil {
-		return fmt.Errorf("cloning %s at %s: %w", r.in.Repo.FullName, r.in.BaseSHA, err)
+	if r.body.Repository.FullName != r.in.RepoFullName {
+		return fmt.Errorf("%w: plan %s names repository %q, not %s", errNonRetryable, r.pc.PlanID, r.body.Repository.FullName, r.in.RepoFullName)
 	}
-	head, err := sandbox.HeadCommit(r.tree)
+	head, err := r.a.d.Trees.Prepare(ctx, TreeRequest{Repository: r.body.Repository, Ref: r.in.BaseSHA, Dir: r.tree})
 	if err != nil {
-		return fmt.Errorf("reading the clone's head: %w", err)
+		return fmt.Errorf("preparing the tree for attempt %s: %w", r.in.AttemptID, err)
 	}
 	if head != r.in.BaseSHA {
 		return fmt.Errorf("%w: clone is at %s, not the pinned %s", errNonRetryable, head, r.in.BaseSHA)

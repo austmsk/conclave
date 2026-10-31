@@ -132,14 +132,14 @@ type AttemptRef struct {
 	Timeout      time.Duration
 }
 
-// RunAttemptInput is one attempt. Repo carries the numeric ID and
-// installation the clone needs, as well as the full name.
+// RunAttemptInput is one attempt. It names the repository by full name
+// only; the tree source finds the rest in the plan body.
 type RunAttemptInput struct {
-	AttemptID string
-	TaskID    string
-	BaseSHA   string
-	Repo      github.RepoRef
-	Role      contracts.Role
+	AttemptID    string
+	TaskID       string
+	BaseSHA      string
+	RepoFullName string
+	Role         contracts.Role
 }
 
 // AttemptOutcome is how an attempt ended, as recorded.

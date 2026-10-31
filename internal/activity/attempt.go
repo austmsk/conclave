@@ -46,7 +46,7 @@ func (a *Activities) prepareAttempt(ctx context.Context, in PrepareAttemptInput)
 	if err != nil {
 		return AttemptRef{}, err
 	}
-	spec, err := roleSpec(in.Role)
+	spec, err := a.d.roleSpec(in.Role)
 	if err != nil {
 		return AttemptRef{}, err
 	}
@@ -134,7 +134,7 @@ func (a *Activities) newAttemptRun(ctx context.Context, in RunAttemptInput) (*at
 	if r.cfg, err = a.repo(pc.RepoFullName); err != nil {
 		return nil, nil, err
 	}
-	if r.spec, err = roleSpec(in.Role); err != nil {
+	if r.spec, err = a.d.roleSpec(in.Role); err != nil {
 		return nil, nil, err
 	}
 	if err := json.Unmarshal(pc.Body, &r.body); err != nil {
@@ -152,8 +152,8 @@ func checkRunContext(in RunAttemptInput, pc planContext) error {
 		return fmt.Errorf("%w: plan %s is %s, not approved", errNonRetryable, pc.PlanID, pc.PlanStatus)
 	case pc.BaseSHA == "" || pc.BaseSHA != in.BaseSHA:
 		return fmt.Errorf("%w: base %q is not the commit plan %s pinned (%q)", errNonRetryable, in.BaseSHA, pc.PlanID, pc.BaseSHA)
-	case pc.RepoFullName != in.Repo.FullName:
-		return fmt.Errorf("%w: task %s is in %s, not %s", errNonRetryable, in.TaskID, pc.RepoFullName, in.Repo.FullName)
+	case pc.RepoFullName != in.RepoFullName:
+		return fmt.Errorf("%w: task %s is in %s, not %s", errNonRetryable, in.TaskID, pc.RepoFullName, in.RepoFullName)
 	case pc.TaskStatus != contracts.TaskRunning:
 		return fmt.Errorf("%w: task %s is %s, not running", errNonRetryable, in.TaskID, pc.TaskStatus)
 	}

@@ -19,6 +19,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/austmsk/conclave/internal/activity"
+	"github.com/austmsk/conclave/internal/agent"
 	"github.com/austmsk/conclave/internal/blob"
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/gate"
@@ -187,11 +188,22 @@ func newActivities(ctx context.Context, o options, d deploy, sec secrets, pool *
 		return nil, nil, err
 	}
 	gater := &gate.Gater{Blobs: blobs, Results: store.NewGateResults(pool), Rejections: store.NewToolCalls(pool), Secrets: scanner}
-	acts, err := activity.New(activity.Deps{
-		DB: pool, GitHub: gh, Sandboxes: sandboxes, Router: router, RouterConfig: d.Router, Blobs: blobs, Gate: gater.Gate,
-		Repos: d.repos(), OwnerUserID: d.GitHub.OwnerUserID, ConfigDigests: d.Digests, WorkDir: o.workDir,
-	})
+	deps := activity.Deps{
+		DB: pool, GitHub: gh, Trees: activity.GitHubTrees{Client: gh, InstallationID: d.GitHub.InstallationID},
+		Sandboxes: sandboxes, Router: router, RouterConfig: d.Router, Blobs: blobs, Gate: gater.Gate,
+		Roles: roles(), Repos: d.repos(), OwnerUserID: d.GitHub.OwnerUserID, ConfigDigests: d.Digests, WorkDir: o.workDir,
+	}
+	if longest := deps.LongestAttempt(); o.sweepAfter <= longest {
+		return nil, nil, fmt.Errorf("-sweep-after %s must exceed the longest attempt, %s, or the sweep would release a live attempt's sandbox", o.sweepAfter, longest)
+	}
+	acts, err := activity.New(deps)
 	return acts, sandboxes, err
+}
+
+// roles are the role specs this worker runs. Milestone 1 runs the
+// implementer; Milestone 2 adds the test writer here.
+func roles() map[contracts.Role]contracts.RoleSpec {
+	return map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer}
 }
 
 // serve runs two workers until SIGINT or SIGTERM: one for the workflows

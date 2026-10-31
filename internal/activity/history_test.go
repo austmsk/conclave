@@ -73,7 +73,7 @@ func TestCanaryNotInHistory(t *testing.T) {
 	env.RegisterWorkflow(workflow.TaskWorkflow)
 	env.RegisterActivity(fx.Activities())
 	env.ExecuteWorkflow(workflow.TaskWorkflow, workflow.TaskInput{
-		TaskID: taskID, Ordinal: 1, BaseSHA: base, Repo: fx.Repo(), Role: contracts.RoleImplementer,
+		TaskID: taskID, Ordinal: 1, BaseSHA: base, RepoFullName: fx.Repo().FullName, Role: contracts.RoleImplementer,
 	})
 	if !env.IsWorkflowCompleted() {
 		t.Fatal("task workflow did not complete")

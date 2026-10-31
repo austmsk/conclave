@@ -70,7 +70,7 @@ func (t *taskRun) attempt(ctx workflow.Context, ordinal int) (res TaskResult, ne
 	var runErr error
 	if ref.State == contracts.AttemptRunning {
 		runErr = workflow.ExecuteActivity(attemptOptions(ctx, ref.Timeout), acts.RunAttempt, activity.RunAttemptInput{
-			AttemptID: ref.AttemptID, TaskID: t.in.TaskID, BaseSHA: t.in.BaseSHA, Repo: t.in.Repo, Role: t.in.Role,
+			AttemptID: ref.AttemptID, TaskID: t.in.TaskID, BaseSHA: t.in.BaseSHA, RepoFullName: t.in.RepoFullName, Role: t.in.Role,
 		}).Get(ctx, &out)
 	}
 	if ctx.Err() != nil {

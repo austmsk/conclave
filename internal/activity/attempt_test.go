@@ -26,7 +26,7 @@ func (f *fixture) runAttempt(in RunAttemptInput) (AttemptOutcome, error) {
 }
 
 func (f *fixture) runInput(task TaskRef, ref AttemptRef, ap ApproveResult) RunAttemptInput {
-	return RunAttemptInput{AttemptID: ref.AttemptID, TaskID: task.TaskID, BaseSHA: ap.BaseSHA, Repo: f.repoRef(), Role: contracts.RoleImplementer}
+	return RunAttemptInput{AttemptID: ref.AttemptID, TaskID: task.TaskID, BaseSHA: ap.BaseSHA, RepoFullName: testRepo, Role: contracts.RoleImplementer}
 }
 
 // TestRunAttemptTwice runs an attempt whose model call fails, then runs
