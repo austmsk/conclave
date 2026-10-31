@@ -1,7 +1,6 @@
 package github
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"go.yaml.in/yaml/v3"
+	"github.com/austmsk/conclave/internal/deployfile"
 )
 
 const (
@@ -88,16 +87,7 @@ func LoadConfig(r io.Reader) (Config, error) {
 // decodeStrict decodes YAML into v with the same settings as every other
 // configuration file (decision 0007): unknown keys are an error.
 func decodeStrict(r io.Reader, v any) error {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return fmt.Errorf("reading: %w", err)
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("%w: parsing YAML: %w", ErrInvalidConfig, err)
-	}
-	return nil
+	return deployfile.Decode(r, v, ErrInvalidConfig)
 }
 
 // Validate reports the first missing or malformed setting. The placeholder

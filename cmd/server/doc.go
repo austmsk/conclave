@@ -11,9 +11,10 @@
 // ask for workflows to start, and do nothing else on GitHub (FR-SEC2,
 // FR-SEC5).
 //
-// Accepted deliveries are acknowledged at once and dispatched to the
-// workflow engine from a queue (NFR-P1). Until ticket 8 wires Temporal, the
-// engine is a stand-in that logs what it would have started. On SIGINT or
+// Accepted deliveries are acknowledged at once and dispatched to Temporal
+// (-temporal-address, -temporal-namespace) from a queue (NFR-P1): a label
+// starts the issue's feature workflow under its derived ID, refusing a
+// duplicate, and a command is signalled on its own name. On SIGINT or
 // SIGTERM the server stops accepting connections, lets in-flight requests
 // finish, then drains the queue, logging the delivery ID of anything it
 // could not dispatch so the owner can redeliver it.

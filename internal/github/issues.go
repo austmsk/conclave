@@ -135,3 +135,61 @@ func checkBody(body string) error {
 	}
 	return nil
 }
+
+// commentsPerPage is the page size ListIssueComments asks for, GitHub's
+// maximum, and maxCommentPages bounds how many pages it reads, so an issue
+// with an enormous thread cannot hold an activity forever.
+const (
+	commentsPerPage = 100
+	maxCommentPages = 20
+)
+
+// listedComment is one entry of GitHub's issue comment list.
+type listedComment struct {
+	commentReply
+	Body string `json:"body"`
+}
+
+// ListIssueComments reads an issue's comments page by page and returns
+// those performed via this App, oldest first. A thread longer than
+// maxCommentPages pages is refused rather than read in part: a partial
+// read could miss the comment the caller is looking for, and the caller
+// would then post a duplicate.
+func (a *App) ListIssueComments(ctx context.Context, repo RepoRef, issue int) ([]Comment, error) {
+	if issue <= 0 {
+		return nil, fmt.Errorf("%w: issue number %d", ErrRefused, issue)
+	}
+	if err := checkFullName(repo.FullName); err != nil {
+		return nil, err
+	}
+	tok, err := a.token(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	var out []Comment
+	for page := 1; page <= maxCommentPages; page++ {
+		var batch []listedComment
+		path := repoPath(repo, "/issues/%d/comments?per_page=%d&page=%d", issue, commentsPerPage, page)
+		if err := a.send(ctx, repo, tok, "listing comments", http.MethodGet, path, nil, &batch); err != nil {
+			return nil, err
+		}
+		out = append(out, a.ownComments(batch)...)
+		if len(batch) < commentsPerPage {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("github: listing comments: issue %d has more than %d comments: %w",
+		issue, maxCommentPages*commentsPerPage, ErrInvalidRequest)
+}
+
+// ownComments keeps the comments performed via this App.
+func (a *App) ownComments(batch []listedComment) []Comment {
+	var out []Comment
+	for _, c := range batch {
+		if c.ID <= 0 || c.PerformedViaGitHubApp == nil || c.PerformedViaGitHubApp.ID != a.cfg.AppID {
+			continue
+		}
+		out = append(out, Comment{ID: c.ID, URL: c.HTMLURL, Body: c.Body})
+	}
+	return out
+}

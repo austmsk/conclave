@@ -125,6 +125,9 @@ func NewAPI(t testing.TB, opts APIOptions) *API {
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", f.mintToken)
 	f.mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{n}/comments", f.repo(f.createComment))
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/issues/comments/{id}", f.repo(f.getComment))
+	// {kind} rather than a literal "comments": the literal would conflict
+	// with the pattern above on the path .../issues/comments/comments.
+	f.mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{n}/{kind}", f.repo(f.listComments))
 	f.mux.HandleFunc("PATCH /repos/{owner}/{repo}/issues/comments/{id}", f.repo(f.editComment))
 	f.mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{n}/reactions", f.repo(f.addReaction))
 	f.mux.HandleFunc("POST /repos/{owner}/{repo}/issues/comments/{id}/reactions", f.repo(f.addReaction))
@@ -389,6 +392,46 @@ func (f *API) createComment(w http.ResponseWriter, r *http.Request) {
 	c := *f.comments[id]
 	f.mu.Unlock()
 	writeAPIJSON(w, http.StatusCreated, f.commentJSON(r, c))
+}
+
+// listComments answers GitHub's issue comment list: every comment on the
+// issue, whoever wrote it, oldest first, paged by per_page (default 30,
+// at most 100) and page (from 1), as GitHub pages it.
+func (f *API) listComments(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || r.PathValue("kind") != "comments" {
+		writeAPIJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		return
+	}
+	perPage := queryInt(r, "per_page", 30)
+	page := queryInt(r, "page", 1)
+	if perPage < 1 || perPage > 100 || page < 1 {
+		writeAPIJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": "Invalid request"})
+		return
+	}
+	var onIssue []StoredComment
+	for _, c := range f.Comments() {
+		if c.Issue == n {
+			onIssue = append(onIssue, c)
+		}
+	}
+	out := []map[string]any{}
+	for i := (page - 1) * perPage; i < len(onIssue) && i < page*perPage; i++ {
+		out = append(out, f.commentJSON(r, onIssue[i]))
+	}
+	writeAPIJSON(w, http.StatusOK, out)
+}
+
+func queryInt(r *http.Request, key string, def int) int {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 func (f *API) getComment(w http.ResponseWriter, r *http.Request) {

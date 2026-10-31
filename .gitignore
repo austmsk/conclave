@@ -13,6 +13,8 @@ secrets.env
 /dist/
 conclave-server
 conclave-worker
+/server
+/worker
 *.exe
 
 # Go build and test output

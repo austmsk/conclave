@@ -40,6 +40,11 @@ type Client interface {
 	CreateComment(ctx context.Context, repo RepoRef, issue int, body string) (Comment, error)
 	// EditComment replaces the body of a comment this App posted.
 	EditComment(ctx context.Context, repo RepoRef, commentID int64, body string) error
+	// ListIssueComments returns the comments this App posted on an issue,
+	// oldest first, with their bodies. Comments by anyone else are left
+	// out, so a caller searching for its own marker cannot be fooled by a
+	// person quoting it.
+	ListIssueComments(ctx context.Context, repo RepoRef, issue int) ([]Comment, error)
 	// AddReaction reacts to an issue or a comment.
 	AddReaction(ctx context.Context, repo RepoRef, t ReactionTarget, r Reaction) error
 }
@@ -65,10 +70,11 @@ type PullRequest struct {
 	Created bool
 }
 
-// Comment is a posted comment.
+// Comment is a posted comment. Body is set only by ListIssueComments.
 type Comment struct {
-	ID  int64
-	URL string
+	ID   int64
+	URL  string
+	Body string
 }
 
 // ReactionTarget is an issue or a comment; exactly one field is set.

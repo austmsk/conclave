@@ -1,19 +1,16 @@
 package gate
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
-	"go.yaml.in/yaml/v3"
-
 	"github.com/austmsk/conclave/internal/contracts"
+	"github.com/austmsk/conclave/internal/deployfile"
 )
 
 // ErrInvalidConfig wraps every gates.yaml validation failure.
@@ -95,13 +92,6 @@ type policyPatterns struct {
 // unset.
 const defaultFlagRejectionsAt = 3
 
-// placeholderRepo is the key deploy/gates.yaml ships with. It fails
-// validation, so the worker refuses to start until the owner fills it in.
-const placeholderRepo = "owner/repo"
-
-// fullName is a GitHub owner/repo, as in agent.LoadToolchains.
-var fullName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
-
 // placeholderSHA256 is the gitleaks hash deploy/gates.yaml ships with.
 const placeholderSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
@@ -169,8 +159,8 @@ type testsFile struct {
 // failure wraps ErrInvalidConfig and names the offending key.
 func LoadConfig(r io.Reader) (Config, error) {
 	var f gatesFile
-	if err := decodeGates(r, &f); err != nil {
-		return Config{}, err
+	if err := deployfile.Decode(r, &f, ErrInvalidConfig); err != nil {
+		return Config{}, fmt.Errorf("gates configuration: %w", err)
 	}
 	pin, err := gitleaksPin(f.Gitleaks)
 	if err != nil {
@@ -179,18 +169,12 @@ func LoadConfig(r io.Reader) (Config, error) {
 	if len(f.Repositories) == 0 {
 		return Config{}, fmt.Errorf("%w: repositories: none configured", ErrInvalidConfig)
 	}
+	names, err := deployfile.RepoKeys(f.Repositories)
+	if err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
 	cfg := Config{Gitleaks: pin, Repositories: make(map[string]Policy, len(f.Repositories))}
-	seen := make(map[string]string, len(f.Repositories))
-	for _, name := range slices.Sorted(maps.Keys(f.Repositories)) {
-		if err := validateRepoName(name); err != nil {
-			return Config{}, fmt.Errorf("%w: repositories.%q: %w", ErrInvalidConfig, name, err)
-		}
-		// GitHub names are case-insensitive, so two keys that differ only
-		// in case would be one repository with two configurations.
-		if other, dup := seen[strings.ToLower(name)]; dup {
-			return Config{}, fmt.Errorf("%w: repositories.%q: same repository as %q", ErrInvalidConfig, name, other)
-		}
-		seen[strings.ToLower(name)] = name
+	for _, name := range names {
 		p, err := repoPolicy(f.Repositories[name])
 		if err != nil {
 			return Config{}, fmt.Errorf("%w: repositories.%q.%w", ErrInvalidConfig, name, err)
@@ -198,24 +182,6 @@ func LoadConfig(r io.Reader) (Config, error) {
 		cfg.Repositories[name] = p
 	}
 	return cfg, nil
-}
-
-// decodeGates decodes exactly one YAML document, rejecting unknown keys.
-func decodeGates(r io.Reader, v any) error {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return fmt.Errorf("gates configuration: reading: %w", err)
-	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("%w: parsing YAML: %w", ErrInvalidConfig, err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%w: more than one YAML document", ErrInvalidConfig)
-	}
-	return nil
 }
 
 func gitleaksPin(g *gitleaksFile) (GitleaksPin, error) {
@@ -232,18 +198,6 @@ func gitleaksPin(g *gitleaksFile) (GitleaksPin, error) {
 		return GitleaksPin{}, errors.New("sha256: placeholder: put the SHA-256 of the installed gitleaks binary")
 	}
 	return GitleaksPin{Path: g.Path, Version: g.Version, SHA256: g.SHA256}, nil
-}
-
-func validateRepoName(name string) error {
-	switch {
-	case name == placeholderRepo:
-		return errors.New("placeholder: replace owner/repo with the repository's full name")
-	case !fullName.MatchString(name):
-		return errors.New("not a repository full name of the form owner/repo")
-	case strings.HasSuffix(name, "/.") || strings.HasSuffix(name, "/.."):
-		return errors.New("not a valid repository name")
-	}
-	return nil
 }
 
 // repoPolicy validates one repository's entry. Errors name the key below
