@@ -1,6 +1,6 @@
 # Ticket 8 — Feature workflow core
 
-**Status:** in review (`ticket/8-b`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-8--feature-workflow-core), [`ticket-8-pre-plan.md`](../../tickets/ticket-8-pre-plan.md#carried-into-ticket-8) · **Requirements:** NFR-R1, NFR-R2, NFR-R3, FR-S5, FR-S12, FR-S19 (pinning) · **Review list:** RL-1, RL-2, RL-3, RL-13, RL-14, RL-16 · **Decision:** [0012](../../decisions/0012-temporal-workflow-shape.md)
+**Status:** merged as PR #20 (`50b46b3`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-8--feature-workflow-core), [`ticket-8-pre-plan.md`](../../tickets/ticket-8-pre-plan.md#carried-into-ticket-8) · **Requirements:** NFR-R1, NFR-R2, NFR-R3, FR-S5, FR-S12, FR-S19 (pinning) · **Review list:** RL-1, RL-2, RL-3, RL-13, RL-14, RL-16 · **Decision:** [0012](../../decisions/0012-temporal-workflow-shape.md)
 
 ## In one paragraph
 
