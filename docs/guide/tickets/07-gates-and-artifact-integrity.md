@@ -1,6 +1,6 @@
 # Ticket 7 — Gates and artifact integrity
 
-**Status:** in review on `ticket/7` · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-7--gates-and-artifact-integrity) · **Plan:** [`ticket-7-plan.md`](../../tickets/ticket-7-plan.md) · **Requirements:** FR-A1, FR-A3, FR-SEC25, FR-SEC27 (also FR-SEC8, FR-SEC24, FR-SEC29, FR-I4) · **Review list:** RL-2
+**Status:** merged as PR #15 (`b5295ea`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-7--gates-and-artifact-integrity) · **Plan:** [`ticket-7-plan.md`](../../tickets/ticket-7-plan.md) · **Requirements:** FR-A1, FR-A3, FR-SEC25, FR-SEC27 (also FR-SEC8, FR-SEC24, FR-SEC29, FR-I4) · **Review list:** RL-2
 
 ## In one paragraph
 

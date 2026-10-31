@@ -1,6 +1,6 @@
 # Ticket 8-pre — Workflow prerequisites
 
-**Status:** in review (`ticket/8-pre`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-8-pre--workflow-prerequisites), plan [`ticket-8-pre-plan.md`](../../tickets/ticket-8-pre-plan.md) · **Decision:** [0011](../../decisions/0011-sandbox-release-by-id.md) (proposed) · **Requirements:** NFR-R2, NFR-R3, FR-SEC12, FR-SEC30, NFR-M7 · **Review list:** RL-2, RL-3, RL-13, RL-14
+**Status:** merged as PR #19 (`94332eb`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-8-pre--workflow-prerequisites), plan [`ticket-8-pre-plan.md`](../../tickets/ticket-8-pre-plan.md) · **Decision:** [0011](../../decisions/0011-sandbox-release-by-id.md) (proposed) · **Requirements:** NFR-R2, NFR-R3, FR-SEC12, FR-SEC30, NFR-M7 · **Review list:** RL-2, RL-3, RL-13, RL-14
 
 ## In one paragraph
 
