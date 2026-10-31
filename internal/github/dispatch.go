@@ -10,7 +10,7 @@ import (
 )
 
 // WorkflowStarter is how the receiver hands work to the workflow engine.
-// Ticket 8 implements it on Temporal; until then cmd/server logs instead.
+// cmd/server implements it on Temporal.
 type WorkflowStarter interface {
 	// StartFeature starts the feature workflow for an issue. A start
 	// whose WorkflowID is already in use returns ErrAlreadyStarted.
@@ -19,6 +19,11 @@ type WorkflowStarter interface {
 	// workflow. It returns ErrNoWorkflow when none is running under
 	// WorkflowID.
 	SignalCommand(ctx context.Context, req CommandSignal) error
+	// StartClosedCommand starts the short workflow that answers a command
+	// no running feature workflow could take, under
+	// ClosedCommandWorkflowID. A start for a comment already answered
+	// returns ErrAlreadyStarted.
+	StartClosedCommand(ctx context.Context, req CommandSignal) error
 }
 
 var (
@@ -83,6 +88,14 @@ type CommandSignal struct {
 // rename, names the same workflow, and the engine refuses a second start.
 func FeatureWorkflowID(repoID int64, issue int) string {
 	return "feature/" + strconv.FormatInt(repoID, 10) + "/" + strconv.Itoa(issue)
+}
+
+// ClosedCommandWorkflowID is the workflow ID that answers one command
+// whose issue had no running feature workflow. It derives from the
+// repository, the issue and the comment, so a redelivered comment names
+// the same workflow and the engine refuses a second answer.
+func ClosedCommandWorkflowID(repoID int64, issue int, commentID int64) string {
+	return "command/" + strconv.FormatInt(repoID, 10) + "/" + strconv.Itoa(issue) + "/" + strconv.FormatInt(commentID, 10)
 }
 
 // job is one unit of dispatch: exactly one of start and signal is set.
@@ -170,18 +183,24 @@ func (d *Dispatcher) Run(ctx context.Context) {
 }
 
 // dispatch makes one starter call and logs its outcome. A duplicate start
-// and a command for an issue with no run are expected outcomes, not
-// failures.
+// is an expected outcome, not a failure. A command for an issue with no
+// running feature workflow, because its run is delivered or cancelled or
+// never started, is handed to the closed-run workflow, which answers it
+// on the worker (outcome closed_run); a redelivery of that command is a
+// duplicate.
 func (d *Dispatcher) dispatch(ctx context.Context, j job) {
 	err := d.call(ctx, j)
 	workflowID, deliveryID := j.ids()
 	outcome := "dispatched"
+	if errors.Is(err, ErrNoWorkflow) && j.signal != nil {
+		outcome = "closed_run"
+		err = d.callClosed(ctx, *j.signal)
+		workflowID = ClosedCommandWorkflowID(j.signal.Repo.ID, j.signal.IssueNumber, j.signal.CommentID)
+	}
 	switch {
 	case err == nil:
 	case errors.Is(err, ErrAlreadyStarted):
 		outcome = "duplicate"
-	case errors.Is(err, ErrNoWorkflow):
-		outcome = "no_workflow"
 	default:
 		d.log.Error("webhook dispatch failed; redeliver to retry",
 			"workflow_id", workflowID, "delivery", deliveryID, "error", err)
@@ -211,6 +230,19 @@ func (d *Dispatcher) call(ctx context.Context, j job) (err error) {
 		return d.starter.StartFeature(ctx, *j.start)
 	}
 	return d.starter.SignalCommand(ctx, *j.signal)
+}
+
+// callClosed starts the closed-run workflow for a command, recovering a
+// panic as call does.
+func (d *Dispatcher) callClosed(ctx context.Context, sig CommandSignal) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, callTimeout)
+	defer cancel()
+	defer func() {
+		if recover() != nil {
+			err = errStarterPanicked
+		}
+	}()
+	return d.starter.StartClosedCommand(ctx, sig)
 }
 
 // Close stops accepting jobs and waits up to drain for queued jobs to be

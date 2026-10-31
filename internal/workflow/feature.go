@@ -3,6 +3,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/log"
@@ -19,13 +20,21 @@ import (
 // ends.
 var errStopped = errors.New("feature request stopped")
 
+// versionCommands gates ticket 8b's changes (decision 0012): the replies,
+// the audit rows, the status comment and /retry. A run started before 8b
+// reads DefaultVersion and keeps ticket 8's behaviour, so its history
+// still replays; a new run reads version 1.
+const versionCommands = "commands-8b"
+
 // FeatureWorkflow runs one issue: analyze it into a plan, post the plan,
 // wait for /approve, run the task as a child workflow, and deliver. Every
 // problem routes the feature request to needs_attention with a reason,
-// never to an automatic failed status; the workflow then waits, and in
-// ticket 8 only /cancel is handled there. A /cancel, or the workflow's
-// own cancellation, moves the feature request to cancelled after the
-// child has released its sandbox.
+// never to an automatic failed status; the workflow then waits for the
+// owner. /retry continues in the phase the feature request left, after a
+// cap check; /cancel, or the workflow's own cancellation, moves it to
+// cancelled after the child has released its sandbox. Every owner command
+// is answered and audited, and one status comment on the issue follows
+// every move.
 //
 // It returns nil when the feature request reaches cancelled through
 // /cancel, and the cancellation when Temporal cancelled it.
@@ -35,26 +44,39 @@ func FeatureWorkflow(ctx workflow.Context, in FeatureInput) error {
 		log:   workflow.GetLogger(ctx),
 		actor: store.ActorWorkflow(workflow.GetInfo(ctx).WorkflowExecution.ID),
 		st:    Status{Status: contracts.FeaturePlanning},
+		v8b:   workflow.GetVersion(ctx, versionCommands, workflow.DefaultVersion, 1) == 1,
 	}
 	if err := workflow.SetQueryHandler(ctx, QueryStatus, func() (Status, error) { return f.st, nil }); err != nil {
 		return err
 	}
 	f.listen(ctx)
+	f.startResponder(ctx)
 	defer f.sweep(ctx)
 
-	err := f.run(ctx)
-	if err == nil {
-		err = f.awaitCancel(ctx)
+	err := f.run(ctx, f.planSteps())
+	for err == nil {
+		var steps []step
+		if steps, err = f.awaitOwner(ctx); steps == nil {
+			break
+		}
+		err = f.run(ctx, steps)
 	}
 	if ctx.Err() != nil {
 		f.closeAfterWorkflowCancel(ctx)
+		f.drain(ctx)
 		return ctx.Err()
 	}
+	f.drain(ctx)
 	if errors.Is(err, errStopped) {
 		return nil
 	}
 	return err
 }
+
+// step is one phase of the run. A step that does not apply in the
+// current status returns nil and does nothing, so a list of steps can be
+// entered again from its start.
+type step func(workflow.Context) error
 
 // featureRun is one FeatureWorkflow in progress. Its fields are read by
 // the signal handlers and the status query.
@@ -62,20 +84,41 @@ type featureRun struct {
 	in    FeatureInput
 	log   log.Logger
 	actor string
+	// v8b is set for a run started under ticket 8b's code.
+	v8b bool
 
 	st      Status
 	frRev   int
 	planRev int
+	// ordinal is the first attempt ordinal of the next task run: 1, or
+	// one past the highest after a /retry.
+	ordinal int
+	// lastTask is the task's passed result, kept so a /retry after a
+	// failed delivery delivers it again rather than run a new attempt.
+	lastTask *TaskResult
 
 	approval *github.CommandSignal
 	cancel   *github.CommandSignal
+	retries  []github.CommandSignal
+
+	// outbox holds the responses the responder has yet to send; closing
+	// asks it to stop once the outbox is empty, and responderDone is set
+	// when it has.
+	outbox        []outboxItem
+	closing       bool
+	responderDone bool
 }
 
-// run takes the feature request from planning to the point where it
+// planSteps are the steps from analysis: the whole run, and the resumption
+// of one that stopped in planning, which waits for /approve again.
+func (f *featureRun) planSteps() []step {
+	return []step{f.analyze, f.awaitApproval, f.approve, f.execute}
+}
+
+// run takes the feature request through steps to the point where it
 // waits: needs_attention after delivery or a problem. It returns
 // errStopped once the feature request is cancelled.
-func (f *featureRun) run(ctx workflow.Context) error {
-	steps := []func(workflow.Context) error{f.analyze, f.awaitApproval, f.approve, f.execute}
+func (f *featureRun) run(ctx workflow.Context, steps []step) error {
 	for _, step := range steps {
 		if err := step(ctx); err != nil {
 			return f.handle(ctx, err)
@@ -170,12 +213,39 @@ func (f *featureRun) execute(ctx workflow.Context) error {
 	if err := workflow.ExecuteActivity(smallOptions(ctx), acts.CreateTask, f.st.PlanID).Get(ctx, &task); err != nil {
 		return err
 	}
-	f.st.TaskID = task.TaskID
+	f.st.TaskID, f.ordinal = task.TaskID, 1
+	return f.runAndRoute(ctx)
+}
+
+// runAndRoute runs the task from f.ordinal and routes its result.
+func (f *featureRun) runAndRoute(ctx workflow.Context) error {
 	res, err := f.runTask(ctx)
 	if err != nil || f.cancel != nil {
 		return err
 	}
 	return f.routeTask(ctx, res)
+}
+
+// resumeExecute continues a feature request that stopped in executing:
+// a passed task whose delivery stopped is delivered again; otherwise the
+// task is reopened and runs from the next ordinal, keeping every earlier
+// attempt and its cost. A task never created is created.
+func (f *featureRun) resumeExecute(ctx workflow.Context) error {
+	if f.lastTask != nil {
+		return f.deliver(ctx, *f.lastTask)
+	}
+	if f.st.TaskID == "" {
+		return f.execute(ctx)
+	}
+	var res activity.ResumeTaskResult
+	err := workflow.ExecuteActivity(smallOptions(ctx), acts.ResumeTask, activity.ResumeTaskInput{
+		TaskID: f.st.TaskID, Actor: f.actor,
+	}).Get(ctx, &res)
+	if err != nil {
+		return err
+	}
+	f.ordinal = res.Ordinal
+	return f.runAndRoute(ctx)
 }
 
 // runTask runs the child and waits for it, or for /cancel, which cancels
@@ -185,12 +255,12 @@ func (f *featureRun) execute(ctx workflow.Context) error {
 func (f *featureRun) runTask(ctx workflow.Context) (TaskResult, error) {
 	childCtx, cancelChild := workflow.WithCancel(ctx)
 	childCtx = workflow.WithChildOptions(childCtx, workflow.ChildWorkflowOptions{
-		WorkflowID:          f.in.Start.WorkflowID + "/task/" + f.st.TaskID,
+		WorkflowID:          f.childID(),
 		ParentClosePolicy:   enumspb.PARENT_CLOSE_POLICY_TERMINATE,
 		WaitForCancellation: true,
 	})
 	fut := workflow.ExecuteChildWorkflow(childCtx, TaskWorkflow, TaskInput{
-		TaskID: f.st.TaskID, Ordinal: 1, BaseSHA: f.st.BaseSHA, RepoFullName: f.in.Start.Repo.FullName, Role: contracts.RoleImplementer,
+		TaskID: f.st.TaskID, Ordinal: f.ordinal, BaseSHA: f.st.BaseSHA, RepoFullName: f.in.Start.Repo.FullName, Role: contracts.RoleImplementer,
 	})
 	var res TaskResult
 	var childErr error
@@ -214,12 +284,24 @@ func (f *featureRun) runTask(ctx workflow.Context) (TaskResult, error) {
 	return res, nil
 }
 
+// childID is the task workflow's ID. The first run keeps ticket 8's ID,
+// so its history replays; a run resumed by /retry adds the ordinal it
+// starts from, so it never collides with the closed run before it.
+func (f *featureRun) childID() string {
+	id := f.in.Start.WorkflowID + "/task/" + f.st.TaskID
+	if f.ordinal > 1 {
+		id += "/" + strconv.Itoa(f.ordinal)
+	}
+	return id
+}
+
 // routeTask moves the feature request on from a finished task: a passed
 // task is delivered, and anything else stops in needs_attention with its
 // reason.
 func (f *featureRun) routeTask(ctx workflow.Context, res TaskResult) error {
 	switch res.Outcome {
 	case TaskPassed:
+		f.lastTask = &res
 		return f.deliver(ctx, res)
 	case TaskFailed:
 		f.needsAttention(ctx, activity.ReasonAttemptFailed)
@@ -251,23 +333,34 @@ func (f *featureRun) deliver(ctx workflow.Context, res TaskResult) error {
 	return nil
 }
 
-// awaitCancel is the needs_attention wait: only /cancel is handled here
-// in ticket 8. It also holds a feature request whose move to
-// needs_attention failed, so the workflow never ends with the record
-// open. Only a terminal feature request has nothing to wait for.
-func (f *featureRun) awaitCancel(ctx workflow.Context) error {
-	if !f.st.Status.CanMoveTo(contracts.FeatureCancelled) {
-		return nil
+// awaitOwner is the needs_attention wait, for /retry or /cancel. It also
+// holds a feature request whose move to needs_attention failed, so the
+// workflow never ends with the record open; /retry is not valid there, so
+// only /cancel ends that wait. Only a terminal feature request has
+// nothing to wait for. It returns the steps a /retry resumes with, or nil
+// steps when the run is over: closed, cancelled, or terminal.
+func (f *featureRun) awaitOwner(ctx workflow.Context) ([]step, error) {
+	for {
+		if !f.st.Status.CanMoveTo(contracts.FeatureCancelled) {
+			return nil, nil
+		}
+		if err := workflow.Await(ctx, func() bool { return f.cancel != nil || len(f.retries) > 0 }); err != nil {
+			return nil, err
+		}
+		if f.cancel != nil {
+			return nil, f.closeCancelled(ctx)
+		}
+		sig := f.retries[0]
+		f.retries = f.retries[1:]
+		if steps := f.retry(ctx, sig); steps != nil {
+			return steps, nil
+		}
 	}
-	if err := workflow.Await(ctx, func() bool { return f.cancel != nil }); err != nil {
-		return err
-	}
-	return f.closeCancelled(ctx)
 }
 
 // needsAttention makes the compare-and-set move to needs_attention with
-// reason, recording the phase it left in workflow state for ticket 8b's
-// /retry. awaiting_approval cannot move to needs_attention, so it steps
+// reason; transitionAs records the phase it left, which /retry returns
+// to. awaiting_approval cannot move to needs_attention, so it steps
 // back to planning first: the plan is unapproved, and /retry must not
 // skip /approve (FR-S5). If the move itself fails for good, the workflow
 // logs it and waits all the same: it must not fail.
@@ -277,12 +370,9 @@ func (f *featureRun) needsAttention(ctx workflow.Context, reason string) {
 			f.log.Error("stepping back to planning before needs_attention", "error", err)
 		}
 	}
-	left := f.st.Status
 	if err := f.transition(ctx, contracts.FeatureNeedsAttention, reason); err != nil {
 		f.log.Error("moving feature request to needs_attention", "reason", reason, "error", err)
-		return
 	}
-	f.st.PhaseLeft, f.st.Reason = left, reason
 }
 
 // closeCancelled closes the feature request after /cancel. If closing
@@ -349,6 +439,11 @@ func (f *featureRun) transition(ctx workflow.Context, to contracts.FeatureReques
 	return f.transitionAs(ctx, to, reason, f.actor)
 }
 
+// transitionAs makes the change as actor. It records, for the status
+// query and the status comment, the reason and the phase left when the
+// move is to needs_attention, and clears them on any other move; then it
+// queues a refresh of the status comment, so the comment follows every
+// move (FR-S12).
 func (f *featureRun) transitionAs(ctx workflow.Context, to contracts.FeatureRequestStatus, reason, actor string) error {
 	var rev int
 	err := workflow.ExecuteActivity(smallOptions(ctx), acts.Transition, activity.TransitionInput{
@@ -358,7 +453,13 @@ func (f *featureRun) transitionAs(ctx workflow.Context, to contracts.FeatureRequ
 	if err != nil {
 		return err
 	}
+	if to == contracts.FeatureNeedsAttention {
+		f.st.PhaseLeft, f.st.Reason = f.st.Status, reason
+	} else {
+		f.st.PhaseLeft, f.st.Reason = "", ""
+	}
 	f.st.Status, f.frRev = to, rev
+	f.refreshStatus(f.view())
 	return nil
 }
 

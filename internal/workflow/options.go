@@ -30,6 +30,23 @@ func smallOptions(ctx workflow.Context) workflow.Context {
 	})
 }
 
+// Responses, the status comment and the command replies, are bounded
+// tighter: they report on the run and are not part of it, so a GitHub
+// outage gives up on them after responseScheduleToClose rather than hold
+// the outbox for the hour a run step may take.
+const (
+	responseStartToClose    = time.Minute
+	responseScheduleToClose = 10 * time.Minute
+)
+
+// responseOptions are the options of the activities the responder runs.
+func responseOptions(ctx workflow.Context) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout:    responseStartToClose,
+		ScheduleToCloseTimeout: responseScheduleToClose,
+	})
+}
+
 // attemptOptions are RunAttempt's: the attempt queue paired with the
 // workflow's own, which the worker polls one at a time, a timeout computed by PrepareAttempt from
 // configuration and recorded in history (decision 0012), a heartbeat

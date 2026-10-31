@@ -1,5 +1,6 @@
 // Package workflow implements Conclave's Temporal workflows: the feature
-// workflow (analyze, implement, gate, deliver), its task children, and the
+// workflow (analyze, implement, gate, deliver), its task children, the
+// short workflow that answers a command for a closed run, and the
 // per-repository integration workflow.
 //
 // Code here is deterministic: no time.Now, no math/rand, no raw goroutines,

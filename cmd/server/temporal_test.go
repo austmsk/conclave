@@ -27,6 +27,7 @@ type fakeClient struct {
 
 	opts       client.StartWorkflowOptions
 	input      workflow.FeatureInput
+	closed     workflow.ClosedCommandInput
 	signalName string
 	signalArg  github.CommandSignal
 	workflowID string
@@ -34,7 +35,12 @@ type fakeClient struct {
 
 func (c *fakeClient) ExecuteWorkflow(_ context.Context, opts client.StartWorkflowOptions, _ any, args ...any) (client.WorkflowRun, error) {
 	c.opts = opts
-	c.input = args[0].(workflow.FeatureInput)
+	switch in := args[0].(type) {
+	case workflow.FeatureInput:
+		c.input = in
+	case workflow.ClosedCommandInput:
+		c.closed = in
+	}
 	return nil, c.startErr
 }
 
@@ -101,6 +107,40 @@ func TestSignalCommand(t *testing.T) {
 			}
 			if c.workflowID != req.WorkflowID || c.signalName != "approve" || c.signalArg.CommentID != 5 {
 				t.Errorf("signalled %s %q %+v", c.workflowID, c.signalName, c.signalArg)
+			}
+		})
+	}
+}
+
+// TestStartClosedCommand starts the closed-run workflow under the ID
+// derived from the comment, with RejectDuplicate, and maps a duplicate
+// start to ErrAlreadyStarted, so a redelivered comment is answered once.
+func TestStartClosedCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantErr error
+	}{
+		{name: "started"},
+		{name: "duplicate", err: serviceerror.NewWorkflowExecutionAlreadyStarted("started", "", ""), wantErr: github.ErrAlreadyStarted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &fakeClient{startErr: tt.err}
+			req := github.CommandSignal{
+				WorkflowID: github.FeatureWorkflowID(99, 7), Repo: github.RepoRef{ID: 99}, IssueNumber: 7, CommentID: 5,
+				ActorID: 4242, Command: github.Command{Name: github.CommandRetry},
+			}
+			err := newStarter(c).StartClosedCommand(context.Background(), req)
+			if !errors.Is(err, tt.wantErr) || (tt.wantErr == nil && err != nil) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if c.opts.ID != "command/99/7/5" || c.opts.TaskQueue != workflow.TaskQueue ||
+				c.opts.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE {
+				t.Errorf("options = %+v, want the comment's ID, the feature queue and RejectDuplicate", c.opts)
+			}
+			if c.closed.OwnerUserID != 4242 || c.closed.Signal.CommentID != 5 {
+				t.Errorf("input = %+v", c.closed)
 			}
 		})
 	}

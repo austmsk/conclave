@@ -277,6 +277,7 @@ type fakeGitHub struct {
 	clones      int
 	comments    []github.Comment
 	creates     int
+	edits       int
 	lostReplies int
 }
 
@@ -343,8 +344,20 @@ func (g *fakeGitHub) Push(context.Context, github.PushSpec) error {
 func (g *fakeGitHub) CreatePullRequest(context.Context, github.PullRequestSpec) (github.PullRequest, error) {
 	return github.PullRequest{}, errors.New("not in ticket 8")
 }
-func (g *fakeGitHub) EditComment(context.Context, github.RepoRef, int64, string) error {
-	return errors.New("not in ticket 8")
+
+// EditComment replaces the body of a comment the fake holds; an unknown
+// ID is refused, as GitHub refuses a comment this App did not post.
+func (g *fakeGitHub) EditComment(_ context.Context, _ github.RepoRef, id int64, body string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.comments {
+		if g.comments[i].ID == id {
+			g.comments[i].Body = body
+			g.edits++
+			return nil
+		}
+	}
+	return fmt.Errorf("comment %d: %w", id, github.ErrRefused)
 }
 func (g *fakeGitHub) AddReaction(context.Context, github.RepoRef, github.ReactionTarget, github.Reaction) error {
 	return errors.New("not in ticket 8")

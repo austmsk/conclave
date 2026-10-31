@@ -5,6 +5,8 @@ import (
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/github"
+	"github.com/austmsk/conclave/internal/llm"
+	"github.com/austmsk/conclave/internal/store"
 )
 
 // Activity inputs and results. Every field is a small serializable value:
@@ -170,4 +172,148 @@ type DeliverResult struct {
 	ArtifactHash string
 	BaseSHA      string
 	Detail       string
+}
+
+// CommandRef identifies one owner command for its audit row and its
+// reply: the signal's identity without the command's free text, which
+// neither needs.
+type CommandRef struct {
+	CommentID  int64
+	DeliveryID string
+	WorkflowID string
+	Repo       github.RepoRef
+	Issue      int
+	Command    github.CommandName
+	ActorID    int64
+}
+
+// CommandRefOf is the identity of the command a signal carries.
+func CommandRefOf(sig github.CommandSignal) CommandRef {
+	return CommandRef{
+		CommentID: sig.CommentID, DeliveryID: sig.DeliveryID, WorkflowID: sig.WorkflowID,
+		Repo: sig.Repo, Issue: sig.IssueNumber, Command: sig.Command.Name, ActorID: sig.ActorID,
+	}
+}
+
+// Command outcomes and rejection reasons, as the commands audit records
+// them.
+const (
+	CommandAccepted = store.CommandAccepted
+	CommandRejected = store.CommandRejected
+
+	// RejectNotValid: the command table does not list the command in the
+	// feature request's status.
+	RejectNotValid = "not_valid_in_status"
+	// RejectNotAvailable: /revise and /ask are in the table, but no
+	// Milestone 1 ticket implements them.
+	RejectNotAvailable = "not_available"
+	// RejectAlreadyPending: an /approve or /cancel arrived while an
+	// earlier one was still being acted on.
+	RejectAlreadyPending = "already_pending"
+	// RejectOverCap prefixes a /retry refused for a cap: over_cap:<kind>.
+	RejectOverCap = "over_cap"
+	// RejectResumeFailed: /retry passed the cap check, but the caps could
+	// not be read or the move out of needs_attention failed.
+	RejectResumeFailed = "resume_failed"
+	// RejectCancelled: a /retry overtaken by a /cancel.
+	RejectCancelled = "cancelled"
+	// RejectClosedRun: the run is delivered or cancelled.
+	RejectClosedRun = "closed_run"
+	// RejectNoRun: the issue has no feature request.
+	RejectNoRun = "no_run"
+	// RejectNoWorkflow: the feature request is live, but no workflow is
+	// running for it.
+	RejectNoWorkflow = "no_workflow"
+)
+
+// RecordCommandInput is one command's audit row.
+type RecordCommandInput struct {
+	Ref              CommandRef
+	FeatureRequestID string
+	Status           contracts.FeatureRequestStatus
+	Outcome          string
+	Reason           string
+}
+
+// ReplyKind says what a command reply reports.
+type ReplyKind string
+
+const (
+	ReplyNotValid     ReplyKind = "not_valid"
+	ReplyNotAvailable ReplyKind = "not_available"
+	ReplyStatus       ReplyKind = "status"
+	ReplyHelp         ReplyKind = "help"
+	ReplyOverCap      ReplyKind = "over_cap"
+	ReplyResumeFailed ReplyKind = "resume_failed"
+	ReplyClosedRun    ReplyKind = "closed_run"
+	ReplyNoRun        ReplyKind = "no_run"
+	ReplyNoWorkflow   ReplyKind = "no_workflow"
+)
+
+// RunView is the feature request as the owner is shown it: its status,
+// the reason and the phase it left when it is in needs_attention, and the
+// commands the command table allows in that status, in the table's order.
+type RunView struct {
+	FeatureRequestID string
+	Status           contracts.FeatureRequestStatus
+	Reason           string
+	PhaseLeft        contracts.FeatureRequestStatus
+	Commands         []github.CommandName
+	// Cap is set when a /retry was refused for a cap still exceeded.
+	Cap *CapCheck
+}
+
+// ReplyInput is one reply to a command. The reply is rendered by the
+// activity, from these values, so the workflow decides what to say and
+// never the words.
+type ReplyInput struct {
+	Ref    CommandRef
+	Kind   ReplyKind
+	View   RunView
+	Detail string
+}
+
+// StatusCommentInput is the status comment's content and where it goes.
+type StatusCommentInput struct {
+	Repo  github.RepoRef
+	Issue int
+	View  RunView
+}
+
+// CapCheck is the feature request's spend against each platform cap, and
+// the first cap at or over its limit, if any.
+type CapCheck struct {
+	Exceeded             llm.BudgetKind
+	FeatureRequestTokens int
+	FeatureRequestCap    int
+	MonthUSD             float64
+	MonthCap             float64
+}
+
+// ResumeTaskInput reopens a task in needs_attention for a /retry.
+type ResumeTaskInput struct {
+	TaskID string
+	Actor  string
+}
+
+// ResumeTaskResult is the ordinal the task's next attempt takes.
+type ResumeTaskResult struct {
+	Ordinal int
+}
+
+// LookupFeatureInput names the issue's feature workflow and the command
+// a closed run was asked to answer.
+type LookupFeatureInput struct {
+	WorkflowID string
+	CommentID  int64
+}
+
+// LookupFeatureResult is the feature request recorded under a workflow
+// ID, if any, and whether the command is already in the audit.
+type LookupFeatureResult struct {
+	Found            bool
+	FeatureRequestID string
+	Status           contracts.FeatureRequestStatus
+	Reason           string
+	Recorded         bool
 }

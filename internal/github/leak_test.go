@@ -51,6 +51,11 @@ func (s *activityStarter) SignalCommand(_ context.Context, req github.CommandSig
 	return nil
 }
 
+func (s *activityStarter) StartClosedCommand(_ context.Context, req github.CommandSignal) error {
+	s.log.Info("closed command", "workflow_id", req.WorkflowID, "request", req)
+	return nil
+}
+
 func (s *activityStarter) note(op string, err error) {
 	if err == nil {
 		return

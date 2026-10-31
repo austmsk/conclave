@@ -65,3 +65,27 @@ func (s temporalStarter) SignalCommand(ctx context.Context, req github.CommandSi
 	}
 	return nil
 }
+
+// StartClosedCommand starts the workflow that answers a command for an
+// issue with no running feature workflow, on the worker, which holds the
+// database and the App key this server does not. The ID derives from the
+// comment, and a duplicate is refused, so a redelivered comment is
+// answered once.
+func (s temporalStarter) StartClosedCommand(ctx context.Context, req github.CommandSignal) error {
+	id := github.ClosedCommandWorkflowID(req.Repo.ID, req.IssueNumber, req.CommentID)
+	_, err := s.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:                                       id,
+		TaskQueue:                                s.taskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
+	}, workflow.ClosedCommandWorkflow, workflow.ClosedCommandInput{Signal: req, OwnerUserID: s.ownerID})
+	var started *serviceerror.WorkflowExecutionAlreadyStarted
+	if errors.As(err, &started) {
+		return fmt.Errorf("starting %s: %w", id, github.ErrAlreadyStarted)
+	}
+	if err != nil {
+		return fmt.Errorf("starting %s: %w", id, err)
+	}
+	return nil
+}

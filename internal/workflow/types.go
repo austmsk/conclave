@@ -49,8 +49,7 @@ func SignalName(name github.CommandName) string {
 }
 
 // commandNames is every command the receiver listens for, in a fixed
-// order. Only approve and cancel act in ticket 8; the rest are logged and
-// dropped until ticket 8b replies to them.
+// order. validCommands decides which of them apply in each status.
 var commandNames = []github.CommandName{
 	github.CommandApprove, github.CommandCancel, github.CommandRevise, github.CommandAsk,
 	github.CommandStatus, github.CommandRetry, github.CommandHelp,
@@ -58,8 +57,9 @@ var commandNames = []github.CommandName{
 
 // Status is the feature workflow's view of its feature request, returned
 // by QueryStatus. PhaseLeft is the status the feature request left for
-// needs_attention: ticket 8b's /retry returns to it. It lives here, not
-// in Postgres; state_transitions.from_state records it durably.
+// needs_attention: /retry returns to it. Reason and PhaseLeft are cleared
+// on every move out of needs_attention. PhaseLeft lives here, not in
+// Postgres; state_transitions.from_state records it durably.
 type Status struct {
 	Status           contracts.FeatureRequestStatus
 	Reason           string
