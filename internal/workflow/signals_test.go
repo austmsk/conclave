@@ -149,6 +149,22 @@ func TestSignals(t *testing.T) {
 	}
 }
 
+// TestApproveDuringPlanningIsDropped sends /approve while Analyze is
+// still making the plan. The signal is queued before Analyze's result, so
+// the workflow sees it in planning, deterministically and with no sleep.
+// It must be dropped, not saved for later: the owner approves the plan
+// they were shown (FR-S5), so with no later /approve nothing is approved.
+func TestApproveDuringPlanningIsDropped(t *testing.T) {
+	w := newWorld()
+	env := newEnv(t, w)
+	w.duringAnalyze = func() { env.SignalWorkflow(SignalName(github.CommandApprove), command(github.CommandApprove, 70)) }
+	signalAfter(env, time.Hour, command(github.CommandCancel, 71))
+	env.ExecuteWorkflow(FeatureWorkflow, featureInput())
+	checkCompleted(t, env)
+	equal(t, "Approve calls", w.called("Approve"), 0)
+	equalSlices(t, "moves", w.moves(), []string{toApproval, "awaiting_approval>cancelled"})
+}
+
 type timedSignal struct {
 	after time.Duration
 	sig   github.CommandSignal

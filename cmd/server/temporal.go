@@ -17,9 +17,12 @@ import (
 // temporalStarter is the receiver's workflow engine: it starts one
 // feature workflow per issue and delivers owner commands as signals.
 type temporalStarter struct {
-	client  client.Client
-	ownerID int64
-	log     *slog.Logger
+	client client.Client
+	// taskQueue is workflow.TaskQueue; the live test uses its own, so no
+	// running worker picks up its workflows.
+	taskQueue string
+	ownerID   int64
+	log       *slog.Logger
 }
 
 var _ github.WorkflowStarter = temporalStarter{}
@@ -31,7 +34,7 @@ var _ github.WorkflowStarter = temporalStarter{}
 func (s temporalStarter) StartFeature(ctx context.Context, req github.FeatureStart) error {
 	_, err := s.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                                       req.WorkflowID,
-		TaskQueue:                                workflow.TaskQueue,
+		TaskQueue:                                s.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,

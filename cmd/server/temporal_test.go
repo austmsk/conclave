@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"testing"
+	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
@@ -41,7 +44,7 @@ func (c *fakeClient) SignalWorkflow(_ context.Context, id, _ string, name string
 }
 
 func newStarter(c *fakeClient) temporalStarter {
-	return temporalStarter{client: c, ownerID: 4242, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	return temporalStarter{client: c, taskQueue: workflow.TaskQueue, ownerID: 4242, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func TestStartFeature(t *testing.T) {
@@ -100,5 +103,47 @@ func TestSignalCommand(t *testing.T) {
 				t.Errorf("signalled %s %q %+v", c.workflowID, c.signalName, c.signalArg)
 			}
 		})
+	}
+}
+
+// liveTemporalEnv names the Temporal frontend for the live starter test,
+// such as localhost:7233 from make dev. Unset, the test skips: CI has no
+// Temporal server, and the fake above covers the error mapping.
+const liveTemporalEnv = "CONCLAVE_TEMPORAL_ADDRESS"
+
+// TestStarterAgainstLiveTemporal has a real server refuse a second start
+// of an issue's workflow ID, while the first runs and after it has closed
+// (RejectDuplicate), and report a signal to an ID with no workflow as
+// ErrNoWorkflow. Nothing polls the test's task queue, so no workflow
+// code runs.
+func TestStarterAgainstLiveTemporal(t *testing.T) {
+	addr := os.Getenv(liveTemporalEnv)
+	if addr == "" {
+		t.Skipf("%s is not set", liveTemporalEnv)
+	}
+	c, err := client.Dial(client.Options{HostPort: addr})
+	if err != nil {
+		t.Fatalf("dialling %s: %v", addr, err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s := temporalStarter{client: c, taskQueue: "t8b-starter-test", ownerID: 4242, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	req := github.FeatureStart{WorkflowID: fmt.Sprintf("t8b-start-%d", time.Now().UnixNano()), DeliveryID: "d1"}
+	if err := s.StartFeature(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartFeature(ctx, req); !errors.Is(err, github.ErrAlreadyStarted) {
+		t.Fatalf("second start while running: %v, want ErrAlreadyStarted", err)
+	}
+	if err := c.TerminateWorkflow(ctx, req.WorkflowID, "", "test cleanup"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartFeature(ctx, req); !errors.Is(err, github.ErrAlreadyStarted) {
+		t.Fatalf("start after the run closed: %v, want ErrAlreadyStarted", err)
+	}
+	none := github.CommandSignal{WorkflowID: req.WorkflowID + "-none", Command: github.Command{Name: github.CommandCancel}}
+	if err := s.SignalCommand(ctx, none); !errors.Is(err, github.ErrNoWorkflow) {
+		t.Fatalf("signal to no workflow: %v, want ErrNoWorkflow", err)
 	}
 }

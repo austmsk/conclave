@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,7 +15,9 @@ import (
 	"go.temporal.io/api/temporalproto"
 	sdkactivity "go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/austmsk/conclave/internal/activity"
 	"github.com/austmsk/conclave/internal/contracts"
@@ -69,6 +72,30 @@ func TestReplayMidAttempt(t *testing.T) {
 				t.Fatalf("replay: %v", err)
 			}
 		})
+	}
+}
+
+// TestReplayDetectsRerun replays the feature history against a workflow
+// that runs Analyze a second time before carrying on: the replayer must
+// refuse it, or TestReplayMidAttempt would pass whatever the code did.
+func TestReplayDetectsRerun(t *testing.T) {
+	rerun := func(ctx workflow.Context, in FeatureInput) error {
+		var res activity.AnalyzeResult
+		if err := workflow.ExecuteActivity(smallOptions(ctx), acts.Analyze, activity.AnalyzeInput{}).Get(ctx, &res); err != nil {
+			return err
+		}
+		return FeatureWorkflow(ctx, in)
+	}
+	hist, err := client.HistoryFromJSON(mustOpen(t, featureHistory), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := worker.NewWorkflowReplayer()
+	r.RegisterWorkflowWithOptions(rerun, workflow.RegisterOptions{Name: "FeatureWorkflow"})
+	r.RegisterWorkflow(TaskWorkflow)
+	quiet := tlog.NewStructuredLogger(slog.New(slog.DiscardHandler))
+	if err := r.ReplayWorkflowHistory(quiet, hist); err == nil {
+		t.Fatal("a workflow that runs Analyze twice replayed cleanly")
 	}
 }
 

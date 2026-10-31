@@ -55,6 +55,8 @@ type world struct {
 
 	// problem makes Analyze report an issue that cannot be planned.
 	problem string
+	// duringAnalyze, when set, runs inside Analyze before it returns.
+	duringAnalyze func()
 	// run is what RunAttempt does for an ordinal. It records the attempt
 	// through finish and returns what the activity would.
 	run func(ctx context.Context, w *world, ordinal int) (activity.AttemptOutcome, error)
@@ -154,6 +156,9 @@ func ordinalOf(id string) int {
 func (w *world) Analyze(_ context.Context, in activity.AnalyzeInput) (activity.AnalyzeResult, error) {
 	if err := w.count("Analyze"); err != nil {
 		return activity.AnalyzeResult{}, err
+	}
+	if w.duringAnalyze != nil {
+		w.duringAnalyze()
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()

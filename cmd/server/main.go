@@ -16,6 +16,7 @@ import (
 
 	"github.com/austmsk/conclave/internal/github"
 	"github.com/austmsk/conclave/internal/llm"
+	"github.com/austmsk/conclave/internal/workflow"
 )
 
 const (
@@ -61,7 +62,7 @@ func run() error {
 		return fmt.Errorf("connecting to Temporal at %s: %w", *temporalAddr, err)
 	}
 	defer tc.Close()
-	disp := github.NewDispatcher(temporalStarter{client: tc, ownerID: cfg.OwnerUserID, log: log}, log, dispatchDepth)
+	disp := github.NewDispatcher(temporalStarter{client: tc, taskQueue: workflow.TaskQueue, ownerID: cfg.OwnerUserID, log: log}, log, dispatchDepth)
 	recv, err := github.NewReceiver(cfg, enabled, webhookSecret, disp, log)
 	if err != nil {
 		return err
