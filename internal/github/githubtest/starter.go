@@ -7,12 +7,15 @@ import (
 	"github.com/austmsk/conclave/internal/github"
 )
 
-// Call is one call a FakeStarter answered: exactly one of Start and Signal
-// is set, and Err is what the call returned.
+// Call is one call a FakeStarter answered: exactly one of Start, Signal
+// and Closed is set, and Err is what the call returned. Closed is a
+// StartClosedCommand, and WorkflowID the ID it started.
 type Call struct {
-	Start  *github.FeatureStart
-	Signal *github.CommandSignal
-	Err    error
+	Start      *github.FeatureStart
+	Signal     *github.CommandSignal
+	Closed     *github.CommandSignal
+	WorkflowID string
+	Err        error
 }
 
 // FakeStarter is a github.WorkflowStarter that behaves like the engine on
@@ -78,6 +81,28 @@ func (f *FakeStarter) SignalCommand(ctx context.Context, req github.CommandSigna
 		err = github.ErrNoWorkflow
 	}
 	f.calls = append(f.calls, Call{Signal: &req, Err: err})
+	return err
+}
+
+// StartClosedCommand records req and starts its closed-command workflow
+// ID, refusing a second start under the same ID, as the engine does for
+// a run that is open or completed. The fake has no failed runs.
+func (f *FakeStarter) StartClosedCommand(ctx context.Context, req github.CommandSignal) error {
+	if err := f.wait(ctx); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := github.ClosedCommandWorkflowID(req.Repo.ID, req.IssueNumber, req.CommentID)
+	err := f.Err
+	switch {
+	case err != nil:
+	case f.started[id]:
+		err = github.ErrAlreadyStarted
+	default:
+		f.mark(id)
+	}
+	f.calls = append(f.calls, Call{Closed: &req, WorkflowID: id, Err: err})
 	return err
 }
 

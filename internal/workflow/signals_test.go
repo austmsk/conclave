@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -15,30 +16,44 @@ import (
 	"github.com/austmsk/conclave/internal/llm"
 )
 
-// TestCommandApplies is the gate every command passes, over every status:
-// /approve only in awaiting_approval, /cancel in every status that is not
-// terminal, every other command nowhere until ticket 8b.
+// liveStatuses are the statuses a running feature workflow decides
+// commands in.
+var liveStatuses = []contracts.FeatureRequestStatus{
+	contracts.FeaturePlanning, contracts.FeatureAwaitingApproval, contracts.FeatureExecuting, contracts.FeatureNeedsAttention,
+}
+
+// commandTable is the ARCHITECTURE.md command table plus /help in every
+// live status, written out here rather than read from validCommands, so
+// the test checks the code against the document.
+var commandTable = map[contracts.FeatureRequestStatus][]github.CommandName{
+	contracts.FeaturePlanning:         {github.CommandCancel, github.CommandAsk, github.CommandHelp},
+	contracts.FeatureAwaitingApproval: {github.CommandApprove, github.CommandRevise, github.CommandCancel, github.CommandAsk, github.CommandHelp},
+	contracts.FeatureExecuting:        {github.CommandCancel, github.CommandStatus, github.CommandAsk, github.CommandHelp},
+	contracts.FeatureNeedsAttention:   {github.CommandRetry, github.CommandRevise, github.CommandCancel, github.CommandAsk, github.CommandHelp},
+	contracts.FeatureDelivered:        {github.CommandRevise},
+	contracts.FeatureCancelled:        nil,
+}
+
+// TestCommandApplies is the gate every command passes, all seven
+// commands over all six statuses, against the command table.
 func TestCommandApplies(t *testing.T) {
-	statuses := []contracts.FeatureRequestStatus{
-		contracts.FeaturePlanning, contracts.FeatureAwaitingApproval, contracts.FeatureExecuting,
-		contracts.FeatureNeedsAttention, contracts.FeatureDelivered, contracts.FeatureCancelled,
-	}
-	want := map[github.CommandName][]contracts.FeatureRequestStatus{
-		github.CommandApprove: {contracts.FeatureAwaitingApproval},
-		github.CommandCancel: {
-			contracts.FeaturePlanning, contracts.FeatureAwaitingApproval,
-			contracts.FeatureExecuting, contracts.FeatureNeedsAttention,
-		},
-	}
+	statuses := append(slices.Clone(liveStatuses), contracts.FeatureDelivered, contracts.FeatureCancelled)
 	for _, name := range commandNames {
 		for _, st := range statuses {
 			t.Run(fmt.Sprintf("%s in %s", name, st), func(t *testing.T) {
-				expect := false
-				for _, ok := range want[name] {
-					expect = expect || ok == st
-				}
-				equal(t, "applies", commandApplies(name, st), expect)
+				equal(t, "applies", commandApplies(name, st), slices.Contains(commandTable[st], name))
 			})
+		}
+	}
+}
+
+// TestValidCommandsOrder keeps validCommands in the table's order, which
+// /help and the status comment show.
+func TestValidCommandsOrder(t *testing.T) {
+	for st, want := range commandTable {
+		got := validCommands(st)
+		if !slices.Equal(got, want) {
+			t.Errorf("validCommands(%s) = %v, want %v", st, got, want)
 		}
 	}
 }
@@ -111,7 +126,7 @@ var signalCases = []struct {
 		wantMoves:    []string{toApproval, toExecuting, "executing>needs_attention attempt_failed", toCancelled},
 	},
 	{
-		name: "ticket 8b's commands are dropped",
+		name: "/retry and /status while awaiting approval change nothing",
 		signals: []timedSignal{
 			{time.Hour, command(github.CommandRetry, 40)},
 			{time.Hour, command(github.CommandStatus, 41)},

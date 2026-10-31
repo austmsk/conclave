@@ -44,6 +44,13 @@ func seedAccounting(t *testing.T, ctx context.Context, tx pgx.Tx, s ids) {
 	if err != nil {
 		t.Fatalf("seeding tool call: %v", err)
 	}
+	_, err = tx.Exec(ctx, `INSERT INTO commands
+		(comment_id, delivery_id, workflow_id, repo_github_id, issue_number, feature_request_id,
+		 command, actor, status_at_decision, outcome, reason)
+		VALUES (1, 'd-1', 'feature/1/1', 1, 1, $1, 'retry', 'github:1', 'needs_attention', 'rejected', 'over_cap:month')`, s.feature)
+	if err != nil {
+		t.Fatalf("seeding command: %v", err)
+	}
 }
 
 // TestAppRoleCannotAlterAppendOnlyRows attempts the attack in threat T6: a
@@ -80,6 +87,12 @@ func TestAppRoleCannotAlterAppendOnlyRows(t *testing.T) {
 		{"update tool call", `UPDATE tool_calls SET rejected = false, error = NULL`, permissionDenied},
 		{"delete tool call", `DELETE FROM tool_calls`, permissionDenied},
 		{"truncate tool calls", `TRUNCATE tool_calls`, permissionDenied},
+		{"insert command", `INSERT INTO commands
+			(comment_id, delivery_id, workflow_id, repo_github_id, issue_number, command, actor, outcome)
+			VALUES (2, 'd-2', 'feature/1/1', 1, 1, 'help', 'github:1', 'accepted')`, ""},
+		{"update command", `UPDATE commands SET outcome = 'accepted', reason = NULL`, permissionDenied},
+		{"delete command", `DELETE FROM commands`, permissionDenied},
+		{"truncate commands", `TRUNCATE commands`, permissionDenied},
 		{"update ordinary table", `UPDATE repos SET default_branch = 'trunk'`, ""},
 		{"delete from ordinary table", `DELETE FROM repos`, permissionDenied},
 		{"drop append-only table", `DROP TABLE cost_events`, permissionDenied},

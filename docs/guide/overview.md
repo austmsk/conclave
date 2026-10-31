@@ -21,7 +21,7 @@ This page follows one request through Milestone 1, the walking skeleton: one iss
  3. Records written ──────────── internal/store                   ticket 2 ✓
         │   (feature request, plan, task, attempt; every state change audited)
         ▼
- 4. Owner approves ───────────── /approve, base commit pinned     tickets 6, 8
+ 4. Owner approves ───────────── /approve, base commit pinned     tickets 6, 8, 8b
         │
         ▼
  5. Tree cloned and cleaned ──── internal/sandbox                 ticket 3 ✓
@@ -64,9 +64,11 @@ The rows themselves are created by idempotent store functions (`EnsureRepo`, `Cr
 
 A feature request has six statuses: `planning`, `awaiting_approval`, `executing`, `needs_attention`, `delivered`, `cancelled`. There is no `failed`. Every problem, including a budget cap, moves it to `needs_attention` with a reason, and the owner decides what happens next (`/retry`, `/revise`, `/cancel`).
 
-### 4. Owner approves (tickets 6 and 8)
+### 4. Owner approves (tickets 6, 8 and 8b)
 
 The owner comments `/approve`. Approval pins the base commit (`base_sha`), and every task runs against that commit even if the default branch moves on.
+
+Every owner command is decided against the status the feature request is in when it arrives, using one command table (`ARCHITECTURE.md`, `workflow.validCommands`). A command that doesn't fit the status gets a reply and changes nothing. `/status` and `/help` reply. `/retry` from `needs_attention` re-checks the budget caps, then continues in the phase the run left. A stop during planning therefore still waits for a fresh `/approve`. Each command is recorded, accepted or rejected, in the append-only `commands` table. One status comment on the issue is edited in place after every move, and it names the reason, any cap that was hit, and the commands available. A command for a run that has already ended (`delivered`, `cancelled`) is answered by a short workflow on the worker. See [ticket 8b](tickets/08b-commands-and-status-surface.md).
 
 ### 5–6. Tree prepared, sandbox created (ticket 3, merged)
 

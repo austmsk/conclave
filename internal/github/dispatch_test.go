@@ -175,11 +175,61 @@ func TestDispatcherSurvivesStarterPanic(t *testing.T) {
 	disp.Close(5 * time.Second)
 	<-ran
 
+	// The start never happened, so the command finds no workflow and is
+	// handed to the closed-run workflow.
 	calls := fake.Calls()
-	if len(calls) != 1 || calls[0].Signal == nil {
-		t.Fatalf("after a panicking start the command was not dispatched: %d calls", len(calls))
+	if len(calls) != 2 || calls[0].Signal == nil || calls[1].Closed == nil {
+		t.Fatalf("after a panicking start the command was not dispatched: %+v", calls)
 	}
 	if out := logs.String(); !strings.Contains(out, "starter panicked") || strings.Contains(out, "misconfigured") {
 		t.Fatalf("want the panic logged as a fixed error, without its value:\n%s", out)
+	}
+}
+
+// TestNoWorkflowStartsClosedCommand sends commands to an issue with no
+// running feature workflow, as for a run that is delivered or cancelled,
+// or never started: the dispatcher cannot tell which, so each is handed
+// to the closed-run workflow, under an ID derived from the comment. The
+// workflow answers by status; TestClosedCommandWorkflow in
+// internal/workflow covers delivered and cancelled. A redelivery of the
+// same comment maps to the same ID and is refused as a duplicate, so it
+// is answered once.
+func TestNoWorkflowStartsClosedCommand(t *testing.T) {
+	h := newHarness(t, options{})
+	h.sendAs(t, "eeee-0001", "issue_comment", comment("/retry", 300))
+	h.sendAs(t, "eeee-0002", "issue_comment", comment("/retry", 300))
+	h.sendAs(t, "eeee-0003", "issue_comment", comment("/status", 301))
+	h.settle(t)
+
+	var closed []githubtest.Call
+	for _, c := range h.starter.Calls() {
+		if c.Closed != nil {
+			closed = append(closed, c)
+		}
+	}
+	if len(closed) != 3 {
+		t.Fatalf("closed-command starts = %+v, want one per delivery", closed)
+	}
+	e := githubtest.CommentEvent("")
+	first := github.ClosedCommandWorkflowID(e.RepoID, e.IssueNumber, 300)
+	tests := []struct {
+		delivery string
+		id       string
+		err      error
+		outcome  string
+	}{
+		{"eeee-0001", first, nil, "closed_run"},
+		{"eeee-0002", first, github.ErrAlreadyStarted, "duplicate"},
+		{"eeee-0003", github.ClosedCommandWorkflowID(e.RepoID, e.IssueNumber, 301), nil, "closed_run"},
+	}
+	for i, tt := range tests {
+		c := closed[i]
+		if c.WorkflowID != tt.id || !errors.Is(c.Err, tt.err) || c.Closed.DeliveryID != tt.delivery {
+			t.Errorf("start %d = %s %v (delivery %s), want %s %v (delivery %s)", i, c.WorkflowID, c.Err, c.Closed.DeliveryID, tt.id, tt.err, tt.delivery)
+		}
+		recs := h.records(t, "delivery", tt.delivery)
+		if len(recs) != 1 || recs[0]["outcome"] != tt.outcome || recs[0]["workflow_id"] != tt.id {
+			t.Errorf("delivery %s logged %v, want outcome %s for %s", tt.delivery, recs, tt.outcome, tt.id)
+		}
 	}
 }

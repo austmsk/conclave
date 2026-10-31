@@ -229,6 +229,7 @@ func serve(ctx context.Context, o options, acts *activity.Activities, log *slog.
 	feature := worker.New(c, workflow.TaskQueue, worker.Options{})
 	feature.RegisterWorkflow(workflow.FeatureWorkflow)
 	feature.RegisterWorkflow(workflow.TaskWorkflow)
+	feature.RegisterWorkflow(workflow.ClosedCommandWorkflow)
 	feature.RegisterActivity(acts)
 	attempts := worker.New(c, workflow.AttemptTaskQueue, worker.Options{MaxConcurrentActivityExecutionSize: 1})
 	attempts.RegisterActivityWithOptions(acts.RunAttempt, sdkactivity.RegisterOptions{Name: "RunAttempt"})

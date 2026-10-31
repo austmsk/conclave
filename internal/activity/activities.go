@@ -106,6 +106,7 @@ type Activities struct {
 	toolCalls   *store.ToolCalls
 	gateResults *store.GateResults
 	repos       *store.RepoDirectory
+	ledger      *store.CostLedger
 }
 
 // New validates d and returns the activities.
@@ -124,6 +125,7 @@ func New(d Deps) (*Activities, error) {
 		toolCalls:   store.NewToolCalls(d.DB),
 		gateResults: store.NewGateResults(d.DB),
 		repos:       store.NewRepoDirectory(d.DB),
+		ledger:      store.NewCostLedger(d.DB),
 	}, nil
 }
 

@@ -99,3 +99,55 @@ func (a *Activities) cancelTaskRow(ctx context.Context, in CancelTaskInput) erro
 		}))
 	})
 }
+
+// ResumeTask reopens a task the workflow stopped in needs_attention, for
+// /retry, and returns the ordinal its next attempt takes: one past the
+// highest it has. Every earlier attempt, and the cost recorded against it,
+// stays as it is.
+//
+// Idempotent retry: the move to running is conditional on the state and
+// revision just read, and a task already running is left alone, so a
+// retry after a commit whose result was lost finds the task running and
+// moves nothing. No attempt is created here, so the ordinal a retry
+// computes is the one the first call did. There is no outside action. A
+// task that is done or cancelled, or that has an attempt still running,
+// is refused.
+func (a *Activities) ResumeTask(ctx context.Context, in ResumeTaskInput) (ResumeTaskResult, error) {
+	res, err := a.resumeTask(ctx, in)
+	return res, Temporal(err)
+}
+
+func (a *Activities) resumeTask(ctx context.Context, in ResumeTaskInput) (ResumeTaskResult, error) {
+	t, err := readTask(ctx, a.d.DB, in.TaskID)
+	if err != nil {
+		return ResumeTaskResult{}, err
+	}
+	attempts, err := attemptsWhere(ctx, a.d.DB, whereTask, in.TaskID)
+	if err != nil {
+		return ResumeTaskResult{}, err
+	}
+	next := 1
+	for _, at := range attempts {
+		if at.State == contracts.AttemptRunning {
+			return ResumeTaskResult{}, fmt.Errorf("%w: task %s has attempt %s still running", errNonRetryable, in.TaskID, at.AttemptID)
+		}
+		next = max(next, at.Ordinal+1)
+	}
+	switch t.Status {
+	case contracts.TaskRunning:
+		return ResumeTaskResult{Ordinal: next}, nil
+	case contracts.TaskNeedsAttention:
+	default:
+		return ResumeTaskResult{}, fmt.Errorf("%w: task %s is %s and cannot resume", errNonRetryable, in.TaskID, t.Status)
+	}
+	err = pgx.BeginFunc(ctx, a.d.DB, func(tx pgx.Tx) error {
+		return applied(store.Transition(ctx, tx, store.TransitionRequest{
+			Kind: contracts.EntityTask, ID: in.TaskID, Revision: t.Revision,
+			From: string(t.Status), To: string(contracts.TaskRunning), Actor: in.Actor,
+		}))
+	})
+	if err != nil {
+		return ResumeTaskResult{}, fmt.Errorf("resuming task %s: %w", in.TaskID, err)
+	}
+	return ResumeTaskResult{Ordinal: next}, nil
+}

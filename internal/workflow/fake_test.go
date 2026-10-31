@@ -65,6 +65,24 @@ type world struct {
 	// refuseMovesTo makes the next n feature request moves to a status
 	// fail permanently, as a move Postgres refuses would.
 	refuseMovesTo map[contracts.FeatureRequestStatus]int
+
+	// caps is what CheckCaps reports; duringCheckCaps, when set, runs
+	// inside CheckCaps before it returns.
+	caps            activity.CapCheck
+	duringCheckCaps func()
+	// status is the one status comment on the issue, nil until posted;
+	// statusPosts counts creates, statusEdits edits.
+	status      *activity.RunView
+	statusPosts int
+	statusEdits int
+	// audit is the commands table, keyed by comment ID; auditOrder is
+	// insertion order.
+	audit      map[int64]activity.RecordCommandInput
+	auditOrder []int64
+	// replies holds the one reply per command comment.
+	replies map[int64]activity.ReplyInput
+	// lookup is what LookupFeature reports.
+	lookup activity.LookupFeatureResult
 }
 
 type fakeAttempt struct {
@@ -75,7 +93,10 @@ type fakeAttempt struct {
 }
 
 func newWorld() *world {
-	return &world{fr: "", calls: map[string]int{}, fail: map[string]error{}, refuseMovesTo: map[contracts.FeatureRequestStatus]int{}}
+	return &world{
+		fr: "", calls: map[string]int{}, fail: map[string]error{}, refuseMovesTo: map[contracts.FeatureRequestStatus]int{},
+		audit: map[int64]activity.RecordCommandInput{}, replies: map[int64]activity.ReplyInput{},
+	}
 }
 
 func (w *world) count(name string) error {
@@ -348,6 +369,108 @@ func (w *world) Deliver(_ context.Context, attempt, hash, base string) (activity
 	return activity.DeliverResult{ArtifactHash: hash, BaseSHA: base, Detail: activity.DetailDeliveryStub}, nil
 }
 
+func (w *world) UpsertStatusComment(_ context.Context, in activity.StatusCommentInput) error {
+	if err := w.count("UpsertStatusComment"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status == nil {
+		w.statusPosts++
+	} else {
+		w.statusEdits++
+	}
+	v := in.View
+	w.status = &v
+	return nil
+}
+
+// RecordCommand is keyed on the comment ID, as the table's unique key is.
+func (w *world) RecordCommand(_ context.Context, in activity.RecordCommandInput) error {
+	if err := w.count("RecordCommand"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.audit[in.Ref.CommentID]; !ok {
+		w.audit[in.Ref.CommentID] = in
+		w.auditOrder = append(w.auditOrder, in.Ref.CommentID)
+	}
+	return nil
+}
+
+func (w *world) ReplyToCommand(_ context.Context, in activity.ReplyInput) error {
+	if err := w.count("ReplyToCommand"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.replies[in.Ref.CommentID]; !ok {
+		w.replies[in.Ref.CommentID] = in
+	}
+	return nil
+}
+
+func (w *world) CheckCaps(_ context.Context, _ string) (activity.CapCheck, error) {
+	if err := w.count("CheckCaps"); err != nil {
+		return activity.CapCheck{}, err
+	}
+	if w.duringCheckCaps != nil {
+		w.duringCheckCaps()
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.caps, nil
+}
+
+// ResumeTask reopens the task and returns one past the highest ordinal,
+// as the real activity does.
+func (w *world) ResumeTask(_ context.Context, in activity.ResumeTaskInput) (activity.ResumeTaskResult, error) {
+	if err := w.count("ResumeTask"); err != nil {
+		return activity.ResumeTaskResult{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch w.task {
+	case contracts.TaskNeedsAttention:
+		w.task = contracts.TaskRunning
+		w.taskRev++
+	case contracts.TaskRunning:
+	default:
+		return activity.ResumeTaskResult{}, temporal.NewNonRetryableApplicationError("task cannot resume", activity.ErrTypePermanent, nil)
+	}
+	return activity.ResumeTaskResult{Ordinal: len(w.attempts) + 1}, nil
+}
+
+func (w *world) LookupFeature(_ context.Context, in activity.LookupFeatureInput) (activity.LookupFeatureResult, error) {
+	if err := w.count("LookupFeature"); err != nil {
+		return activity.LookupFeatureResult{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	res := w.lookup
+	if row, ok := w.audit[in.CommentID]; ok {
+		res.RecordedBy = row.Ref.WorkflowID
+	}
+	return res, nil
+}
+
+// auditRow returns the audit row for a comment ID.
+func (w *world) auditRow(id int64) (activity.RecordCommandInput, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	r, ok := w.audit[id]
+	return r, ok
+}
+
+// reply returns the reply to a comment ID.
+func (w *world) reply(id int64) (activity.ReplyInput, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	r, ok := w.replies[id]
+	return r, ok
+}
+
 // register puts every world method in env under the activity's name, so
 // the workflow's calls through acts reach the fake.
 func (w *world) register(env *testsuite.TestWorkflowEnvironment) {
@@ -369,6 +492,9 @@ func (w *world) registerOn(r registrar) {
 		{"PrepareAttempt", w.PrepareAttempt}, {"RunAttempt", w.RunAttempt}, {"SettleAttempt", w.SettleAttempt},
 		{"ReleaseAttemptSandbox", w.ReleaseAttemptSandbox}, {"ReleaseFeatureSandboxes", w.ReleaseFeatureSandboxes},
 		{"CancelTask", w.CancelTask}, {"Deliver", w.Deliver},
+		{"UpsertStatusComment", w.UpsertStatusComment}, {"RecordCommand", w.RecordCommand},
+		{"ReplyToCommand", w.ReplyToCommand}, {"CheckCaps", w.CheckCaps}, {"ResumeTask", w.ResumeTask},
+		{"LookupFeature", w.LookupFeature},
 	}
 	for _, f := range fakes {
 		r.RegisterActivityWithOptions(f.fn, sdkactivity.RegisterOptions{Name: f.name})
@@ -383,6 +509,7 @@ func newEnv(t *testing.T, w *world) *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(FeatureWorkflow)
 	env.RegisterWorkflow(TaskWorkflow)
+	env.RegisterWorkflow(ClosedCommandWorkflow)
 	w.register(env)
 	env.SetTestTimeout(30 * time.Second)
 	return env

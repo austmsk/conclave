@@ -110,6 +110,7 @@ var storePermanent = []error{
 	store.ErrNotFound,
 	store.ErrApprovalNeedsBaseSHA,
 	store.ErrAnotherPlanApproved,
+	store.ErrInvalidCommandRecord,
 	agent.ErrInvalidConfig,
 	gate.ErrNotVerified,
 }
