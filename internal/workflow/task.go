@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"go.temporal.io/sdk/log"
@@ -169,7 +170,10 @@ func (t *taskRun) moveTask(ctx workflow.Context, to contracts.TaskStatus, reason
 // cancelled closes the task after a cancellation, on a context that
 // survives it: the open attempt is recorded errored/cancelled, its
 // sandbox released, and the task moved to cancelled. The deferred release
-// of the attempt runs after this as well.
+// of the attempt runs after this as well. If the task cannot be recorded
+// cancelled, the workflow fails with that error rather than report a
+// cancellation Postgres does not hold; a parent cancels the task again
+// before it closes the feature request.
 func (t *taskRun) cancelled(ctx workflow.Context, attemptID string) (TaskResult, bool, error) {
 	cctx := cleanupContext(ctx)
 	if attemptID != "" {
@@ -181,6 +185,7 @@ func (t *taskRun) cancelled(ctx workflow.Context, attemptID string) (TaskResult,
 	}
 	if err := workflow.ExecuteActivity(cctx, acts.CancelTask, activity.CancelTaskInput{TaskID: t.in.TaskID, Actor: t.actor}).Get(cctx, nil); err != nil {
 		t.log.Error("cancelling task", "task_id", t.in.TaskID, "error", err)
+		return TaskResult{}, false, fmt.Errorf("cancelling task %s: %w", t.in.TaskID, err)
 	}
 	return TaskResult{Outcome: TaskCancelled, AttemptID: attemptID, Reason: contracts.ReasonCancelled}, false, ctx.Err()
 }

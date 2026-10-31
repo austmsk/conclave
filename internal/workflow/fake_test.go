@@ -62,6 +62,9 @@ type world struct {
 	run func(ctx context.Context, w *world, ordinal int) (activity.AttemptOutcome, error)
 	// fail, when set for an activity name, is returned by that activity.
 	fail map[string]error
+	// refuseMovesTo makes the next n feature request moves to a status
+	// fail permanently, as a move Postgres refuses would.
+	refuseMovesTo map[contracts.FeatureRequestStatus]int
 }
 
 type fakeAttempt struct {
@@ -72,7 +75,7 @@ type fakeAttempt struct {
 }
 
 func newWorld() *world {
-	return &world{fr: "", calls: map[string]int{}, fail: map[string]error{}}
+	return &world{fr: "", calls: map[string]int{}, fail: map[string]error{}, refuseMovesTo: map[contracts.FeatureRequestStatus]int{}}
 }
 
 func (w *world) count(name string) error {
@@ -188,10 +191,19 @@ func (w *world) Transition(_ context.Context, in activity.TransitionInput) (int,
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	// The store refuses a move the state table does not allow (RL-13), so
+	// the fake does too: an illegal move fails the tests, not production.
+	if !contracts.CanTransition(in.Kind, in.From, in.To) {
+		return 0, temporal.NewNonRetryableApplicationError("illegal move "+in.From+">"+in.To, activity.ErrTypePermanent, nil)
+	}
 	switch in.Kind {
 	case contracts.EntityFeatureRequest:
 		if string(w.fr) != in.From || w.frRev != in.Revision {
 			return 0, temporal.NewNonRetryableApplicationError("wrong state", activity.ErrTypePermanent, nil)
+		}
+		if to := contracts.FeatureRequestStatus(in.To); w.refuseMovesTo[to] > 0 {
+			w.refuseMovesTo[to]--
+			return 0, temporal.NewNonRetryableApplicationError("move refused", activity.ErrTypePermanent, nil)
 		}
 		w.fr, w.frReason = contracts.FeatureRequestStatus(in.To), in.Reason
 		w.frRev++
@@ -217,7 +229,7 @@ func (w *world) Approve(_ context.Context, in activity.ApproveInput) (activity.A
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.fr != contracts.FeatureAwaitingApproval || in.FeatureRevision != w.frRev {
+	if w.fr != contracts.FeatureAwaitingApproval || !w.fr.CanMoveTo(contracts.FeatureExecuting) || in.FeatureRevision != w.frRev {
 		return activity.ApproveResult{}, temporal.NewNonRetryableApplicationError("not awaiting approval", activity.ErrTypePermanent, nil)
 	}
 	w.approved++
@@ -319,7 +331,7 @@ func (w *world) CancelTask(_ context.Context, in activity.CancelTaskInput) error
 			w.attempts[i].released = true
 		}
 	}
-	if w.task == contracts.TaskRunning || w.task == contracts.TaskNeedsAttention {
+	if w.task != "" && w.task.CanMoveTo(contracts.TaskCancelled) {
 		w.task = contracts.TaskCancelled
 		w.taskRev++
 	}

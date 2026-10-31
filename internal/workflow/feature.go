@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"errors"
+	"fmt"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/log"
@@ -46,7 +47,7 @@ func FeatureWorkflow(ctx workflow.Context, in FeatureInput) error {
 		err = f.awaitCancel(ctx)
 	}
 	if ctx.Err() != nil {
-		_ = f.closeCancelled(cleanupContext(ctx))
+		f.closeAfterWorkflowCancel(ctx)
 		return ctx.Err()
 	}
 	if errors.Is(err, errStopped) {
@@ -284,26 +285,53 @@ func (f *featureRun) needsAttention(ctx workflow.Context, reason string) {
 	f.st.PhaseLeft, f.st.Reason = left, reason
 }
 
-// closeCancelled cancels the task, if there is one, and moves the
-// feature request to cancelled. ctx is the workflow's own context after
-// /cancel and a disconnected one after the workflow was cancelled.
+// closeCancelled closes the feature request after /cancel. If closing
+// fails for good, nothing is reported cancelled that Postgres does not
+// hold: the workflow logs the failure and waits for another /cancel to
+// try again, as needsAttention waits, so it never ends with the record
+// open.
 func (f *featureRun) closeCancelled(ctx workflow.Context) error {
-	if f.st.FeatureRequestID == "" || f.st.Status == contracts.FeatureCancelled {
-		return errStopped
+	for {
+		err := f.closeTaskAndFeature(ctx)
+		if err == nil {
+			return errStopped
+		}
+		f.log.Error("closing the cancelled feature request failed; waiting for another /cancel", "status", string(f.st.Status), "error", err)
+		f.cancel = nil
+		if err := workflow.Await(ctx, func() bool { return f.cancel != nil }); err != nil {
+			return err
+		}
 	}
-	actx := smallOptions(ctx)
+}
+
+// closeAfterWorkflowCancel closes the feature request after Temporal
+// cancelled the workflow, on a disconnected context. The signal receivers
+// have stopped with the workflow's context, so there is no /cancel to
+// wait for: a failure is logged, and the status keeps what Postgres holds.
+func (f *featureRun) closeAfterWorkflowCancel(ctx workflow.Context) {
+	if err := f.closeTaskAndFeature(cleanupContext(ctx)); err != nil {
+		f.log.Error("closing the feature request after the workflow was cancelled", "status", string(f.st.Status), "error", err)
+	}
+}
+
+// closeTaskAndFeature cancels the task, if there is one, and then moves
+// the feature request to cancelled. The feature request is not closed
+// over a task that is still open.
+func (f *featureRun) closeTaskAndFeature(ctx workflow.Context) error {
+	if f.st.FeatureRequestID == "" || f.st.Status == contracts.FeatureCancelled {
+		return nil
+	}
 	if f.st.TaskID != "" {
-		if err := workflow.ExecuteActivity(actx, acts.CancelTask, activity.CancelTaskInput{
+		if err := workflow.ExecuteActivity(smallOptions(ctx), acts.CancelTask, activity.CancelTaskInput{
 			TaskID: f.st.TaskID, Actor: f.cancelActor(),
 		}).Get(ctx, nil); err != nil {
-			f.log.Error("cancelling task", "task_id", f.st.TaskID, "error", err)
+			return fmt.Errorf("cancelling task %s: %w", f.st.TaskID, err)
 		}
 	}
 	if err := f.transitionAs(ctx, contracts.FeatureCancelled, "", f.cancelActor()); err != nil {
-		f.log.Error("moving feature request to cancelled", "error", err)
+		return fmt.Errorf("moving feature request %s to cancelled: %w", f.st.FeatureRequestID, err)
 	}
-	f.st.Status = contracts.FeatureCancelled
-	return errStopped
+	return nil
 }
 
 // cancelActor attributes a cancellation to the owner who sent /cancel,

@@ -217,3 +217,41 @@ func TestPermanentAttemptErrorStartsNoOrdinal(t *testing.T) {
 	equal(t, "attempt runs", w.called("RunAttempt"), 1)
 	equalSlices(t, "moves", w.moves(), []string{toApproval, toExecuting, "executing>needs_attention error:role denied", toCancelled})
 }
+
+// TestCancelMoveRefusedWaitsForAnotherCancel has the move to cancelled
+// fail for good: the workflow neither ends nor reports a cancellation
+// Postgres does not hold, and a second /cancel closes the request.
+func TestCancelMoveRefusedWaitsForAnotherCancel(t *testing.T) {
+	w := newWorld()
+	w.refuseMovesTo[contracts.FeatureCancelled] = 1
+	env := newEnv(t, w)
+	signalAfter(env, time.Hour, command(github.CommandCancel, 80))
+	var between Status
+	env.RegisterDelayedCallback(func() { between = queryStatus(t, env) }, 2*time.Hour)
+	signalAfter(env, 3*time.Hour, command(github.CommandCancel, 81))
+	env.ExecuteWorkflow(FeatureWorkflow, featureInput())
+	checkCompleted(t, env)
+	equal(t, "status between the two cancels", between.Status, contracts.FeatureAwaitingApproval)
+	equalSlices(t, "moves", w.moves(), []string{toApproval, "awaiting_approval>cancelled"})
+}
+
+// TestCancelTaskRefusedFailsTaskWorkflow cancels a task workflow whose
+// task cannot be recorded cancelled: the workflow fails with that error
+// instead of reporting a cancellation, and the sandbox is still released.
+func TestCancelTaskRefusedFailsTaskWorkflow(t *testing.T) {
+	w := newWorld()
+	w.task = contracts.TaskRunning
+	w.fail["CancelTask"] = temporal.NewNonRetryableApplicationError("refused", activity.ErrTypePermanent, nil)
+	env := newEnv(t, w)
+	w.run = blocksUntilCancelled(env.CancelWorkflow)
+	env.ExecuteWorkflow(TaskWorkflow, TaskInput{TaskID: taskID, Ordinal: 1, BaseSHA: baseSHA, RepoFullName: featureInput().Start.Repo.FullName, Role: contracts.RoleImplementer})
+	if !env.IsWorkflowCompleted() {
+		t.Fatal("workflow did not complete")
+	}
+	var canceled *temporal.CanceledError
+	if err := env.GetWorkflowError(); err == nil || errors.As(err, &canceled) {
+		t.Fatalf("workflow error = %v, want the CancelTask failure, not a cancellation", err)
+	}
+	equal(t, "task", w.taskStatus(), contracts.TaskRunning)
+	equalSlices(t, "unreleased sandboxes", w.unreleased(), nil)
+}
