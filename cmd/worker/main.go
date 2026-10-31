@@ -193,11 +193,21 @@ func newActivities(ctx context.Context, o options, d deploy, sec secrets, pool *
 		Sandboxes: sandboxes, Router: router, RouterConfig: d.Router, Blobs: blobs, Gate: gater.Gate,
 		Roles: roles(), Repos: d.repos(), OwnerUserID: d.GitHub.OwnerUserID, ConfigDigests: d.Digests, WorkDir: o.workDir,
 	}
-	if longest := deps.LongestAttempt(); o.sweepAfter <= longest {
-		return nil, nil, fmt.Errorf("-sweep-after %s must exceed the longest attempt, %s, or the sweep would release a live attempt's sandbox", o.sweepAfter, longest)
+	if err := checkSweepAfter(o.sweepAfter, deps.LongestAttempt()); err != nil {
+		return nil, nil, err
 	}
 	acts, err := activity.New(deps)
 	return acts, sandboxes, err
+}
+
+// checkSweepAfter refuses a startup-sweep cutoff that does not exceed
+// the longest attempt: the sweep would release a live attempt's sandbox
+// from under it on a second worker.
+func checkSweepAfter(sweepAfter, longestAttempt time.Duration) error {
+	if sweepAfter <= longestAttempt {
+		return fmt.Errorf("-sweep-after %s must exceed the longest attempt, %s, or the sweep would release a live attempt's sandbox", sweepAfter, longestAttempt)
+	}
+	return nil
 }
 
 // roles are the role specs this worker runs. Milestone 1 runs the
