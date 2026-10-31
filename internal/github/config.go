@@ -51,6 +51,12 @@ type Config struct {
 	// whose labels and commands are honoured. Never a login: logins change
 	// (FR-SEC1).
 	OwnerUserID int64 `yaml:"owner_user_id"`
+	// BotUserID is the numeric user ID of the App's bot, "<slug>[bot]".
+	// Commits are authored as it (FR-S17); GitHub links a commit to the
+	// bot through the ID in its noreply address. Find it with
+	// GET /users/<slug>[bot]. It is configured rather than looked up, so
+	// startup makes no network call.
+	BotUserID int64 `yaml:"bot_user_id"`
 	// TriggerLabel starts a run when the owner applies it.
 	TriggerLabel string `yaml:"trigger_label"`
 	// APIBaseURL and GitBaseURL may be empty for GitHub's own endpoints.
@@ -103,6 +109,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: installation_id must be set", ErrInvalidConfig)
 	case c.OwnerUserID <= 0:
 		return fmt.Errorf("%w: owner_user_id must be set", ErrInvalidConfig)
+	case c.BotUserID <= 0:
+		return fmt.Errorf("%w: bot_user_id must be set", ErrInvalidConfig)
 	case strings.TrimSpace(c.TriggerLabel) == "":
 		return fmt.Errorf("%w: trigger_label must be set", ErrInvalidConfig)
 	}
@@ -140,6 +148,14 @@ func isLoopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// BotIdentity is the name and email the platform's commits are authored
+// and committed as: the App's bot user, with the noreply address GitHub
+// attributes to it.
+func (c Config) BotIdentity() (name, email string) {
+	login := c.AppSlug + "[bot]"
+	return login, fmt.Sprintf("%d+%s@users.noreply.github.com", c.BotUserID, login)
 }
 
 // fullName matches an owner/name pair as GitHub allows them. It is checked

@@ -20,4 +20,9 @@
 // those is enforced (FR-SEC21): it strips remotes, credential helpers, and
 // reflogs from a clone so nothing that entered the worker's trusted
 // workspace during cloning can follow the tree into the sandbox.
+//
+// CommitDiff builds the platform's commits on the worker, for the push
+// path: a diff applied to a temporary index read from the parent, never
+// checked out, with the identity and date fixed by the caller, so the
+// same inputs give the same commit ID in any clone.
 package sandbox

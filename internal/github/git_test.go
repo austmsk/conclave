@@ -34,6 +34,7 @@ func newApp(t *testing.T, gitBase string) *github.App {
 		AppSlug:        "conclave-test",
 		InstallationID: 7,
 		OwnerUserID:    3,
+		BotUserID:      4,
 		TriggerLabel:   github.DefaultTriggerLabel,
 		APIBaseURL:     "http://127.0.0.1:1",
 		GitBaseURL:     gitBase,
@@ -287,6 +288,29 @@ func TestPushLeaseAllowsMatchingForce(t *testing.T) {
 	sibling := commit(t, r.tree, "sibling")
 	if err := r.push(t, sibling, first); err != nil {
 		t.Fatalf("Push with a matching lease: %v", err)
+	}
+	if got := r.branchHead(t); got != sibling {
+		t.Errorf("branch = %q, want %q", got, sibling)
+	}
+}
+
+// TestPushRepeatedForceIsIdempotent: a force-with-lease push that
+// succeeded unreported is retried with the same lease, which no longer
+// matches the remote; the remote already holds the commit, so the retry
+// must succeed and change nothing. Delivery relies on this when it moves
+// the integration branch from the landed commit to the rebased one.
+func TestPushRepeatedForceIsIdempotent(t *testing.T) {
+	r := newRemote(t)
+	first := commit(t, r.tree, "one")
+	if err := r.push(t, first, ""); err != nil {
+		t.Fatalf("first Push: %v", err)
+	}
+	sandboxtest.Git(t, r.tree, "checkout", "-q", "--detach", r.head)
+	sibling := commit(t, r.tree, "sibling")
+	for i := range 2 {
+		if err := r.push(t, sibling, first); err != nil {
+			t.Fatalf("force Push %d with lease %s: %v", i+1, first, err)
+		}
 	}
 	if got := r.branchHead(t); got != sibling {
 		t.Errorf("branch = %q, want %q", got, sibling)

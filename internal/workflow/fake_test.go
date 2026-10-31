@@ -83,6 +83,32 @@ type world struct {
 	replies map[int64]activity.ReplyInput
 	// lookup is what LookupFeature reports.
 	lookup activity.LookupFeatureResult
+
+	// pr is the delivery: the pull_requests row the delivery activities
+	// would write, and what they did on GitHub.
+	pr fakeDelivery
+	// stops queues, per delivery activity name, the stops it returns,
+	// one per call; an empty queue means the step finishes. failOnce
+	// returns its error from the next call of the named activity only.
+	stops    map[string][]activity.DeliveryStep
+	failOnce map[string]error
+	// ci is how OpenPullRequest says to wait for CI; zero means a minute
+	// between reads and an hour in all.
+	ci activity.CIWait
+	// checks answers the nth ReadChecks of the run (from 1); nil means
+	// every read finds CI passed.
+	checks func(n int) activity.ChecksResult
+}
+
+// fakeDelivery is the pull_requests row and GitHub's side of a delivery,
+// as the idempotent delivery activities leave them: each step's effect
+// happens once, however often the step runs.
+type fakeDelivery struct {
+	written, landed, finalized, opened, ready bool
+	// modelCalls counts pr_writer calls, landings integration pushes of
+	// the original commit, opens pull requests opened, readies drafts
+	// marked ready, and reads ReadChecks calls.
+	modelCalls, landings, opens, readies, reads int
 }
 
 type fakeAttempt struct {
@@ -96,6 +122,7 @@ func newWorld() *world {
 	return &world{
 		fr: "", calls: map[string]int{}, fail: map[string]error{}, refuseMovesTo: map[contracts.FeatureRequestStatus]int{},
 		audit: map[int64]activity.RecordCommandInput{}, replies: map[int64]activity.ReplyInput{},
+		stops: map[string][]activity.DeliveryStep{}, failOnce: map[string]error{},
 	}
 }
 
@@ -103,6 +130,10 @@ func (w *world) count(name string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.calls[name]++
+	if err, ok := w.failOnce[name]; ok {
+		delete(w.failOnce, name)
+		return err
+	}
 	return w.fail[name]
 }
 
@@ -369,6 +400,138 @@ func (w *world) Deliver(_ context.Context, attempt, hash, base string) (activity
 	return activity.DeliverResult{ArtifactHash: hash, BaseSHA: base, Detail: activity.DetailDeliveryStub}, nil
 }
 
+// deliveryStep counts a delivery activity and returns its error or its
+// next queued stop. Its caller holds no lock.
+func (w *world) deliveryStep(name string) (activity.DeliveryStep, error) {
+	if err := w.count(name); err != nil {
+		return activity.DeliveryStep{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	q := w.stops[name]
+	if len(q) == 0 {
+		return activity.DeliveryStep{}, nil
+	}
+	w.stops[name] = q[1:]
+	return q[0], nil
+}
+
+// WritePullRequest calls the model only when no row is written yet, as
+// the real activity returns the recorded row.
+func (w *world) WritePullRequest(_ context.Context, in activity.DeliveryInput) (activity.DeliveryStep, error) {
+	out, err := w.deliveryStep("WritePullRequest")
+	if err != nil || out.Stop != "" {
+		return out, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if in.AttemptID == "" || in.TaskID == "" || in.BaseSHA != baseSHA || in.Issue != issueNum {
+		return out, temporal.NewNonRetryableApplicationError("bad delivery input", activity.ErrTypePermanent, nil)
+	}
+	if !w.pr.written {
+		w.pr.written = true
+		w.pr.modelCalls++
+	}
+	return out, nil
+}
+
+// Land pushes the integration branch once.
+func (w *world) Land(_ context.Context, _ activity.DeliveryInput) (activity.DeliveryStep, error) {
+	out, err := w.deliveryStep("Land")
+	if err != nil || out.Stop != "" {
+		return out, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.pr.written {
+		return out, temporal.NewNonRetryableApplicationError("no pull request row", activity.ErrTypePermanent, nil)
+	}
+	if !w.pr.landed {
+		w.pr.landed = true
+		w.pr.landings++
+	}
+	return out, nil
+}
+
+// Finalize records the rebase; a queued stop leaves it unrecorded, as a
+// conflict or a failed gate does.
+func (w *world) Finalize(_ context.Context, _ activity.DeliveryInput) (activity.DeliveryStep, error) {
+	out, err := w.deliveryStep("Finalize")
+	if err != nil || out.Stop != "" {
+		return out, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.pr.landed {
+		return out, temporal.NewNonRetryableApplicationError("not landed", activity.ErrTypePermanent, nil)
+	}
+	w.pr.finalized = true
+	return out, nil
+}
+
+// OpenPullRequest opens the draft once and reports how to wait for CI.
+func (w *world) OpenPullRequest(_ context.Context, _ activity.DeliveryInput) (activity.OpenResult, error) {
+	if err := w.count("OpenPullRequest"); err != nil {
+		return activity.OpenResult{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.pr.finalized {
+		return activity.OpenResult{}, temporal.NewNonRetryableApplicationError("not finalized", activity.ErrTypePermanent, nil)
+	}
+	if !w.pr.opened {
+		w.pr.opened = true
+		w.pr.opens++
+	}
+	ci := w.ci
+	if ci == (activity.CIWait{}) {
+		ci = activity.CIWait{PollEvery: time.Minute, Timeout: time.Hour}
+	}
+	return activity.OpenResult{Number: 1, URL: "https://github.example/pull/1", CI: ci}, nil
+}
+
+// ReadChecks answers from w.checks.
+func (w *world) ReadChecks(_ context.Context, _ activity.DeliveryInput) (activity.ChecksResult, error) {
+	if err := w.count("ReadChecks"); err != nil {
+		return activity.ChecksResult{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.pr.opened {
+		return activity.ChecksResult{}, temporal.NewNonRetryableApplicationError("no pull request", activity.ErrTypePermanent, nil)
+	}
+	w.pr.reads++
+	if w.checks == nil {
+		return activity.ChecksResult{Completed: true, Passed: true}, nil
+	}
+	return w.checks(w.pr.reads), nil
+}
+
+// MarkReady marks the draft ready once.
+func (w *world) MarkReady(_ context.Context, _ activity.DeliveryInput) (activity.DeliveryStep, error) {
+	out, err := w.deliveryStep("MarkReady")
+	if err != nil || out.Stop != "" {
+		return out, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.pr.opened {
+		return out, temporal.NewNonRetryableApplicationError("no pull request", activity.ErrTypePermanent, nil)
+	}
+	if !w.pr.ready {
+		w.pr.ready = true
+		w.pr.readies++
+	}
+	return out, nil
+}
+
+// delivery returns a copy of the delivery state.
+func (w *world) delivery() fakeDelivery {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pr
+}
+
 func (w *world) UpsertStatusComment(_ context.Context, in activity.StatusCommentInput) error {
 	if err := w.count("UpsertStatusComment"); err != nil {
 		return err
@@ -495,6 +658,8 @@ func (w *world) registerOn(r registrar) {
 		{"UpsertStatusComment", w.UpsertStatusComment}, {"RecordCommand", w.RecordCommand},
 		{"ReplyToCommand", w.ReplyToCommand}, {"CheckCaps", w.CheckCaps}, {"ResumeTask", w.ResumeTask},
 		{"LookupFeature", w.LookupFeature},
+		{"WritePullRequest", w.WritePullRequest}, {"Land", w.Land}, {"Finalize", w.Finalize},
+		{"OpenPullRequest", w.OpenPullRequest}, {"ReadChecks", w.ReadChecks}, {"MarkReady", w.MarkReady},
 	}
 	for _, f := range fakes {
 		r.RegisterActivityWithOptions(f.fn, sdkactivity.RegisterOptions{Name: f.name})

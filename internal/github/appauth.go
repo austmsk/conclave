@@ -42,8 +42,10 @@ const (
 // tokenPermissions is every permission an installation token is asked for,
 // and the most a token GitHub returns may hold. It is fixed here so that no
 // configuration can widen it: never workflows, never administration
-// (FR-SEC15). Checks are read with ticket 9.
+// (FR-SEC15). Checks are read, never written: delivery polls the
+// repository's CI through them (decision 0014).
 var tokenPermissions = map[string]string{
+	"checks":        "read",
 	"contents":      "write",
 	"issues":        "write",
 	"pull_requests": "write",

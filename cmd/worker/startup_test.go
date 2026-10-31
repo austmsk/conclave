@@ -48,12 +48,13 @@ func TestCheckSweepAfter(t *testing.T) {
 	}
 }
 
-// TestRolesAreMilestoneOne: the worker runs the implementer, and only
-// through the role map.
+// TestRolesAreMilestoneOne: the worker runs the implementer and the
+// pr_writer, and only through the role map.
 func TestRolesAreMilestoneOne(t *testing.T) {
 	r := roles()
-	if len(r) != 1 || r[contracts.RoleImplementer].PromptVersion != agent.Implementer.PromptVersion {
-		t.Fatalf("roles() = %v, want the implementer alone", r)
+	if len(r) != 2 || r[contracts.RoleImplementer].PromptVersion != agent.Implementer.PromptVersion ||
+		r[contracts.RolePRWriter].PromptVersion != agent.PRWriter.PromptVersion {
+		t.Fatalf("roles() = %v, want the implementer and the pr_writer", r)
 	}
 }
 

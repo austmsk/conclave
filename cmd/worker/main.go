@@ -193,6 +193,7 @@ func newActivities(ctx context.Context, o options, d deploy, sec secrets, pool *
 		Sandboxes: sandboxes, Router: router, RouterConfig: d.Router, Blobs: blobs, Gate: gater.Gate,
 		Roles: roles(), Repos: d.repos(), OwnerUserID: d.GitHub.OwnerUserID, ConfigDigests: d.Digests, WorkDir: o.workDir,
 	}
+	deps.Bot.Name, deps.Bot.Email = d.GitHub.BotIdentity()
 	if err := checkSweepAfter(o.sweepAfter, deps.LongestAttempt()); err != nil {
 		return nil, nil, err
 	}
@@ -211,9 +212,13 @@ func checkSweepAfter(sweepAfter, longestAttempt time.Duration) error {
 }
 
 // roles are the role specs this worker runs. Milestone 1 runs the
-// implementer; Milestone 2 adds the test writer here.
+// implementer and the pr_writer; Milestone 2 adds the test writer here.
+// Every role needs a route in the router configuration, or startup fails.
 func roles() map[contracts.Role]contracts.RoleSpec {
-	return map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer}
+	return map[contracts.Role]contracts.RoleSpec{
+		contracts.RoleImplementer: agent.Implementer,
+		contracts.RolePRWriter:    agent.PRWriter,
+	}
 }
 
 // serve runs two workers until SIGINT or SIGTERM: one for the workflows
@@ -233,6 +238,9 @@ func serve(ctx context.Context, o options, acts *activity.Activities, log *slog.
 	feature.RegisterActivity(acts)
 	attempts := worker.New(c, workflow.AttemptTaskQueue, worker.Options{MaxConcurrentActivityExecutionSize: 1})
 	attempts.RegisterActivityWithOptions(acts.RunAttempt, sdkactivity.RegisterOptions{Name: "RunAttempt"})
+	// Finalize runs a sandbox and the gate commands, so it shares the
+	// attempt queue's one slot.
+	attempts.RegisterActivityWithOptions(acts.Finalize, sdkactivity.RegisterOptions{Name: "Finalize"})
 	for _, w := range []worker.Worker{feature, attempts} {
 		if err := w.Start(); err != nil {
 			return fmt.Errorf("starting worker: %w", err)

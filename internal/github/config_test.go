@@ -14,6 +14,7 @@ app_id: 77
 app_slug: conclave
 installation_id: 4242
 owner_user_id: 1001
+bot_user_id: 2002
 `
 
 func TestLoadConfig(t *testing.T) {
@@ -34,6 +35,7 @@ func TestLoadConfig(t *testing.T) {
 		{"zero app_id", strings.Replace(validConfig, "app_id: 77", "app_id: 0", 1), true},
 		{"zero installation_id", strings.Replace(validConfig, "installation_id: 4242", "installation_id: 0", 1), true},
 		{"zero owner_user_id", strings.Replace(validConfig, "owner_user_id: 1001", "owner_user_id: 0", 1), true},
+		{"zero bot_user_id", strings.Replace(validConfig, "bot_user_id: 2002", "bot_user_id: 0", 1), true},
 		{"empty app_slug", strings.Replace(validConfig, "app_slug: conclave", `app_slug: ""`, 1), true},
 		{"http to a remote host", validConfig + "api_base_url: http://api.example.com\n", true},
 		{"https with a query", validConfig + "git_base_url: https://github.com/?x=1\n", true},
@@ -59,5 +61,18 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.TriggerLabel != github.DefaultTriggerLabel || cfg.APIBaseURL != github.DefaultAPIBaseURL || cfg.GitBaseURL != github.DefaultGitBaseURL {
 		t.Fatalf("defaults not applied: %+v", cfg)
+	}
+}
+
+// TestBotIdentity: commits are authored as the App's bot, with the noreply
+// address GitHub links to the bot's user ID (FR-S17).
+func TestBotIdentity(t *testing.T) {
+	cfg, err := github.LoadConfig(strings.NewReader(validConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, email := cfg.BotIdentity()
+	if name != "conclave[bot]" || email != "2002+conclave[bot]@users.noreply.github.com" {
+		t.Fatalf("BotIdentity = %q <%s>", name, email)
 	}
 }

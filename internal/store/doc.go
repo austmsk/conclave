@@ -42,6 +42,15 @@
 // leaves the caller's transaction usable. ActorWorkflow, ActorGitHub and
 // ActorWorker are the actor strings for the audit trigger.
 //
+// CreatePullRequest records a delivery write-ahead, idempotent on the
+// attempt, with the pr_writer's output and commit message; each later
+// delivery step fills its own column once through SetPullRequestValue,
+// SetPullRequestOpened and MarkPullRequestReady, a write-once trigger
+// refusing any change to a filled column (migration 00009). Each
+// completed CI observation is appended to pr_ci_results by
+// RecordCIResult, deduplicated on the check runs it saw, and
+// LatestCIResult is the pull request's CI result.
+//
 // These grants are a control only when the application connects as a
 // non-owner LOGIN role that is a member of conclave_app. SET ROLE
 // conclave_app is acceptable from such a role, never from the owner: a

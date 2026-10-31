@@ -89,7 +89,8 @@ func TestTaskWorkflowDirectly(t *testing.T) {
 	equal(t, "outcome", res.Outcome, TaskPassed)
 	equal(t, "artifact", res.ArtifactHash, artifact)
 	equal(t, "task", w.taskStatus(), contracts.TaskDone)
-	for _, name := range []string{"Analyze", "PostPlanComment", "Approve", "Deliver"} {
+	for _, name := range []string{"Analyze", "PostPlanComment", "Approve", "Deliver",
+		"WritePullRequest", "Land", "Finalize", "OpenPullRequest", "ReadChecks", "MarkReady"} {
 		equal(t, "calls to "+name, w.called(name), 0)
 	}
 }
@@ -146,7 +147,7 @@ func TestApproveAfterLongWait(t *testing.T) {
 		t.Errorf("approved after %v, want at least 30 days", approvedAt.Sub(start))
 	}
 	equal(t, "approvals", w.approved, 1)
-	equal(t, "deliveries", w.delivers, 1)
+	equal(t, "pull requests opened", w.delivery().opens, 1)
 	equal(t, "plan comments", w.comments, 1)
 }
 
@@ -165,7 +166,7 @@ func TestAttemptResultLostAfterRecording(t *testing.T) {
 	checkCompleted(t, env)
 	equalSlices(t, "attempts", w.attemptStates(), []string{"passed/"})
 	equal(t, "attempt runs", w.called("RunAttempt"), 1)
-	equal(t, "deliveries", w.delivers, 1)
+	equal(t, "pull requests opened", w.delivery().opens, 1)
 	equal(t, "task", w.taskStatus(), contracts.TaskDone)
 }
 

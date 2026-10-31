@@ -27,7 +27,8 @@ var errStopped = errors.New("feature request stopped")
 const versionCommands = "commands-8b"
 
 // FeatureWorkflow runs one issue: analyze it into a plan, post the plan,
-// wait for /approve, run the task as a child workflow, and deliver. Every
+// wait for /approve, run the task as a child workflow, and deliver it as
+// a pull request, ending delivered once the repository's CI passes. Every
 // problem routes the feature request to needs_attention with a reason,
 // never to an automatic failed status; the workflow then waits for the
 // owner. /retry continues in the phase the feature request left, after a
@@ -46,6 +47,7 @@ func FeatureWorkflow(ctx workflow.Context, in FeatureInput) error {
 		st:    Status{Status: contracts.FeaturePlanning},
 		v8b:   workflow.GetVersion(ctx, versionCommands, workflow.DefaultVersion, 1) == 1,
 	}
+	f.v9 = workflow.GetVersion(ctx, versionDelivery, workflow.DefaultVersion, 1) == 1
 	if err := workflow.SetQueryHandler(ctx, QueryStatus, func() (Status, error) { return f.st, nil }); err != nil {
 		return err
 	}
@@ -84,8 +86,10 @@ type featureRun struct {
 	in    FeatureInput
 	log   log.Logger
 	actor string
-	// v8b is set for a run started under ticket 8b's code.
+	// v8b is set for a run started under ticket 8b's code, and v9 for
+	// one started under ticket 9's, which delivers a pull request.
 	v8b bool
+	v9  bool
 
 	st      Status
 	frRev   int
@@ -314,22 +318,6 @@ func (f *featureRun) routeTask(ctx workflow.Context, res TaskResult) error {
 		}
 		f.needsAttention(ctx, activity.FeatureReason(activity.ReasonError, detail))
 	}
-	return nil
-}
-
-// deliver runs the deliver stub, which verifies the artifact and reports
-// that delivery arrives in ticket 9; the feature request stops in
-// needs_attention with that detail, never delivered.
-func (f *featureRun) deliver(ctx workflow.Context, res TaskResult) error {
-	var out activity.DeliverResult
-	err := workflow.ExecuteActivity(smallOptions(ctx), acts.Deliver, res.AttemptID, res.ArtifactHash, f.st.BaseSHA).Get(ctx, &out)
-	if err != nil {
-		return err
-	}
-	if out.Delivered {
-		return f.transition(ctx, contracts.FeatureDelivered, "")
-	}
-	f.needsAttention(ctx, activity.FeatureReason(activity.ReasonError, out.Detail))
 	return nil
 }
 

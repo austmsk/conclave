@@ -95,22 +95,11 @@ func (r *attemptRun) startSandbox(ctx context.Context) error {
 	return nil
 }
 
-// create makes a sandbox over the clone, through CreateWithInstall when
-// the repository configures an install phase and Create otherwise. The
-// gate's clean-room sandbox is made the same way.
+// create makes a sandbox over the clone, with the repository's install
+// phase when it configures one. The gate's clean-room sandbox is made the
+// same way.
 func (r *attemptRun) create(ctx context.Context) (contracts.Sandbox, error) {
-	sc := r.cfg.Sandbox
-	spec := contracts.SandboxSpec{Image: sc.Image, TreePath: r.tree, Env: sc.Env, Network: contracts.NetworkNone, Limits: sc.Limits}
-	if len(sc.Install) == 0 {
-		return r.a.d.Sandboxes.Create(ctx, spec)
-	}
-	spec.Network = contracts.NetworkRegistries
-	install := make([]contracts.ExecRequest, 0, len(sc.Install))
-	for _, argv := range sc.Install {
-		install = append(install, contracts.ExecRequest{Command: argv, Timeout: sc.CommandTimeout})
-	}
-	sb, _, err := r.a.d.Sandboxes.CreateWithInstall(ctx, spec, install)
-	return sb, err
+	return r.a.newSandbox(ctx, r.cfg, r.tree, true)
 }
 
 // release removes the attempt's sandbox and, when record is set, marks it

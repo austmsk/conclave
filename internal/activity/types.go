@@ -23,6 +23,25 @@ const (
 	ReasonBudgetCap     = "budget_cap"
 	ReasonAttemptFailed = "attempt_failed"
 	ReasonError         = "error"
+
+	// Delivery stops (decision 0014). The pull request, if one was
+	// opened, stays open as a draft; /retry resumes delivery where the
+	// pull_requests row says it stopped.
+	//
+	// ReasonRebaseConflict: the attempt's diff does not apply to the
+	// default branch's new head. FR-S19 reruns the task there; Milestone
+	// 1 stops instead, because the plan's base is pinned write-once, and
+	// /retry meets the same conflict, so /cancel is the way out until
+	// Milestone 4.
+	ReasonRebaseConflict = "rebase_conflict"
+	// ReasonRebaseGateFailed: the rebased artifact, a new artifact, failed
+	// a gate (FR-SEC27).
+	ReasonRebaseGateFailed = "rebase_gate_failed"
+	// ReasonCIFailed: a required check completed without passing.
+	ReasonCIFailed = "ci_failed"
+	// ReasonCITimeout: the required checks had not all completed when the
+	// repository's CI timeout passed.
+	ReasonCITimeout = "ci_timeout"
 )
 
 // FeatureReason formats a feature request's reason: kind alone when detail
@@ -172,6 +191,54 @@ type DeliverResult struct {
 	ArtifactHash string
 	BaseSHA      string
 	Detail       string
+}
+
+// DeliveryInput names the passed attempt to deliver and where. Every
+// delivery activity takes it; each reads the pull_requests row for the
+// rest, so a retry or a /retry resumes from what is recorded.
+type DeliveryInput struct {
+	AttemptID    string
+	TaskID       string
+	ArtifactHash string
+	// BaseSHA is the plan's pinned base, the one the attempt ran on.
+	BaseSHA string
+	Repo    github.RepoRef
+	Issue   int
+}
+
+// DeliveryStep is what one delivery step did. Stop is empty when the step
+// finished and delivery goes on; otherwise it is the reason kind the
+// feature request stops in needs_attention with (ReasonRebaseConflict,
+// ReasonRebaseGateFailed, ReasonCIFailed), and Detail says why.
+type DeliveryStep struct {
+	Stop   string
+	Detail string
+}
+
+// CIWait is how the workflow waits for CI: poll every PollEvery until
+// Timeout has passed. It is read from configuration by OpenPullRequest
+// and recorded in history, so a configuration change cannot change it
+// for a run in flight (RL-16).
+type CIWait struct {
+	PollEvery time.Duration
+	Timeout   time.Duration
+}
+
+// OpenResult is the opened draft pull request and how to wait for its CI.
+type OpenResult struct {
+	Number int
+	URL    string
+	CI     CIWait
+}
+
+// ChecksResult is one read of the pull request's required checks.
+// Completed is set when every required check has completed, or one has
+// completed without passing; Passed when every one passed. A completed
+// read is recorded in pr_ci_results.
+type ChecksResult struct {
+	Completed bool
+	Passed    bool
+	Detail    string
 }
 
 // CommandRef identifies one owner command for its audit row and its

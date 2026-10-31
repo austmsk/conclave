@@ -113,6 +113,7 @@ var storePermanent = []error{
 	store.ErrInvalidCommandRecord,
 	agent.ErrInvalidConfig,
 	gate.ErrNotVerified,
+	store.ErrAlreadyRecorded,
 }
 
 // IsPermanent reports whether err is one no retry can fix: a permanent

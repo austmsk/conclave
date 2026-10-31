@@ -25,8 +25,19 @@ const (
 	testCommentBase = int64(200)
 )
 
-// stopDelivery is the move the ticket 8 deliver stub ends with.
-const stopDelivery = "executing>needs_attention error:" + activity.DetailDeliveryStub
+// stopCIFailed is the move a delivery whose CI failed stops with.
+const stopCIFailed = "executing>needs_attention " + activity.ReasonCIFailed + ":build failed"
+
+// failCIOnce makes the first read of CI find a required check failed and
+// every later read find CI passed, as after the owner re-ran it.
+func failCIOnce(w *world) {
+	w.checks = func(n int) activity.ChecksResult {
+		if n == 1 {
+			return activity.ChecksResult{Completed: true, Detail: "build failed"}
+		}
+		return activity.ChecksResult{Completed: true, Passed: true}
+	}
+}
 
 // scenario is a run driven into one live status, with commands sent while
 // it is there. The run always ends with a /cancel, so it completes.
@@ -230,7 +241,7 @@ func TestRetryAfterCapRaised(t *testing.T) {
 
 	equalSlices(t, "moves", w.moves(), []string{
 		toApproval, toExecuting, "executing>needs_attention budget_cap:feature_request",
-		"needs_attention>executing", stopDelivery, toCancelled,
+		"needs_attention>executing", toDelivered,
 	})
 	equalSlices(t, "attempts", w.attemptStates(), []string{"errored/budget_cap", "passed/"})
 	equal(t, "RunAttempt calls", w.called("RunAttempt"), 2)
@@ -323,12 +334,14 @@ func TestRetryFromPlanningWaitsForApprove(t *testing.T) {
 	}
 }
 
-// TestRetryAfterDeliverStop stops a run whose task passed at the
-// delivery stub; /retry delivers the passed task again and runs no new
-// attempt.
+// TestRetryAfterDeliverStop stops a run whose task passed at a failed
+// CI; /retry delivers the passed task again from the start of the
+// delivery sequence, runs no new attempt, and repeats no delivery effect:
+// one pr_writer call, one landing, one pull request.
 func TestRetryAfterDeliverStop(t *testing.T) {
 	w := newWorld()
 	w.run = returns(contracts.AttemptPassed, "")
+	failCIOnce(w)
 	te := newEnv(t, w)
 	signalAfter(te, time.Minute, command(github.CommandApprove, approveID))
 	signalAfter(te, 2*time.Hour, command(github.CommandRetry, testCommentBase))
@@ -336,10 +349,14 @@ func TestRetryAfterDeliverStop(t *testing.T) {
 	te.ExecuteWorkflow(FeatureWorkflow, featureInput())
 	checkCompleted(t, te)
 
-	equal(t, "Deliver calls", w.called("Deliver"), 2)
+	equal(t, "WritePullRequest calls", w.called("WritePullRequest"), 2)
 	equal(t, "RunAttempt calls", w.called("RunAttempt"), 1)
 	equal(t, "ResumeTask calls", w.called("ResumeTask"), 0)
-	equalSlices(t, "moves", w.moves(), []string{toApproval, toExecuting, stopDelivery, "needs_attention>executing", stopDelivery, toCancelled})
+	d := w.delivery()
+	equal(t, "pr_writer calls", d.modelCalls, 1)
+	equal(t, "landings", d.landings, 1)
+	equal(t, "pull requests opened", d.opens, 1)
+	equalSlices(t, "moves", w.moves(), []string{toApproval, toExecuting, stopCIFailed, "needs_attention>executing", toDelivered})
 }
 
 // TestSecondRetryRefusedAfterResume sends two /retry comments at once:
