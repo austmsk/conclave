@@ -1,6 +1,6 @@
 # Ticket 8b — Commands and status surface
 
-**Status:** in review on branch `ticket/8b` · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-8b--commands-and-status-surface), [`Ticket 8 Split — Conclave.md`](../../tickets/Ticket%208%20Split%20—%20Conclave.md#ticket-8b--commands-and-status-surface) · **Requirements:** FR-S11, FR-S12, FR-SEC10 · **Review list:** RL-9, RL-13 · **Decision:** [0013](../../decisions/0013-commands-and-status-surface.md)
+**Status:** merged as PR #22 (`e8c6585`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-8b--commands-and-status-surface), [`Ticket 8 Split — Conclave.md`](../../tickets/Ticket%208%20Split%20—%20Conclave.md#ticket-8b--commands-and-status-surface) · **Requirements:** FR-S11, FR-S12, FR-SEC10 · **Review list:** RL-9, RL-13 · **Decision:** [0013](../../decisions/0013-commands-and-status-surface.md)
 
 ## In one paragraph
 
