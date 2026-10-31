@@ -16,5 +16,6 @@ One record per non-obvious choice, written after the ticket merges ([0001](0001-
 | [0010](0010-github-client-on-net-http.md) | GitHub App auth and REST are written on `net/http`, not `go-github` or `ghinstallation` | proposed |
 | [0011](0011-sandbox-release-by-id.md) | Sandboxes are released by ID, cancellation is a reason, and the trial image is built locally | proposed |
 | [0012](0012-temporal-workflow-shape.md) | The Temporal Go SDK, one activity per attempt, and the attempt timeout | proposed |
+| [0013](0013-commands-and-status-surface.md) | Commands and the status surface: one table, a closed-run workflow, and a versioned change | proposed |
 
 New records take the next free number, and this table gains a row in the same change.

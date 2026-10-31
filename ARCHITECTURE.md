@@ -81,9 +81,9 @@ The live routes are in `deploy/router.yaml`; this table is the target. Pin exact
 Work: `repos → feature_requests → plans (versioned) → tasks (+dependencies) → attempts`.
 Evidence: `gate_results`, `comparisons`, `decisions`.
 Context: `codebase_briefs` (pinned to a commit), `messages`.
-Accounting: `cost_events`, `state_transitions` (append-only, insert-only DB role).
+Accounting: `cost_events`, `state_transitions`, `commands` (append-only, insert-only DB role).
 
-The Milestone 1 schema (`internal/store/migrations`) has the work tables, `gate_results`, `decisions`, and both accounting tables. `comparisons`, `codebase_briefs`, and `messages` arrive with the milestones that use them.
+The Milestone 1 schema (`internal/store/migrations`) has the work tables, `gate_results`, `decisions`, and the accounting tables. `comparisons`, `codebase_briefs`, and `messages` arrive with the milestones that use them.
 
 State changes use compare-and-set (`UPDATE … WHERE state = expected`) against one transition table with an exhaustive test (`RL-13`).
 
@@ -91,12 +91,14 @@ State changes use compare-and-set (`UPDATE … WHERE state = expected`) against 
 
 | Status | Waiting on | Commands | Moves to |
 |---|---|---|---|
-| `planning` | nothing | `/cancel`, `/ask` | `awaiting_approval`, `needs_attention`, `cancelled` |
-| `awaiting_approval` | owner | `/approve`, `/revise`, `/cancel`, `/ask` | `executing`, `planning`, `cancelled` |
-| `executing` | nothing | `/cancel`, `/status`, `/ask` | `delivered`, `needs_attention`, `cancelled` |
-| `needs_attention` | owner | `/retry`, `/revise`, `/cancel`, `/ask` | `executing`, `planning`, `cancelled` |
+| `planning` | nothing | `/cancel`, `/ask`, `/help` | `awaiting_approval`, `needs_attention`, `cancelled` |
+| `awaiting_approval` | owner | `/approve`, `/revise`, `/cancel`, `/ask`, `/help` | `executing`, `planning`, `cancelled` |
+| `executing` | nothing | `/cancel`, `/status`, `/ask`, `/help` | `delivered`, `needs_attention`, `cancelled` |
+| `needs_attention` | owner | `/retry`, `/revise`, `/cancel`, `/ask`, `/help` | `executing`, `planning`, `cancelled` |
 | `delivered` | terminal | `/revise` starts a linked run | — |
 | `cancelled` | terminal | — | — |
+
+A command the table does not list in the current status gets a reply and changes nothing; every owner command is recorded in the `commands` audit table, accepted or rejected. `/retry` returns to the phase the feature request left, after re-checking the caps. `/revise` and `/ask` are not available in Milestone 1, which has no planner: they reply so and change nothing. In `delivered` and `cancelled` the workflow has closed, so a short closed-run workflow on the worker answers instead (decision 0013).
 
 There is no automatic `failed` status: every problem routes to `needs_attention` with a `reason`, and the owner decides. The workflow ends at `delivered`; merge outcomes are recorded on PR records via webhooks (`RL-9`).
 
