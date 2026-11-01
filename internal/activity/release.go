@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
+
+	"go.temporal.io/sdk/activity"
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/store"
@@ -67,7 +68,13 @@ func (a *Activities) releaseSandbox(ctx context.Context, attemptID, sandboxID st
 	return nil
 }
 
-// SweepResult is what a startup sweep did.
+// InfoLogger is what the sweep logs through: a *slog.Logger, or the
+// activity's Temporal logger.
+type InfoLogger interface {
+	Info(msg string, keyvals ...any)
+}
+
+// SweepResult is what a sweep did.
 type SweepResult struct {
 	// Released is how many recorded sandboxes were released.
 	Released int
@@ -75,8 +82,33 @@ type SweepResult struct {
 	Reaped int
 }
 
-// SweepOrphans is the reaper half of NFR-R3, run at worker startup until
-// ticket 10 schedules it: it releases every sandbox an attempt recorded
+// SweepInput is the reaper's cutoff.
+type SweepInput struct {
+	// OlderThan is the age past which a recorded attempt's sandbox, or an
+	// unrecorded container, is an orphan. It must exceed
+	// Deps.LongestSandboxHold.
+	OlderThan time.Duration
+}
+
+// SweepOrphans is the scheduled reaper (NFR-R3): ReaperWorkflow runs it
+// on the conclave-reaper schedule. It refuses a cutoff at or below the
+// longest any activity on this worker holds a sandbox, so a schedule
+// changed by hand cannot remove a live attempt's sandbox.
+//
+// Idempotent retry: a sandbox already released is released again as a
+// no-op (Release is idempotent), MarkSandboxReleased is write-once, and
+// Reap removes only what is still there.
+func (a *Activities) SweepOrphans(ctx context.Context, in SweepInput) (SweepResult, error) {
+	if longest := a.d.LongestSandboxHold(); in.OlderThan <= longest {
+		return SweepResult{}, Temporal(fmt.Errorf("%w: sweep cutoff %s does not exceed the longest sandbox hold, %s",
+			errNonRetryable, in.OlderThan, longest))
+	}
+	res, err := SweepOrphans(ctx, a.d.DB, a.d.Sandboxes, in.OlderThan, activity.GetLogger(ctx))
+	return res, Temporal(err)
+}
+
+// SweepOrphans is the reaper half of NFR-R3, run at worker startup, by
+// the scheduled reaper, and with no cutoff by `conclave halt`: it releases every sandbox an attempt recorded
 // and never marked released whose attempt started more than olderThan
 // ago, then asks the provider to remove its sandboxes older than that.
 // The second step covers the one gap the database cannot: a sandbox
@@ -85,7 +117,7 @@ type SweepResult struct {
 // olderThan must exceed the longest an attempt can run (its
 // StartToCloseTimeout), or a live attempt's sandbox would be removed
 // under it. A failure on one sandbox does not stop the sweep.
-func SweepOrphans(ctx context.Context, db store.QueryTxDB, sandboxes contracts.SandboxProvider, olderThan time.Duration, log *slog.Logger) (SweepResult, error) {
+func SweepOrphans(ctx context.Context, db store.QueryTxDB, sandboxes contracts.SandboxProvider, olderThan time.Duration, log InfoLogger) (SweepResult, error) {
 	orphans, err := store.UnreleasedAttempts(ctx, db, olderThan)
 	if err != nil {
 		return SweepResult{}, err

@@ -1,9 +1,11 @@
 package activity
 
 import (
+	"errors"
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/austmsk/conclave/internal/contracts"
@@ -176,4 +178,51 @@ func TestTraceableFromWorkflowID(t *testing.T) {
 	for _, c := range counts {
 		equalInt(t, c.what, f.count(c.query, f.workflowID()), c.want)
 	}
+}
+
+// TestSweepOrphansActivityRefusesShortCutoff: the scheduled sweep refuses
+// a cutoff that does not exceed the longest sandbox hold, Finalize's
+// included, so a schedule edited by hand cannot reap a live sandbox.
+func TestSweepOrphansActivityRefusesShortCutoff(t *testing.T) {
+	f := newFixture(t)
+	_, ref, _ := f.attempt()
+	f.must(store.SetAttemptSandbox(f.ctx, appPool, ref.AttemptID, f.sandboxes.orphan()))
+	env := f.deliveryEnv()
+	hold := f.a.d.LongestSandboxHold()
+	if hold < FinalizeTimeout {
+		t.Fatalf("LongestSandboxHold = %s, below Finalize's %s", hold, FinalizeTimeout)
+	}
+	for _, cutoff := range []time.Duration{0, time.Millisecond, hold} {
+		_, err := env.ExecuteActivity(f.a.SweepOrphans, SweepInput{OlderThan: cutoff})
+		var app *temporal.ApplicationError
+		if !errors.As(err, &app) || !app.NonRetryable() {
+			t.Fatalf("cutoff %s: got %v, want a permanent refusal", cutoff, err)
+		}
+	}
+	equalInt(t, "live sandboxes", f.sandboxes.liveIDs(), 1)
+}
+
+// TestSweepOrphansActivityTwice runs the scheduled sweep twice with a
+// cutoff past the hold: the young attempt's recorded sandbox is spared
+// both times, and the second run finds nothing. (The fake provider's Reap
+// ignores age, so it removes the container the first time; the database
+// side is what this test checks.)
+func TestSweepOrphansActivityTwice(t *testing.T) {
+	f := newFixture(t)
+	_, ref, _ := f.attempt()
+	f.must(store.SetAttemptSandbox(f.ctx, appPool, ref.AttemptID, f.sandboxes.orphan()))
+	env := f.deliveryEnv()
+	var results []SweepResult
+	for range 2 {
+		v, err := env.ExecuteActivity(f.a.SweepOrphans, SweepInput{OlderThan: f.a.d.LongestSandboxHold() + time.Minute})
+		f.must(err)
+		var res SweepResult
+		f.must(v.Get(&res))
+		results = append(results, res)
+	}
+	equalInt(t, "first released", results[0].Released, 0)
+	if results[1] != (SweepResult{}) {
+		t.Fatalf("second sweep = %+v, want nothing left", results[1])
+	}
+	equalInt(t, "this attempt unreleased", f.count(`SELECT count(*) FROM attempts WHERE id = $1 AND sandbox_released_at IS NULL`, ref.AttemptID), 1)
 }

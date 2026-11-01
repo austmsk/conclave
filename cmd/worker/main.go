@@ -20,6 +20,7 @@ import (
 
 	"github.com/austmsk/conclave/internal/activity"
 	"github.com/austmsk/conclave/internal/agent"
+	"github.com/austmsk/conclave/internal/alert"
 	"github.com/austmsk/conclave/internal/blob"
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/gate"
@@ -54,6 +55,9 @@ type options struct {
 	temporalAddr   string
 	namespace      string
 	sweepAfter     time.Duration
+	reapEvery      time.Duration
+	haltGrace      time.Duration
+	alertLog       string
 }
 
 func main() {
@@ -76,7 +80,10 @@ func parseFlags() options {
 	flag.StringVar(&o.workDir, "work-dir", "", "scratch directory for clones (required)")
 	flag.StringVar(&o.temporalAddr, "temporal-address", client.DefaultHostPort, "Temporal frontend address")
 	flag.StringVar(&o.namespace, "temporal-namespace", client.DefaultNamespace, "Temporal namespace")
-	flag.DurationVar(&o.sweepAfter, "sweep-after", sweepAfter, "age past which the startup sweep releases an unreleased sandbox")
+	flag.DurationVar(&o.sweepAfter, "sweep-after", sweepAfter, "age past which the sweep releases an unreleased sandbox")
+	flag.DurationVar(&o.reapEvery, "reap-every", reapEvery, "interval of the scheduled reaper")
+	flag.DurationVar(&o.haltGrace, "halt-grace", haltGrace, "how long the worker keeps running after it sees a halt")
+	flag.StringVar(&o.alertLog, "alert-log", "", "local append-only alert log (required)")
 	flag.Parse()
 	return o
 }
@@ -84,11 +91,14 @@ func parseFlags() options {
 func run() error {
 	o := parseFlags()
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{ReplaceAttr: github.RedactAttr}))
-	if o.blobDir == "" || o.workDir == "" {
-		return errors.New("-blob-dir and -work-dir are required")
+	if o.blobDir == "" || o.workDir == "" || o.alertLog == "" {
+		return errors.New("-blob-dir, -work-dir and -alert-log are required")
 	}
 	d, err := loadDeploy(o.deploy)
 	if err != nil {
+		return err
+	}
+	if err := checkAlerts(d); err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -102,16 +112,38 @@ func run() error {
 		return fmt.Errorf("connecting to Postgres: %w", err)
 	}
 	defer pool.Close()
+	halt := func(ctx context.Context) (store.HaltState, error) { return store.CurrentHalt(ctx, pool) }
+	if err := refuseIfHalted(ctx, halt); err != nil {
+		return err
+	}
 	if err := seedRepos(ctx, pool, d); err != nil {
 		return err
 	}
-	acts, sandboxes, err := newActivities(ctx, o, d, sec, pool)
+	alerts, err := alert.OpenLog(o.alertLog)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = alerts.Close() }()
+	acts, sandboxes, err := newActivities(ctx, o, d, sec, pool, alerts)
 	if err != nil {
 		return err
 	}
 	res, err := activity.SweepOrphans(ctx, pool, sandboxes, o.sweepAfter, log)
 	log.Info("startup sweep", "released", res.Released, "reaped", res.Reaped, "error", errString(err))
-	return serve(ctx, o, acts, log)
+	return serve(ctx, o, acts, halt, log)
+}
+
+// checkAlerts requires the alerts repository, and refuses one that is also
+// a run repository: its token asks only for issues, and no agent may ever
+// work where alerts are read (RL-18).
+func checkAlerts(d deploy) error {
+	if err := d.GitHub.RequireAlerts(); err != nil {
+		return err
+	}
+	if _, runs := d.Access[d.GitHub.Alerts.Repository]; runs {
+		return fmt.Errorf("alerts.repository %s is also a run repository in repos.yaml; alerts need a repository of their own", d.GitHub.Alerts.Repository)
+	}
+	return nil
 }
 
 // secrets are the values the worker takes from its environment.
@@ -157,7 +189,7 @@ func seedRepos(ctx context.Context, db store.DBTX, d deploy) error {
 
 // newActivities builds every client the activities use and validates the
 // whole set.
-func newActivities(ctx context.Context, o options, d deploy, sec secrets, pool *pgxpool.Pool) (*activity.Activities, *docker.Provider, error) {
+func newActivities(ctx context.Context, o options, d deploy, sec secrets, pool *pgxpool.Pool, alerts *alert.Log) (*activity.Activities, *docker.Provider, error) {
 	model, err := anthropic.New(sec.anthropicKey, "", nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("building the Anthropic client: %w", err)
@@ -192,21 +224,23 @@ func newActivities(ctx context.Context, o options, d deploy, sec secrets, pool *
 		DB: pool, GitHub: gh, Trees: activity.GitHubTrees{Client: gh, InstallationID: d.GitHub.InstallationID},
 		Sandboxes: sandboxes, Router: router, RouterConfig: d.Router, Blobs: blobs, Gate: gater.Gate,
 		Roles: roles(), Repos: d.repos(), OwnerUserID: d.GitHub.OwnerUserID, ConfigDigests: d.Digests, WorkDir: o.workDir,
+		AlertLog: alerts, AlertIssues: gh,
 	}
 	deps.Bot.Name, deps.Bot.Email = d.GitHub.BotIdentity()
-	if err := checkSweepAfter(o.sweepAfter, deps.LongestAttempt()); err != nil {
+	if err := checkSweepAfter(o.sweepAfter, deps.LongestSandboxHold()); err != nil {
 		return nil, nil, err
 	}
 	acts, err := activity.New(deps)
 	return acts, sandboxes, err
 }
 
-// checkSweepAfter refuses a startup-sweep cutoff that does not exceed
-// the longest attempt: the sweep would release a live attempt's sandbox
-// from under it on a second worker.
-func checkSweepAfter(sweepAfter, longestAttempt time.Duration) error {
-	if sweepAfter <= longestAttempt {
-		return fmt.Errorf("-sweep-after %s must exceed the longest attempt, %s, or the sweep would release a live attempt's sandbox", sweepAfter, longestAttempt)
+// checkSweepAfter refuses a sweep cutoff that does not exceed the longest
+// any activity holds a sandbox, an attempt or Finalize: the sweep would
+// remove a live sandbox from under it on a second worker. The startup
+// sweep and the scheduled reaper share the cutoff.
+func checkSweepAfter(sweepAfter, longestHold time.Duration) error {
+	if sweepAfter <= longestHold {
+		return fmt.Errorf("-sweep-after %s must exceed the longest sandbox hold, %s, or the sweep would release a live sandbox", sweepAfter, longestHold)
 	}
 	return nil
 }
@@ -221,20 +255,26 @@ func roles() map[contracts.Role]contracts.RoleSpec {
 	}
 }
 
-// serve runs two workers until SIGINT or SIGTERM: one for the workflows
-// and the small activities, and one for the attempt queue with a single
-// slot, so attempts run one at a time and two issues labelled at once
-// queue.
-func serve(ctx context.Context, o options, acts *activity.Activities, log *slog.Logger) error {
+// serve runs two workers until SIGINT, SIGTERM or a halt: one for the
+// workflows and the small activities, and one for the attempt queue with
+// a single slot, so attempts run one at a time and two issues labelled at
+// once queue. It keeps the reaper's schedule in place first.
+func serve(ctx context.Context, o options, acts *activity.Activities, halt haltState, log *slog.Logger) error {
 	c, err := client.Dial(client.Options{HostPort: o.temporalAddr, Namespace: o.namespace, Logger: log})
 	if err != nil {
 		return fmt.Errorf("connecting to Temporal at %s: %w", o.temporalAddr, err)
 	}
 	defer c.Close()
+	if err := ensureReaperSchedule(ctx, c.ScheduleClient(), o.reapEvery, o.sweepAfter); err != nil {
+		return err
+	}
+	ctx, stopForHalt := context.WithCancelCause(ctx)
+	go watchHalt(ctx, halt, haltPoll, o.haltGrace, func() { stopForHalt(errHalted) }, log)
 	feature := worker.New(c, workflow.TaskQueue, worker.Options{})
 	feature.RegisterWorkflow(workflow.FeatureWorkflow)
 	feature.RegisterWorkflow(workflow.TaskWorkflow)
 	feature.RegisterWorkflow(workflow.ClosedCommandWorkflow)
+	feature.RegisterWorkflow(workflow.ReaperWorkflow)
 	feature.RegisterActivity(acts)
 	attempts := worker.New(c, workflow.AttemptTaskQueue, worker.Options{MaxConcurrentActivityExecutionSize: 1})
 	attempts.RegisterActivityWithOptions(acts.RunAttempt, sdkactivity.RegisterOptions{Name: "RunAttempt"})
@@ -249,6 +289,9 @@ func serve(ctx context.Context, o options, acts *activity.Activities, log *slog.
 	}
 	log.Info("conclave worker polling", "task_queues", []string{workflow.TaskQueue, workflow.AttemptTaskQueue})
 	<-ctx.Done()
+	if errors.Is(context.Cause(ctx), errHalted) {
+		return errHalted
+	}
 	return nil
 }
 
