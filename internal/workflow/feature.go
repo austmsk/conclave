@@ -48,6 +48,7 @@ func FeatureWorkflow(ctx workflow.Context, in FeatureInput) error {
 		v8b:   workflow.GetVersion(ctx, versionCommands, workflow.DefaultVersion, 1) == 1,
 	}
 	f.v9 = workflow.GetVersion(ctx, versionDelivery, workflow.DefaultVersion, 1) == 1
+	f.v10 = workflow.GetVersion(ctx, versionAlerts, workflow.DefaultVersion, 1) == 1
 	if err := workflow.SetQueryHandler(ctx, QueryStatus, func() (Status, error) { return f.st, nil }); err != nil {
 		return err
 	}
@@ -86,10 +87,12 @@ type featureRun struct {
 	in    FeatureInput
 	log   log.Logger
 	actor string
-	// v8b is set for a run started under ticket 8b's code, and v9 for
-	// one started under ticket 9's, which delivers a pull request.
+	// v8b is set for a run started under ticket 8b's code, v9 for one
+	// started under ticket 9's, which delivers a pull request, and v10
+	// for one started under ticket 10a's, which raises alerts.
 	v8b bool
 	v9  bool
+	v10 bool
 
 	st      Status
 	frRev   int
@@ -360,7 +363,9 @@ func (f *featureRun) needsAttention(ctx workflow.Context, reason string) {
 	}
 	if err := f.transition(ctx, contracts.FeatureNeedsAttention, reason); err != nil {
 		f.log.Error("moving feature request to needs_attention", "reason", reason, "error", err)
+		return
 	}
+	f.raiseAlert(ctx, reason)
 }
 
 // closeCancelled closes the feature request after /cancel. If closing

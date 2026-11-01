@@ -45,7 +45,8 @@ const captureEnv = "CONCLAVE_CAPTURE_REPLAY"
 // the workflow code against the recorded events and fails on any command
 // that disagrees with them, so a pass means a worker resuming this run
 // would schedule nothing already done: no completed activity is run again
-// (NFR-R1). The real two-worker kill test is ticket 10's.
+// (NFR-R1). The real two-worker kill test is
+// TestWorkerKilledMidAttemptResumesOnSecond (ticket 10a).
 func TestReplayMidAttempt(t *testing.T) {
 	tests := []struct {
 		file          string

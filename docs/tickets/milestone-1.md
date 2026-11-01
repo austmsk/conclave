@@ -24,11 +24,12 @@ Model column: **F** = Fable 5.1 (tickets with review-list items or subtle correc
 | 8 | Feature workflow core | F | RL-1, RL-2, RL-3, RL-13, RL-14, RL-16 |
 | 8b | Commands and status surface | F | RL-9, RL-13 |
 | 9 | Pull request delivery | F | RL-2, RL-21 |
-| 10 | End-to-end run and hardening | F | RL-18 |
+| 10a | Kill switch, alerts and scheduled reaper | F | RL-18 |
+| 10b | End-to-end trials | F | RL-18 |
 
 \* Path validation does not yet have its own review-list ID; see `FR-SEC29`.
 
-**Working order:** 1–4, then **8a**, 5, 6, 7, **8-pre**, 8, **8b**, 9, 10. Ticket 8 is split three ways (see `Ticket 8 Split — Conclave.md` for the rationale), and 8-pre was added on 2026-10-26 after a review of the merged code found the workflow had nothing to call for its first steps (see `ticket-8-pre-plan.md`, whose second half also binds ticket 8). 8a goes before Ticket 5 because the runner has to tell an attempt budget hit from a platform cap hit, and 8a takes migration 00005.
+**Working order:** 1–4, then **8a**, 5, 6, 7, **8-pre**, 8, **8b**, 9, **10a**, **10b**. Ticket 8 is split three ways (see `Ticket 8 Split — Conclave.md` for the rationale), and 8-pre was added on 2026-10-26 after a review of the merged code found the workflow had nothing to call for its first steps (see `ticket-8-pre-plan.md`, whose second half also binds ticket 8). 8a goes before Ticket 5 because the runner has to tell an attempt budget hit from a platform cap hit, and 8a takes migration 00005.
 
 ---
 
@@ -222,13 +223,25 @@ Trimmed 2026-10-26: restacking (FR-S18a) and branch cleanup on merge and after 3
 
 ## Ticket 10 — End-to-end run and hardening
 
-Run the full path against the Election Tally repository ten times, including two cancellations. Fix what breaks. Add the orphan reaper as a scheduled workflow. Add the kill switch. Add the local append-only alert log and the alert-issue path.
+Split on 2026-10-31 into 10a (the hardening code) and 10b (the live trials), each its own session and pull request. Full plan and owner decisions: `ticket-10-plan.md`.
 
-The ten trial issues are written in the owner-section format (Task, Acceptance criteria, Hints) and saved under `docs/trials/` with base SHA, attempt, gate results, PR, CI result, cost and duration, so they seed Milestone 2's replay benchmark. The trial report is produced by one documented SQL query over the schema (resolve rate, cost per resolved task, time per task), which Milestone 2's report generator starts from. Deferrals in `m1-exit-checklist.md` item 10 are each recorded as a decision.
+### Ticket 10a — Kill switch, alerts and scheduled reaper
 
-**Done when:** the 7-of-10 success criterion is met and the trial log and query exist; a worker killed mid-attempt resumes on a second worker without repeating completed activities (NFR-R1, moved here from Ticket 8, whose testsuite has no workers); no orphaned containers remain; the kill switch cancels everything in flight; a deliberately triggered alert opens an issue and is written to the local log; a `docs/decisions/` record exists for every non-obvious choice made during the milestone.
+Add the orphan reaper as a scheduled workflow. Add the kill switch as a `conclave halt` command in a new `cmd/conclave` binary: it records the halt in Postgres, cancels every open workflow, sweeps sandboxes with no age cutoff, and workers stop and refuse to start while it is set; `conclave resume` clears it and cancels runs started during the halt. Add the local append-only alert log and the alert-issue path, delivered to a private operations repository with an issues-only token; Milestone 1's sources are the kill switch (`halt`) and a budget-cap stop (`pause`). Write the trial-report SQL query (resolve rate, cost per resolved task, time per task), which Milestone 2's report generator starts from. Record the deferrals in `m1-exit-checklist.md` item 10 as a decision.
 
-**Requirements:** FR-SEC11, FR-SEC31, NFR-R3, NFR-M9 · **Review list:** RL-18
+**Done when:** the reaper runs on a Temporal schedule and is safe to run twice; the kill switch cancels everything in flight, releases every sandbox, and stops the workers, proved against a real Temporal server; a worker killed mid-attempt lets a second worker continue the workflow without repeating completed activities (NFR-R1, moved here from Ticket 8, whose testsuite has no workers); a deliberately triggered alert opens an issue, a repeat updates that issue, and both are written to the local log first; the report query is tested against seeded rows; `make check` passes.
+
+**Requirements:** FR-SEC11, FR-SEC31, NFR-R1, NFR-R3, NFR-M9 · **Review list:** RL-18
+
+### Ticket 10b — End-to-end trials
+
+Run the full path against the Election Tally repository ten times, including two cancellations. Fix what breaks. Kill a worker mid-attempt during one trial and continue on a second.
+
+The ten trial issues are written in the owner-section format (Task, Acceptance criteria, Hints) and saved under `docs/trials/local/` (git-ignored, because the target repository is private) with base SHA, attempt, gate results, PR, CI result, cost and duration, so they seed Milestone 2's replay benchmark. The trial report comes from 10a's query.
+
+**Done when:** the 7-of-10 success criterion is met and the trial log exists; no orphaned containers remain; the kill switch is exercised once with a run in flight; a `docs/decisions/` record exists for every non-obvious choice made during the milestone.
+
+**Requirements:** NFR-R1 (live), NFR-R3, NFR-M9 · **Review list:** RL-18
 
 ---
 

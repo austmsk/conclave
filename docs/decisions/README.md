@@ -18,5 +18,7 @@ One record per non-obvious choice, written after the ticket merges ([0001](0001-
 | [0012](0012-temporal-workflow-shape.md) | The Temporal Go SDK, one activity per attempt, and the attempt timeout | proposed |
 | [0013](0013-commands-and-status-surface.md) | Commands and the status surface: one table, a closed-run workflow, and a versioned change | proposed |
 | [0014](0014-pull-request-delivery.md) | Pull request delivery: delivered after CI, polled checks, a sandboxed rebase, and deterministic commits | proposed |
+| [0015](0015-kill-switch-alerts-and-reaper.md) | The kill switch, alerts and the scheduled reaper: a CLI halt in Postgres, alert issues in a private operations repository, and a Temporal schedule | proposed |
+| [0016](0016-milestone-1-deferrals.md) | What Milestone 1 defers, and the known gaps it leaves | proposed |
 
 New records take the next free number, and this table gains a row in the same change.

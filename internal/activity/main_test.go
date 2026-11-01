@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/austmsk/conclave/internal/agent"
+	"github.com/austmsk/conclave/internal/alert"
 	"github.com/austmsk/conclave/internal/blob"
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/gate"
@@ -127,6 +129,8 @@ type fixture struct {
 	model     *faketest.Provider
 	blobDir   string
 	issue     int
+	alerts    *fakeAlertIssues
+	alertLog  string
 
 	// gateFn and rebaseFn answer Deps.Gate and Deps.Rebase when set.
 	gateFn   GateFunc
@@ -149,6 +153,12 @@ func newFixture(t *testing.T, turns ...faketest.Turn) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.alerts, f.alertLog = newFakeAlertIssues(), filepath.Join(t.TempDir(), "alerts.jsonl")
+	alertLog, err := alert.OpenLog(f.alertLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = alertLog.Close() })
 	cfg := llm.Config{
 		Budgets: llm.Budgets{FeatureRequestTokens: 1 << 40, MonthlyUSD: 1e9},
 		Models: map[string]llm.ModelConfig{fakeModel: {
@@ -186,7 +196,7 @@ func newFixture(t *testing.T, turns ...faketest.Turn) *fixture {
 		Roles:       map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer, contracts.RolePRWriter: agent.PRWriter},
 		Repos:       map[string]Repo{testRepo: testRepoConfig()},
 		OwnerUserID: testOwner, ConfigDigests: map[string]string{"repos.yaml": "sha256:00"},
-		WorkDir: t.TempDir(),
+		WorkDir: t.TempDir(), AlertLog: alertLog, AlertIssues: f.alerts,
 	})
 	if err != nil {
 		t.Fatal(err)

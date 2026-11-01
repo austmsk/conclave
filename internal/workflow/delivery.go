@@ -24,7 +24,7 @@ const versionDelivery = "delivery-9"
 const (
 	writeStartToClose    = 15 * time.Minute
 	writeScheduleToClose = time.Hour
-	finalizeStartToClose = 45 * time.Minute
+	finalizeStartToClose = activity.FinalizeTimeout
 	// finalizeTries is FR-SEC27's bound: a gating environment that cannot
 	// be built is retried once and escalated on repeat.
 	finalizeTries = 2

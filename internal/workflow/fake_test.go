@@ -95,6 +95,9 @@ type world struct {
 	// ci is how OpenPullRequest says to wait for CI; zero means a minute
 	// between reads and an hour in all.
 	ci activity.CIWait
+	// alerts holds each alert RaiseAlert delivered, keyed by occurrence
+	// (feature request and revision), as the operations repository would.
+	alerts map[string]activity.AlertInput
 	// checks answers the nth ReadChecks of the run (from 1); nil means
 	// every read finds CI passed.
 	checks func(n int) activity.ChecksResult
@@ -123,6 +126,7 @@ func newWorld() *world {
 		fr: "", calls: map[string]int{}, fail: map[string]error{}, refuseMovesTo: map[contracts.FeatureRequestStatus]int{},
 		audit: map[int64]activity.RecordCommandInput{}, replies: map[int64]activity.ReplyInput{},
 		stops: map[string][]activity.DeliveryStep{}, failOnce: map[string]error{},
+		alerts: map[string]activity.AlertInput{},
 	}
 }
 
@@ -636,6 +640,23 @@ func (w *world) reply(id int64) (activity.ReplyInput, bool) {
 
 // register puts every world method in env under the activity's name, so
 // the workflow's calls through acts reach the fake.
+// RaiseAlert delivers each occurrence once, as the activity does.
+func (w *world) RaiseAlert(_ context.Context, in activity.AlertInput) error {
+	if err := w.count("RaiseAlert"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.alerts[fmt.Sprintf("%s:%d", in.FeatureRequestID, in.Revision)] = in
+	return nil
+}
+
+func (w *world) alertCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.alerts)
+}
+
 func (w *world) register(env *testsuite.TestWorkflowEnvironment) {
 	w.registerOn(env)
 }
@@ -660,6 +681,7 @@ func (w *world) registerOn(r registrar) {
 		{"LookupFeature", w.LookupFeature},
 		{"WritePullRequest", w.WritePullRequest}, {"Land", w.Land}, {"Finalize", w.Finalize},
 		{"OpenPullRequest", w.OpenPullRequest}, {"ReadChecks", w.ReadChecks}, {"MarkReady", w.MarkReady},
+		{"RaiseAlert", w.RaiseAlert},
 	}
 	for _, f := range fakes {
 		r.RegisterActivityWithOptions(f.fn, sdkactivity.RegisterOptions{Name: f.name})

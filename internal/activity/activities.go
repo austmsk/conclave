@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/austmsk/conclave/internal/agent"
+	"github.com/austmsk/conclave/internal/alert"
 	"github.com/austmsk/conclave/internal/blob"
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/gate"
@@ -103,6 +104,11 @@ type Deps struct {
 	// directory under it and is removed when its activity ends.
 	WorkDir string
 
+	// AlertLog and AlertIssues raise alerts: the local append-only log,
+	// then issues in the operations repository (FR-SEC31).
+	AlertLog    *alert.Log
+	AlertIssues alert.Issues
+
 	// HeartbeatEvery overrides the heartbeat interval; zero means
 	// HeartbeatEvery. Tests shorten it.
 	HeartbeatEvery time.Duration
@@ -143,7 +149,7 @@ func New(d Deps) (*Activities, error) {
 
 func (d Deps) validate() error {
 	if !d.hasClients() {
-		return errors.New("activities need a database, GitHub, tree source, sandbox provider, router, blob store and gate")
+		return errors.New("activities need a database, GitHub, tree source, sandbox provider, router, blob store, gate and alert sink")
 	}
 	switch {
 	case len(d.Repos) == 0:
@@ -171,7 +177,7 @@ func (d Deps) validate() error {
 // hasClients reports whether every client is set.
 func (d Deps) hasClients() bool {
 	return d.DB != nil && d.GitHub != nil && d.Trees != nil && d.Sandboxes != nil &&
-		d.Router != nil && d.Blobs != nil && d.Gate != nil
+		d.Router != nil && d.Blobs != nil && d.Gate != nil && d.AlertLog != nil && d.AlertIssues != nil
 }
 
 // repo returns a configured repository's settings.
@@ -207,6 +213,17 @@ func (d Deps) LongestAttempt() time.Duration {
 		}
 	}
 	return longest
+}
+
+// FinalizeTimeout is Finalize's StartToCloseTimeout: the finalization
+// rebase and the clean_room gate rerun, each in a sandbox of its own.
+const FinalizeTimeout = 45 * time.Minute
+
+// LongestSandboxHold is the longest any activity on this worker can hold
+// a sandbox: the longest attempt, or Finalize. A sweep's cutoff must
+// exceed it, or the sweep would remove a sandbox still in use.
+func (d Deps) LongestSandboxHold() time.Duration {
+	return max(d.LongestAttempt(), FinalizeTimeout)
 }
 
 // provenance is what the router is configured to use for role: the

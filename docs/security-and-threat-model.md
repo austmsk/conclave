@@ -210,13 +210,13 @@ Reviewed weekly alongside the other periodic checks.
 
 ## Incident Response Runbook
 
-1. **Stop:** trigger the kill switch.
-2. **Read the alert:** the alert issue states what automatic action was already taken and which artifacts hold the evidence. If GitHub is implicated, read the local append-only alert log on the central machine instead.
-2. **Revoke and rotate:** generate a new GitHub App private key and delete the old one (installation tokens expire within an hour); rotate model API keys; remove any suspected machine from Tailscale.
-3. **Investigate:** review the audit log and the App's GitHub activity (pushed branches, comments, PRs).
-4. **Clean up:** close suspicious PRs and delete suspicious branches.
-5. **Assess exposure:** determine what data crossed which boundaries, by tier. If personal data from a sensitive repository may have been exposed, check what obligations apply; organizations processing personal data in Uganda may have duties under the Data Protection and Privacy Act, 2019. Confirm with a qualified advisor.
-6. **Learn:** write a postmortem as a decision record and add a regression test for the failure.
+1. **Stop:** run `conclave halt` (see [`runbooks.md`](runbooks.md#halt)). It records the halt, cancels every open run, sweeps every sandbox, and stops the workers.
+2. **Read the alert:** the alert issue states what automatic action was already taken and which artifacts hold the evidence. If GitHub is implicated, read the local append-only alert log on the central machine instead ([`runbooks.md`](runbooks.md#alert-delivery-failed)).
+3. **Revoke and rotate:** generate a new GitHub App private key and delete the old one (installation tokens expire within an hour); rotate model API keys; remove any suspected machine from Tailscale.
+4. **Investigate:** review the audit log and the App's GitHub activity (pushed branches, comments, PRs).
+5. **Clean up:** close suspicious PRs and delete suspicious branches.
+6. **Assess exposure:** determine what data crossed which boundaries, by tier. If personal data from a sensitive repository may have been exposed, check what obligations apply; organizations processing personal data in Uganda may have duties under the Data Protection and Privacy Act, 2019. Confirm with a qualified advisor.
+7. **Learn:** write a postmortem as a decision record and add a regression test for the failure.
 
 ## Accepted Residual Risks
 

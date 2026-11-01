@@ -293,6 +293,19 @@ func (p *Provider) Reap(ctx context.Context, olderThan time.Duration) (int, erro
 	return removed, errors.Join(errs...)
 }
 
+// CountSandboxes returns how many containers carry the conclave.sandbox
+// label in any namespace, running or not. `conclave halt` checks it is
+// zero after its sweep: it is what `docker ps -a --filter
+// label=conclave.sandbox` shows.
+func (p *Provider) CountSandboxes(ctx context.Context) (int, error) {
+	filters := make(client.Filters).Add("label", labelSandbox+"=true")
+	containers, err := p.cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
+	if err != nil {
+		return 0, fmt.Errorf("listing sandbox containers: %w", err)
+	}
+	return len(containers.Items), nil
+}
+
 func (p *Provider) reapContainers(ctx context.Context, filters client.Filters, cutoff time.Time) (int, error) {
 	containers, err := p.cli.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: filters})
 	if err != nil {

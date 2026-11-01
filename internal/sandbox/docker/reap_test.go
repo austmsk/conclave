@@ -87,3 +87,18 @@ func TestReapSweepsOtherNamespacesOnlyPastStaleAge(t *testing.T) {
 		t.Error("stale sandbox in another namespace survived")
 	}
 }
+
+// TestCountSandboxesSeesEveryLabelledContainer: the halt's check counts
+// this provider's sandboxes, and at least as many as its namespace holds,
+// since it counts every namespace.
+func TestCountSandboxesSeesEveryLabelledContainer(t *testing.T) {
+	h := newHarness(t)
+	h.create(t, h.spec(t, contracts.NetworkNone))
+	n, err := h.p.CountSandboxes(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mine := len(h.containers(t)); mine != 1 || n < mine {
+		t.Fatalf("CountSandboxes = %d with %d in this namespace; want at least that one", n, mine)
+	}
+}
