@@ -139,7 +139,7 @@ Every repository has a tier, set in the platform repository's configuration. A t
 | E1 | Sandbox escape | Non-root user; all Linux capabilities dropped; `no-new-privileges`; no Docker socket; no privileged mode; read-only root filesystem where feasible; gVisor on Linux workers | FR-SEC4 |
 | E2 | Manipulated agent misuses tools | Per-role tool allowlists; read-only roles; tool arguments validated (file paths confined to the workspace) | FR-SEC3 |
 | E2a | Symlink escape or check-then-write race from the workspace | File tools operate through a workspace root handle enforcing containment at the syscall level; absolute paths, `..` segments, and encoded traversal rejected rather than sanitized; sensitive in-workspace paths (`.git` internals, substituted fixtures) denied; rejections logged and repeated rejections flag the attempt | FR-SEC29 |
-| E3 | Agent obtains GitHub write access | Tokens exist only in platform processes; minimal App permissions (contents, pull requests, issues); never `workflows` or administration | FR-SEC5, FR-SEC15 |
+| E3 | Agent obtains GitHub write access | Tokens exist only in platform processes; minimal App permissions (contents, pull requests, issues; checks read-only); never `workflows` or administration | FR-SEC5, FR-SEC15 |
 | E4 | Lateral movement between machines | Tailscale access rules limit each device to required ports; workers run as a dedicated non-admin OS user; only the webhook endpoint is public | FR-SEC18 |
 
 ### Human Factors

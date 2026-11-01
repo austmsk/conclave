@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/deployfile"
@@ -76,10 +77,47 @@ type Policy struct {
 	// attempt (FR-SEC29). Zero means defaultFlagRejectionsAt.
 	FlagRejectionsAt int
 
+	// CI is when a delivered pull request counts as passing the
+	// repository's own CI (FR-A7).
+	CI CIPolicy
+
 	// compiled holds the patterns compiled by LoadConfig. A Policy built
 	// any other way compiles them when a gate first needs them.
 	compiled *policyPatterns
 }
+
+// CIPolicy says which of a repository's CI checks a pull request must
+// pass before it is marked ready (FR-A7), and how delivery waits for them
+// (decision 0014). Delivery reads check runs only, not commit statuses.
+type CIPolicy struct {
+	// RequiredChecks are check run names. Every one must complete and
+	// pass on the pull request's head commit.
+	RequiredChecks []string
+
+	// CheckApp is the slug of the GitHub App whose check runs count,
+	// github-actions by default. A check run with a required name from
+	// any other App is ignored: any App with checks:write on the
+	// repository could otherwise satisfy a required check by name.
+	CheckApp string
+
+	// PollEvery is how often the checks are read; Timeout is how long
+	// delivery waits for them to complete before it stops with
+	// ci_timeout.
+	PollEvery time.Duration
+	Timeout   time.Duration
+}
+
+// CI defaults and bounds.
+const (
+	defaultCheckApp  = "github-actions"
+	defaultPollEvery = time.Minute
+	defaultCITimeout = time.Hour
+	minPollEvery     = 10 * time.Second
+	maxCITimeout     = 24 * time.Hour
+)
+
+// checkAppRE is the shape of a GitHub App slug.
+var checkAppRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,99}$`)
 
 // policyPatterns are a policy's path patterns, defaults included, with
 // the lists they were compiled from.
@@ -118,6 +156,11 @@ const placeholderSHA256 = "00000000000000000000000000000000000000000000000000000
 //	      comment_closers: ['^([^/]|/[^*])*\*/'] # RE2
 //	      config_paths: [lib/]
 //	    flag_rejections_at: 3       # optional, default 3
+//	    ci:                         # required
+//	      required_checks: [build]  # check run names, at least one
+//	      check_app: github-actions # optional, the default
+//	      poll_every: 1m            # optional, default 1m, at least 10s
+//	      timeout: 60m              # optional, default 60m, at most 24h
 type gatesFile struct {
 	Gitleaks     *gitleaksFile       `yaml:"gitleaks"`
 	Repositories map[string]repoFile `yaml:"repositories"`
@@ -136,6 +179,14 @@ type repoFile struct {
 	ExecutionSurfacePaths []string    `yaml:"execution_surface_paths"`
 	Tests                 *testsFile  `yaml:"tests"`
 	FlagRejectionsAt      *int        `yaml:"flag_rejections_at"`
+	CI                    *ciFile     `yaml:"ci"`
+}
+
+type ciFile struct {
+	RequiredChecks []string `yaml:"required_checks"`
+	CheckApp       string   `yaml:"check_app"`
+	PollEvery      string   `yaml:"poll_every"`
+	Timeout        string   `yaml:"timeout"`
 }
 
 type limitsFile struct {
@@ -215,7 +266,12 @@ func repoPolicy(rf repoFile) (Policy, error) {
 	if err != nil {
 		return Policy{}, err
 	}
+	ci, err := ciPolicy(rf.CI)
+	if err != nil {
+		return Policy{}, err
+	}
 	p := Policy{
+		CI:                    ci,
 		Mode:                  mode,
 		Limits:                lim,
 		ProtectedPaths:        rf.ProtectedPaths,
@@ -235,6 +291,70 @@ func repoPolicy(rf repoFile) (Policy, error) {
 	}
 	p.compiled = compiled
 	return p, nil
+}
+
+// ciPolicy validates the ci block, which every repository needs: a pull
+// request is ready only when the repository's own CI passes (FR-A7).
+func ciPolicy(c *ciFile) (CIPolicy, error) {
+	if c == nil {
+		return CIPolicy{}, errors.New("ci: required; delivery waits for the repository's CI to pass")
+	}
+	checks, err := requiredChecks(c.RequiredChecks)
+	if err != nil {
+		return CIPolicy{}, err
+	}
+	p := CIPolicy{RequiredChecks: checks, CheckApp: defaultCheckApp, PollEvery: defaultPollEvery, Timeout: defaultCITimeout}
+	if c.CheckApp != "" {
+		if !checkAppRE.MatchString(c.CheckApp) {
+			return CIPolicy{}, fmt.Errorf("ci.check_app: %q is not a GitHub App slug", c.CheckApp)
+		}
+		p.CheckApp = c.CheckApp
+	}
+	if p.PollEvery, err = ciDuration("ci.poll_every", c.PollEvery, defaultPollEvery); err != nil {
+		return CIPolicy{}, err
+	}
+	if p.Timeout, err = ciDuration("ci.timeout", c.Timeout, defaultCITimeout); err != nil {
+		return CIPolicy{}, err
+	}
+	switch {
+	case p.PollEvery < minPollEvery:
+		return CIPolicy{}, fmt.Errorf("ci.poll_every: %s is under the minimum %s", p.PollEvery, minPollEvery)
+	case p.Timeout < p.PollEvery:
+		return CIPolicy{}, fmt.Errorf("ci.timeout: %s is shorter than ci.poll_every %s", p.Timeout, p.PollEvery)
+	case p.Timeout > maxCITimeout:
+		return CIPolicy{}, fmt.Errorf("ci.timeout: %s is over the maximum %s", p.Timeout, maxCITimeout)
+	}
+	return p, nil
+}
+
+// requiredChecks refuses an empty list, a blank name and a duplicate.
+func requiredChecks(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, errors.New("ci.required_checks: required; name at least one check")
+	}
+	seen := make(map[string]bool, len(names))
+	for i, n := range names {
+		switch {
+		case strings.TrimSpace(n) == "":
+			return nil, fmt.Errorf("ci.required_checks[%d]: empty", i)
+		case seen[n]:
+			return nil, fmt.Errorf("ci.required_checks[%d]: %q appears twice", i, n)
+		}
+		seen[n] = true
+	}
+	return slices.Clone(names), nil
+}
+
+// ciDuration reads a Go duration such as "1m", or def when s is empty.
+func ciDuration(key, s string, def time.Duration) (time.Duration, error) {
+	if s == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("%s: %q is not a positive duration such as 1m", key, s)
+	}
+	return d, nil
 }
 
 func policyMode(m string) (contracts.GatingMode, error) {

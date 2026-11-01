@@ -37,6 +37,7 @@ func WebhookConfig() github.Config {
 		AppSlug:        FixtureAppSlug,
 		InstallationID: FixtureInstallationID,
 		OwnerUserID:    FixtureOwnerID,
+		BotUserID:      FixtureAppBotID,
 		TriggerLabel:   github.DefaultTriggerLabel,
 		APIBaseURL:     github.DefaultAPIBaseURL,
 		GitBaseURL:     github.DefaultGitBaseURL,

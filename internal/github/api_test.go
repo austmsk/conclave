@@ -39,7 +39,7 @@ func restOptions() githubtest.APIOptions {
 
 func restConfig(base string) github.Config {
 	return github.Config{
-		AppID: restAppID, AppSlug: restSlug, InstallationID: restInstallationID, OwnerUserID: 1,
+		AppID: restAppID, AppSlug: restSlug, InstallationID: restInstallationID, OwnerUserID: 1, BotUserID: 2,
 		TriggerLabel: "agent", APIBaseURL: base, GitBaseURL: base,
 	}
 }

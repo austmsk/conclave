@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -126,6 +127,10 @@ type fixture struct {
 	model     *faketest.Provider
 	blobDir   string
 	issue     int
+
+	// gateFn and rebaseFn answer Deps.Gate and Deps.Rebase when set.
+	gateFn   GateFunc
+	rebaseFn RebaseFunc
 }
 
 // newFixture builds activities whose model replays turns. Each fixture
@@ -151,9 +156,13 @@ func newFixture(t *testing.T, turns ...faketest.Turn) *fixture {
 		}},
 		// The test writer is routed and allowed, but only the tests that
 		// add it to Deps.Roles can run it.
-		Roles: map[contracts.Role]llm.RoleRoute{contracts.RoleImplementer: {Model: fakeModel}, contracts.RoleTestWriter: {Model: fakeModel}},
+		Roles: map[contracts.Role]llm.RoleRoute{
+			contracts.RoleImplementer: {Model: fakeModel}, contracts.RoleTestWriter: {Model: fakeModel}, contracts.RolePRWriter: {Model: fakeModel},
+		},
 	}
-	access := map[string]llm.RepoAccess{testRepo: {Tier: contracts.TierPublic, Roles: []contracts.Role{contracts.RoleImplementer, contracts.RoleTestWriter}}}
+	access := map[string]llm.RepoAccess{testRepo: {Tier: contracts.TierPublic, Roles: []contracts.Role{
+		contracts.RoleImplementer, contracts.RoleTestWriter, contracts.RolePRWriter,
+	}}}
 	router, err := llm.New(cfg, map[string]llm.Provider{llm.ProviderAnthropic: f.model},
 		llm.NewDirectoryRepos(store.NewRepoDirectory(appPool), access), store.NewCostLedger(appPool))
 	if err != nil {
@@ -161,10 +170,20 @@ func newFixture(t *testing.T, turns ...faketest.Turn) *fixture {
 	}
 	f.a, err = New(Deps{
 		DB: appPool, GitHub: f.gh, Trees: GitHubTrees{Client: f.gh, InstallationID: 5}, Sandboxes: f.sandboxes, Router: router, RouterConfig: cfg, Blobs: blobs,
-		Gate: func(context.Context, gate.Input) (gate.Outcome, error) {
+		Gate: func(ctx context.Context, in gate.Input) (gate.Outcome, error) {
+			if f.gateFn != nil {
+				return f.gateFn(ctx, in)
+			}
 			return gate.Outcome{}, errors.New("the fixture's gate is never reached")
 		},
-		Roles:       map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer},
+		Rebase: func(ctx context.Context, sb contracts.Sandbox, blobs blob.Store, original gate.Artifact, diff []byte, base string) (gate.Artifact, error) {
+			if f.rebaseFn != nil {
+				return f.rebaseFn(ctx, sb, blobs, original, diff, base)
+			}
+			return gate.Artifact{}, errors.New("the fixture's rebase is never reached")
+		},
+		Bot:         BotIdentity{Name: "conclave-test[bot]", Email: "77+conclave-test[bot]@users.noreply.github.com"},
+		Roles:       map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer, contracts.RolePRWriter: agent.PRWriter},
 		Repos:       map[string]Repo{testRepo: testRepoConfig()},
 		OwnerUserID: testOwner, ConfigDigests: map[string]string{"repos.yaml": "sha256:00"},
 		WorkDir: t.TempDir(),
@@ -177,6 +196,9 @@ func newFixture(t *testing.T, turns ...faketest.Turn) *fixture {
 
 func testRepoConfig() Repo {
 	return Repo{
+		Gates: gate.Policy{CI: gate.CIPolicy{
+			RequiredChecks: []string{"build", "test"}, CheckApp: "github-actions", PollEvery: time.Minute, Timeout: time.Hour,
+		}},
 		Access: llm.RepoAccess{Tier: contracts.TierPublic, Roles: []contracts.Role{contracts.RoleImplementer}},
 		Sandbox: sandbox.RepoSandbox{
 			DefaultBranch: "main", Image: "example.invalid/sandbox@sha256:" + fmt.Sprintf("%064d", 1),
@@ -279,6 +301,14 @@ type fakeGitHub struct {
 	creates     int
 	edits       int
 	lostReplies int
+
+	// Delivery state (delivery_fakes_test.go): the bare remote pushes
+	// land in, the pull requests opened, and the check runs to report.
+	remote    string
+	pushes    int
+	pulls     []fakePull
+	checkRuns map[string][]github.CheckRun
+	readies   int
 }
 
 var _ github.Client = (*fakeGitHub)(nil)
@@ -292,7 +322,8 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	sandboxtest.WriteFile(t, dir, "README.md", "# Election Tally\n")
 	sandboxtest.Git(t, dir, "add", "-A")
 	sandboxtest.Git(t, dir, "commit", "-q", "-m", "initial")
-	g := &fakeGitHub{src: dir}
+	g := &fakeGitHub{src: dir, remote: t.TempDir(), checkRuns: map[string][]github.CheckRun{}}
+	sandboxtest.Git(t, g.remote, "init", "-q", "--bare", ".")
 	g.head = trimmed(sandboxtest.Git(t, dir, "rev-parse", "HEAD"))
 	return g
 }
@@ -309,14 +340,21 @@ func (g *fakeGitHub) advance(t *testing.T) string {
 	return g.head
 }
 
-func (g *fakeGitHub) Clone(_ context.Context, _ github.RepoRef, dir, ref string) error {
+// Clone copies the source repository, checks out ref, and prepares the
+// tree as the real clone does.
+func (g *fakeGitHub) Clone(ctx context.Context, _ github.RepoRef, dir, ref string) error {
 	g.mu.Lock()
 	g.clones++
 	g.mu.Unlock()
 	if err := os.CopyFS(dir, os.DirFS(g.src)); err != nil {
 		return fmt.Errorf("fake clone: %w", err)
 	}
-	return nil
+	if ref != "" {
+		if out, err := exec.CommandContext(ctx, "git", "-C", dir, "checkout", "-q", ref).CombinedOutput(); err != nil {
+			return fmt.Errorf("fake clone: checking out %s: %w: %s", ref, err, out)
+		}
+	}
+	return sandbox.PrepareTree(dir)
 }
 
 func (g *fakeGitHub) CreateComment(_ context.Context, _ github.RepoRef, _ int, body string) (github.Comment, error) {
@@ -336,13 +374,6 @@ func (g *fakeGitHub) ListIssueComments(context.Context, github.RepoRef, int) ([]
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]github.Comment(nil), g.comments...), nil
-}
-
-func (g *fakeGitHub) Push(context.Context, github.PushSpec) error {
-	return errors.New("not in ticket 8")
-}
-func (g *fakeGitHub) CreatePullRequest(context.Context, github.PullRequestSpec) (github.PullRequest, error) {
-	return github.PullRequest{}, errors.New("not in ticket 8")
 }
 
 // EditComment replaces the body of a comment the fake holds; an unknown

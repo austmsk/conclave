@@ -25,10 +25,15 @@ import (
 )
 
 // The captured histories: the feature workflow waiting on its child, and
-// the child with its attempt activity scheduled and not yet completed.
+// the child with its attempt activity scheduled and not yet completed,
+// both from before ticket 9, so their replay shows a run started then
+// still replays under the delivery version gate; and a ticket 9 feature
+// workflow waiting between two reads of CI, its pull request open.
 const (
-	featureHistory = "testdata/feature-mid-attempt.json"
-	taskHistory    = "testdata/task-mid-attempt.json"
+	featureHistory   = "testdata/feature-mid-attempt.json"
+	taskHistory      = "testdata/task-mid-attempt.json"
+	deliveryHistory  = "testdata/feature-mid-ci.json"
+	deliveryCaptureQ = "t9-replay"
 )
 
 // captureEnv gates TestCaptureReplayHistory, which needs a running
@@ -49,6 +54,7 @@ func TestReplayMidAttempt(t *testing.T) {
 	}{
 		{featureHistory, []string{"Analyze", "Transition", "PostPlanComment", "Approve", "CreateTask"}, ""},
 		{taskHistory, []string{"PrepareAttempt"}, "RunAttempt"},
+		{deliveryHistory, []string{"Approve", "CreateTask", "WritePullRequest", "Land", "Finalize", "OpenPullRequest", "ReadChecks"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(filepath.Base(tt.file), func(t *testing.T) {
@@ -182,8 +188,78 @@ func TestCaptureReplayHistory(t *testing.T) {
 	close(release)
 }
 
+// TestCaptureDeliveryReplayHistory records the ticket 9 replay fixture
+// from the dev Temporal, as TestCaptureReplayHistory does: a run whose
+// task passed, its pull request opened, and its first read of CI found
+// the checks still running, so it waits on the poll timer. It leaves the
+// pre-ticket-9 fixtures alone.
+func TestCaptureDeliveryReplayHistory(t *testing.T) {
+	if os.Getenv(captureEnv) == "" {
+		t.Skipf("set %s=1 with Temporal running to recapture the replay fixtures", captureEnv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	c, err := client.Dial(client.Options{})
+	if err != nil {
+		t.Fatalf("dialling Temporal: %v", err)
+	}
+	defer c.Close()
+	w := newWorld()
+	w.run = returns(contracts.AttemptPassed, "")
+	w.ci = activity.CIWait{PollEvery: time.Hour, Timeout: 24 * time.Hour}
+	w.checks = func(int) activity.ChecksResult { return pendingCI }
+	stop := startCaptureWorkers(t, c, deliveryCaptureQ, w)
+	defer stop()
+
+	in := featureInput()
+	in.Start.WorkflowID = fmt.Sprintf("t9-feature-%d", time.Now().UnixNano())
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{ID: in.Start.WorkflowID, TaskQueue: deliveryCaptureQ}, FeatureWorkflow, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.TerminateWorkflow(context.Background(), run.GetID(), "", "replay capture done") }()
+	waitForStatus(ctx, t, c, run.GetID(), contracts.FeatureAwaitingApproval)
+	if err := c.SignalWorkflow(ctx, run.GetID(), "", SignalName(github.CommandApprove), command(github.CommandApprove, 1)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCIPoll(ctx, t, c, run.GetID())
+	writeHistory(ctx, t, c, run.GetID(), deliveryHistory)
+}
+
+// waitForCIPoll waits until the workflow's history shows a completed
+// ReadChecks and ends on the poll timer.
+func waitForCIPoll(ctx context.Context, t *testing.T, c client.Client, id string) {
+	t.Helper()
+	for ctx.Err() == nil {
+		if historyWaitsOnCI(ctx, c, id) {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("workflow %s never waited on CI", id)
+}
+
+func historyWaitsOnCI(ctx context.Context, c client.Client, id string) bool {
+	it := c.GetWorkflowHistory(ctx, id, "", false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+	h := &historypb.History{}
+	for it.HasNext() {
+		e, err := it.Next()
+		if err != nil {
+			return false
+		}
+		h.Events = append(h.Events, e)
+	}
+	completed, _ := activityProgress(h)
+	if completed["ReadChecks"] == 0 {
+		return false
+	}
+	// The poll timer is the last command the workflow issued.
+	events := h.GetEvents()
+	return len(events) > 0 && events[len(events)-1].GetEventType() == enumspb.EVENT_TYPE_TIMER_STARTED
+}
+
 // startCaptureWorkers runs the workflows and w's activities on queue and
-// its attempt queue.
+// its attempt queue, where RunAttempt and Finalize run.
 func startCaptureWorkers(t *testing.T, c client.Client, queue string, w *world) func() {
 	t.Helper()
 	main := worker.New(c, queue, worker.Options{})
@@ -192,6 +268,7 @@ func startCaptureWorkers(t *testing.T, c client.Client, queue string, w *world) 
 	w.registerOn(main)
 	attempts := worker.New(c, AttemptQueue(queue), worker.Options{MaxConcurrentActivityExecutionSize: 1})
 	attempts.RegisterActivityWithOptions(w.RunAttempt, sdkactivity.RegisterOptions{Name: "RunAttempt"})
+	attempts.RegisterActivityWithOptions(w.Finalize, sdkactivity.RegisterOptions{Name: "Finalize"})
 	for _, wk := range []worker.Worker{main, attempts} {
 		if err := wk.Start(); err != nil {
 			t.Fatal(err)

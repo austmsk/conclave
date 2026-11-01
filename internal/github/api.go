@@ -47,6 +47,11 @@ type Client interface {
 	ListIssueComments(ctx context.Context, repo RepoRef, issue int) ([]Comment, error)
 	// AddReaction reacts to an issue or a comment.
 	AddReaction(ctx context.Context, repo RepoRef, t ReactionTarget, r Reaction) error
+	// ListCheckRuns returns the check runs on a full commit ID.
+	ListCheckRuns(ctx context.Context, repo RepoRef, commit string) ([]CheckRun, error)
+	// MarkPullRequestReady takes a draft pull request this App opened out
+	// of draft, or returns it unchanged when it is not a draft.
+	MarkPullRequestReady(ctx context.Context, repo RepoRef, number int) (PullRequest, error)
 }
 
 // PullRequestSpec describes a pull request to open.

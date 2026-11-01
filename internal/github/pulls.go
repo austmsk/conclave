@@ -143,3 +143,79 @@ func (a *App) openPullRequest(ctx context.Context, p PullRequestSpec, tok secret
 func pullRequest(r pullReply, created bool) PullRequest {
 	return PullRequest{Number: r.Number, NodeID: r.NodeID, URL: r.HTMLURL, Draft: r.Draft, Created: created}
 }
+
+// markReadyMutation is the only GraphQL the client sends. The REST API
+// cannot take a pull request out of draft.
+const markReadyMutation = `mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }`
+
+type graphQLRequest struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables"`
+}
+
+type markReadyReply struct {
+	Data struct {
+		Mark struct {
+			PullRequest struct {
+				IsDraft bool `json:"isDraft"`
+			} `json:"pullRequest"`
+		} `json:"markPullRequestReadyForReview"`
+	} `json:"data"`
+	// Errors are counted, never read: GitHub's messages quote the request.
+	Errors []struct{} `json:"errors"`
+}
+
+// MarkPullRequestReady takes pull request number out of draft. It reads
+// the pull request first and refuses one this App's bot did not open, or
+// whose head is not an agent/ branch: the platform marks ready only its
+// own work. One that is already not a draft is returned as it is, so a
+// retry after a mark that succeeded unreported sends no second mutation
+// (RL-2).
+func (a *App) MarkPullRequestReady(ctx context.Context, repo RepoRef, number int) (PullRequest, error) {
+	if err := checkFullName(repo.FullName); err != nil {
+		return PullRequest{}, err
+	}
+	if number <= 0 {
+		return PullRequest{}, fmt.Errorf("%w: pull request number %d", ErrRefused, number)
+	}
+	tok, err := a.token(ctx, repo)
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("github: marking pull request #%d ready: %w", number, err)
+	}
+	var reply pullReply
+	if err := a.send(ctx, repo, tok, "reading pull request", http.MethodGet, repoPath(repo, "/pulls/%d", number), nil, &reply); err != nil {
+		return PullRequest{}, err
+	}
+	if err := a.checkOwnPull(reply, number); err != nil {
+		return PullRequest{}, err
+	}
+	pr := pullRequest(reply, false)
+	if !pr.Draft {
+		return pr, nil
+	}
+	in := graphQLRequest{Query: markReadyMutation, Variables: map[string]any{"id": reply.NodeID}}
+	var out markReadyReply
+	if err := a.send(ctx, repo, tok, "marking pull request ready", http.MethodPost, "/graphql", in, &out); err != nil {
+		return PullRequest{}, err
+	}
+	if len(out.Errors) > 0 || out.Data.Mark.PullRequest.IsDraft {
+		return PullRequest{}, fmt.Errorf("github: marking pull request #%d ready: GraphQL refused the mutation: %w", number, ErrInvalidRequest)
+	}
+	pr.Draft = false
+	return pr, nil
+}
+
+// checkOwnPull refuses a pull request this App's bot did not open from an
+// agent/ branch.
+func (a *App) checkOwnPull(r pullReply, number int) error {
+	switch {
+	case r.Number != number || r.NodeID == "":
+		return fmt.Errorf("github: reading pull request #%d: reply names another pull request: %w", number, ErrInvalidRequest)
+	case r.User.Type != "Bot" || r.User.Login != a.cfg.AppSlug+"[bot]":
+		return fmt.Errorf("%w: pull request #%d was not opened by this App", ErrRefused, number)
+	}
+	if err := CheckBranch(r.Head.Ref); err != nil {
+		return fmt.Errorf("pull request #%d: %w", number, err)
+	}
+	return nil
+}

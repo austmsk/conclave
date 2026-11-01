@@ -62,6 +62,10 @@ type Repo struct {
 // GateFunc gates one frozen artifact: (*gate.Gater).Gate in production.
 type GateFunc func(ctx context.Context, in gate.Input) (gate.Outcome, error)
 
+// RebaseFunc rebases a verified artifact onto a new base in a fresh
+// sandbox over a tree at that base: gate.Rebase in production.
+type RebaseFunc func(ctx context.Context, sb contracts.Sandbox, blobs blob.Store, original gate.Artifact, diff []byte, newBase string) (gate.Artifact, error)
+
 // Deps are the activities' clients and configuration.
 type Deps struct {
 	// DB connects as the application role.
@@ -81,6 +85,11 @@ type Deps struct {
 	RouterConfig llm.Config
 	Blobs        blob.Store
 	Gate         GateFunc
+	// Rebase is the finalization rebase; nil means gate.Rebase.
+	Rebase RebaseFunc
+	// Bot is who delivery commits are authored and committed as: the
+	// App's bot user, from github.Config.BotIdentity.
+	Bot BotIdentity
 
 	// Repos is keyed by full name.
 	Repos map[string]Repo
@@ -117,6 +126,9 @@ func New(d Deps) (*Activities, error) {
 	if d.HeartbeatEvery <= 0 {
 		d.HeartbeatEvery = HeartbeatEvery
 	}
+	if d.Rebase == nil {
+		d.Rebase = gate.Rebase
+	}
 	d.Repos = maps.Clone(d.Repos)
 	d.Roles = maps.Clone(d.Roles)
 	d.ConfigDigests = maps.Clone(d.ConfigDigests)
@@ -130,13 +142,16 @@ func New(d Deps) (*Activities, error) {
 }
 
 func (d Deps) validate() error {
-	switch {
-	case d.DB == nil || d.GitHub == nil || d.Trees == nil || d.Sandboxes == nil || d.Router == nil || d.Blobs == nil || d.Gate == nil:
+	if !d.hasClients() {
 		return errors.New("activities need a database, GitHub, tree source, sandbox provider, router, blob store and gate")
+	}
+	switch {
 	case len(d.Repos) == 0:
 		return errors.New("activities need at least one configured repository")
 	case len(d.Roles) == 0:
 		return errors.New("activities need at least one role spec")
+	case d.Bot.Name == "" || d.Bot.Email == "":
+		return errors.New("activities need the bot identity commits are authored as")
 	case d.OwnerUserID <= 0:
 		return errors.New("activities need the owner's GitHub user ID")
 	case d.WorkDir == "":
@@ -151,6 +166,12 @@ func (d Deps) validate() error {
 		}
 	}
 	return nil
+}
+
+// hasClients reports whether every client is set.
+func (d Deps) hasClients() bool {
+	return d.DB != nil && d.GitHub != nil && d.Trees != nil && d.Sandboxes != nil &&
+		d.Router != nil && d.Blobs != nil && d.Gate != nil
 }
 
 // repo returns a configured repository's settings.

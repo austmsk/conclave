@@ -123,7 +123,7 @@ func TestInstallationTokenObtainedAndUsed(t *testing.T) {
 	if len(mints) != 1 || mints[0].Method != http.MethodPost || mints[0].Path != "/app/installations/77/access_tokens" {
 		t.Fatalf("token exchange requests %+v", mints)
 	}
-	want := `{"repository_ids":[101],"permissions":{"contents":"write","issues":"write","pull_requests":"write","metadata":"read"}}`
+	want := `{"repository_ids":[101],"permissions":{"checks":"read","contents":"write","issues":"write","pull_requests":"write","metadata":"read"}}`
 	if !sameJSON(t, mints[0].Body, []byte(want)) {
 		t.Fatalf("token request body %s, want %s", mints[0].Body, want)
 	}
@@ -151,7 +151,9 @@ func TestTokenWithExcessPermissionsRefused(t *testing.T) {
 		{"administration", func(o *githubtest.APIOptions) { o.ExtraPermissions = map[string]string{"administration": "read"} }},
 		{"contents admin", func(o *githubtest.APIOptions) { o.ExtraPermissions = map[string]string{"contents": "admin"} }},
 		{"metadata write", func(o *githubtest.APIOptions) { o.ExtraPermissions = map[string]string{"metadata": "write"} }},
-		{"unrequested checks", func(o *githubtest.APIOptions) { o.ExtraPermissions = map[string]string{"checks": "read"} }},
+		// checks is requested read-only (decision 0014); write is wider.
+		{"checks write", func(o *githubtest.APIOptions) { o.ExtraPermissions = map[string]string{"checks": "write"} }},
+		{"unrequested statuses", func(o *githubtest.APIOptions) { o.ExtraPermissions = map[string]string{"statuses": "read"} }},
 		{"extra repository", func(o *githubtest.APIOptions) { o.ExtraRepositoryIDs = []int64{202} }},
 		{"missing repositories", func(o *githubtest.APIOptions) { o.OmitRepositories = true }},
 		{"unparseable expiry", func(o *githubtest.APIOptions) { o.ExpiresAt = "tomorrow" }},

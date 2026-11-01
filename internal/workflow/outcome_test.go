@@ -19,6 +19,7 @@ var (
 	toApproval  = "planning>awaiting_approval"
 	toExecuting = "awaiting_approval>executing"
 	toCancelled = "needs_attention>cancelled"
+	toDelivered = "executing>delivered"
 )
 
 // budgetRefusal records the attempt errored/budget_cap and returns the
@@ -45,12 +46,13 @@ var outcomeRows = []struct {
 	wantAttempts []string
 	wantTask     contracts.TaskStatus
 	wantMoves    []string
-	wantDelivers int
+	// wantOpens is how many pull requests the run opened.
+	wantOpens int
 }{
 	{
-		name: "all gates pass: delivered by the stub, which stops in needs_attention", run: returns(contracts.AttemptPassed, ""),
-		wantAttempts: []string{"passed/"}, wantTask: contracts.TaskDone, wantDelivers: 1,
-		wantMoves: []string{toApproval, toExecuting, "executing>needs_attention error:" + activity.DetailDeliveryStub, toCancelled},
+		name: "all gates pass: a pull request opens, CI passes, delivered", run: returns(contracts.AttemptPassed, ""),
+		wantAttempts: []string{"passed/"}, wantTask: contracts.TaskDone, wantOpens: 1,
+		wantMoves: []string{toApproval, toExecuting, toDelivered},
 	},
 	{
 		name: "a gate fails", run: returns(contracts.AttemptFailed, contracts.ReasonGateFailed),
@@ -84,8 +86,8 @@ var outcomeRows = []struct {
 	},
 	{
 		name: "errored once: a new ordinal, which passes", run: erroredThenPassed,
-		wantAttempts: []string{"errored/provider_error", "passed/"}, wantTask: contracts.TaskDone, wantDelivers: 1,
-		wantMoves: []string{toApproval, toExecuting, "executing>needs_attention error:" + activity.DetailDeliveryStub, toCancelled},
+		wantAttempts: []string{"errored/provider_error", "passed/"}, wantTask: contracts.TaskDone, wantOpens: 1,
+		wantMoves: []string{toApproval, toExecuting, toDelivered},
 	},
 	{
 		name: "errored twice: needs_attention with reason error", run: returns(contracts.AttemptErrored, contracts.ReasonSandboxError),
@@ -106,8 +108,9 @@ var outcomeRows = []struct {
 
 // TestOutcomeTable runs one feature workflow per row of the outcome table
 // in ticket-8-pre-plan.md, "Carried into ticket 8", and checks the
-// attempt, task and feature request each row names. Every run that stops
-// in needs_attention is then cancelled, which also covers /cancel there.
+// attempt, task and feature request each row names. A passed task is
+// delivered as a pull request (ticket 9); every run that stops in
+// needs_attention is then cancelled, which also covers /cancel there.
 func TestOutcomeTable(t *testing.T) {
 	for _, tt := range outcomeRows {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,7 +123,8 @@ func TestOutcomeTable(t *testing.T) {
 			equalSlices(t, "attempts", w.attemptStates(), tt.wantAttempts)
 			equal(t, "task", w.taskStatus(), tt.wantTask)
 			equalSlices(t, "feature request moves", w.moves(), tt.wantMoves)
-			equal(t, "deliveries", w.delivers, tt.wantDelivers)
+			equal(t, "pull requests opened", w.delivery().opens, tt.wantOpens)
+			equal(t, "stub deliveries", w.delivers, 0)
 			equalSlices(t, "unreleased sandboxes", w.unreleased(), nil)
 		})
 	}
@@ -143,6 +147,10 @@ func TestOutcomeTaskStatusBeforeCancel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			w := newWorld()
 			w.run = tt.run
+			// A passed task waits on CI past the check, rather than end
+			// delivered before it.
+			w.ci = activity.CIWait{PollEvery: time.Hour, Timeout: 48 * time.Hour}
+			w.checks = func(int) activity.ChecksResult { return activity.ChecksResult{} }
 			env := newEnv(t, w)
 			signalAfter(env, time.Minute, command(github.CommandApprove, 1))
 			var before contracts.TaskStatus
@@ -188,7 +196,7 @@ func TestNonRetryableErrorOutsideAttempt(t *testing.T) {
 			wantMoves: []string{toApproval, toExecuting, "executing>needs_attention error:plan 2222 is rejected", toCancelled},
 		},
 		{
-			name: "deliver", failing: "Deliver", wantTask: contracts.TaskDone,
+			name: "write pull request", failing: "WritePullRequest", wantTask: contracts.TaskDone,
 			wantMoves: []string{toApproval, toExecuting, "executing>needs_attention error:plan 2222 is rejected", toCancelled},
 		},
 	}

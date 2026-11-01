@@ -38,8 +38,9 @@ This page follows one request through Milestone 1, the walking skeleton: one iss
  8. Diff frozen and gated ────── internal/gate                    ticket 7
         │
         ▼
- 9. Branch pushed, PR opened ─── internal/github, activity        ticket 9
-        │
+ 9. PR written, landed, ──────── internal/activity, agent,        ticket 9
+    rebased, re-gated, opened      gate, sandbox, github
+        │   (draft until CI passes, polled on a timer)
         ▼
    delivered  (owner reviews and merges by hand)
 ```
@@ -108,7 +109,7 @@ A flagged artifact, or a sensitive repository, is gated in a fresh `clean_room` 
 
 ### 9. Pull request delivered (ticket 9)
 
-Platform code pushes to an `agent/` branch and opens a draft PR as the App's bot identity. The push refuses any diff whose hash doesn't match a passing gate result. The PR is marked ready once the repository's own CI passes. The workflow ends at `delivered`. Merging is the owner's job.
+The `pr_writer` model writes the PR's title, summary, risks and commit subject, and the platform records them before acting. Platform code builds one commit from the gated artifact, authored by the App's bot with `Task`, `Plan`, `Model` and `Generated-by` trailers, and pushes it to `agent/<issue>/integration`. It then rebases the diff once onto the default branch's current head, in a fresh sandbox, and gates the rebased artifact again in `clean_room`. A conflict, or a failed re-gate, stops in `needs_attention`. The rebased commit goes to `agent/<issue>/pr-1` and opens as a draft whose body the platform renders, with the AI label and the security-relevant changes first. Every push re-verifies the artifact against its passing gate results. The workflow polls the repository's CI check runs on a timer. When the required checks pass, the draft is marked ready and the feature request ends `delivered`. Merging is the owner's job. Each step is recorded in a `pull_requests` row, so a retry or `/retry` repeats nothing. See [ticket 9](tickets/09-pull-request-delivery.md).
 
 ## Cleanup and failure
 

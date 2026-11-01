@@ -106,6 +106,18 @@ type API struct {
 	pulls     []*fakePull
 	failures  []apiFailure
 	race      *fakePull
+	checkRuns map[string][]fakeCheckRun
+	// graphQLErrors makes the next GraphQL request answer 200 with an
+	// errors array carrying this message.
+	graphQLErrors string
+}
+
+type fakeCheckRun struct {
+	ID         int64
+	Name       string
+	Status     string
+	Conclusion string
+	AppSlug    string
 }
 
 // NewAPI starts a fake API, closed when the test ends.
@@ -120,7 +132,10 @@ func NewAPI(t testing.TB, opts APIOptions) *API {
 	if opts.TokenTTL == 0 {
 		opts.TokenTTL = time.Hour
 	}
-	f := &API{t: t, opts: opts, nextID: 1000, comments: map[int64]*StoredComment{}, reactions: map[string]bool{}}
+	f := &API{
+		t: t, opts: opts, nextID: 1000, comments: map[int64]*StoredComment{}, reactions: map[string]bool{},
+		checkRuns: map[string][]fakeCheckRun{},
+	}
 	f.mux = http.NewServeMux()
 	f.mux.HandleFunc("POST /app/installations/{id}/access_tokens", f.mintToken)
 	f.mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{n}/comments", f.repo(f.createComment))
@@ -133,6 +148,9 @@ func NewAPI(t testing.TB, opts APIOptions) *API {
 	f.mux.HandleFunc("POST /repos/{owner}/{repo}/issues/comments/{id}/reactions", f.repo(f.addReaction))
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/pulls", f.repo(f.listPulls))
 	f.mux.HandleFunc("POST /repos/{owner}/{repo}/pulls", f.repo(f.createPull))
+	f.mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{n}", f.repo(f.getPull))
+	f.mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", f.repo(f.listCheckRuns))
+	f.mux.HandleFunc("POST /graphql", f.repo(f.graphQL))
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.URL = srv.URL
@@ -248,6 +266,44 @@ func (f *API) SeedPull(head, base, login, userType string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.storePull(&fakePull{Head: head, Base: base, Login: login, UserType: userType})
+}
+
+// SeedDraftPull stores an open draft pull request, as SeedPull does, and
+// returns its number.
+func (f *API) SeedDraftPull(head, base, login, userType string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.storePull(&fakePull{Head: head, Base: base, Login: login, UserType: userType, Draft: true})
+}
+
+// PullDraft reports whether pull request number is a draft.
+func (f *API) PullDraft(number int) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if number < 1 || number > len(f.pulls) {
+		f.t.Fatalf("githubtest: no pull request #%d", number)
+	}
+	return f.pulls[number-1].Draft
+}
+
+// SeedCheckRun stores a check run on commit sha, created by the App with
+// appSlug, and returns its ID. Runs are listed in the order seeded.
+func (f *API) SeedCheckRun(sha, name, status, conclusion, appSlug string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := f.nextID
+	f.nextID++
+	f.checkRuns[sha] = append(f.checkRuns[sha], fakeCheckRun{ID: id, Name: name, Status: status, Conclusion: conclusion, AppSlug: appSlug})
+	return id
+}
+
+// FailNextGraphQL makes the next GraphQL request answer 200 with an
+// errors array whose message is msg, as GitHub reports a refused
+// mutation.
+func (f *API) FailNextGraphQL(msg string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.graphQLErrors = msg
 }
 
 // RaceNextPullCreate makes the next pull request create lose a race: the
@@ -577,4 +633,71 @@ func writeAPIJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// getPull answers one pull request by number.
+func (f *API) getPull(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.Atoi(r.PathValue("n"))
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err != nil || n < 1 || n > len(f.pulls) {
+		writeAPIJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, pullJSON(f.pulls[n-1]))
+}
+
+// listCheckRuns answers the check runs on a commit, paginated as GitHub
+// does with per_page and page, and total_count over every page.
+func (f *API) listCheckRuns(w http.ResponseWriter, r *http.Request) {
+	perPage, page := queryInt(r, "per_page", 30), queryInt(r, "page", 1)
+	f.mu.Lock()
+	all := f.checkRuns[r.PathValue("sha")]
+	f.mu.Unlock()
+	runs := []map[string]any{}
+	for i := (page - 1) * perPage; i >= 0 && i < len(all) && i < page*perPage; i++ {
+		c := all[i]
+		run := map[string]any{"id": c.ID, "name": c.Name, "status": c.Status, "app": map[string]any{"slug": c.AppSlug}}
+		if c.Conclusion != "" {
+			run["conclusion"] = c.Conclusion
+		} else {
+			run["conclusion"] = nil
+		}
+		runs = append(runs, run)
+	}
+	writeAPIJSON(w, http.StatusOK, map[string]any{"total_count": len(all), "check_runs": runs})
+}
+
+// graphQL answers markPullRequestReadyForReview, the only mutation the
+// client sends: it takes the pull request with the given node ID out of
+// draft. An unknown node or an injected failure answers 200 with errors,
+// as GitHub does.
+func (f *API) graphQL(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Query     string            `json:"query"`
+		Variables map[string]string `json:"variables"`
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil || !strings.Contains(in.Query, "markPullRequestReadyForReview") {
+		writeAPIJSON(w, http.StatusBadRequest, map[string]string{"message": "Problems parsing JSON"})
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if msg := f.graphQLErrors; msg != "" {
+		f.graphQLErrors = ""
+		writeAPIJSON(w, http.StatusOK, map[string]any{"data": nil, "errors": []map[string]string{{"message": msg}}})
+		return
+	}
+	for _, p := range f.pulls {
+		if "PR_node_"+strconv.Itoa(p.Number) == in.Variables["id"] {
+			p.Draft = false
+			writeAPIJSON(w, http.StatusOK, map[string]any{
+				"data": map[string]any{"markPullRequestReadyForReview": map[string]any{"pullRequest": map[string]any{"isDraft": false}}},
+			})
+			return
+		}
+	}
+	writeAPIJSON(w, http.StatusOK, map[string]any{
+		"data": nil, "errors": []map[string]string{{"message": "Could not resolve to a node with the global id of '" + in.Variables["id"] + "'"}},
+	})
 }

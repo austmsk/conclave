@@ -54,6 +54,20 @@
 #     config_paths:  patterns naming test configuration; any change fails.
 #   flag_rejections_at:  optional, default 3. Tool calls refused on
 #                        security grounds that flag the attempt.
+#   ci:        required. When a delivered pull request counts as passing
+#              the repository's own CI (FR-A7, decision 0014). Delivery
+#              opens the pull request as a draft, reads its check runs on
+#              a timer, and marks it ready once every required check has
+#              passed; a failure stops in needs_attention with ci_failed,
+#              and checks still running at the timeout with ci_timeout.
+#     required_checks:  required. Check run names (the job names GitHub
+#                       Actions reports); every one must pass.
+#     check_app:   optional, default github-actions. Only check runs from
+#                  this App count, so another App cannot satisfy a
+#                  required check by reusing its name. Commit statuses are
+#                  not read.
+#     poll_every:  optional, default 1m, at least 10s.
+#     timeout:     optional, default 60m, at most 24h; not under poll_every.
 #
 # Patterns: a name with no inner "/" matches at any depth ("Makefile");
 # one with an inner "/" is anchored at the repository root
@@ -83,3 +97,7 @@ repositories:
       comment_openers: ['/\*([^*]|\*+[^*/])*\**$']
       comment_closers: ['^([^/]|/[^*])*\*/']
       config_paths: [lib/]
+    ci:
+      required_checks: [build]
+      poll_every: 1m
+      timeout: 60m

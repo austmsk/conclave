@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/austmsk/conclave/internal/contracts"
 )
@@ -32,6 +33,8 @@ repositories:
       comment_openers: ['/\*([^*]|\*+[^*/])*\**$']
       comment_closers: ['^([^/]|/[^*])*\*/']
       config_paths: [lib/]
+    ci:
+      required_checks: [build, test]
 `
 
 // testPolicy returns a valid ETS-like policy loaded through LoadConfig:
@@ -68,6 +71,10 @@ func TestLoadConfig_Valid(t *testing.T) {
 	if p.compiled == nil {
 		t.Error("patterns not compiled at load")
 	}
+	wantCI := CIPolicy{RequiredChecks: []string{"build", "test"}, CheckApp: "github-actions", PollEvery: time.Minute, Timeout: time.Hour}
+	if !reflect.DeepEqual(p.CI, wantCI) {
+		t.Errorf("ci %+v, want the defaults %+v", p.CI, wantCI)
+	}
 	cfg, err := LoadConfig(strings.NewReader(w1ConfigYAML))
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +97,9 @@ func TestLoadConfig_Optional(t *testing.T) {
 		t.Fatalf("mode %q, flag_rejections_at %d", p.Mode, p.FlagRejectionsAt)
 	}
 	c := p.Constraints()
+	if p.CI.CheckApp != "github-actions" {
+		t.Errorf("check_app %q", p.CI.CheckApp)
+	}
 	if !slices.Contains(c.ProtectedPaths, "secrets/") || !slices.Contains(c.ProtectedPaths, ".github/") {
 		t.Errorf("protected paths %v lack the addition or a default", c.ProtectedPaths)
 	}
@@ -148,6 +158,52 @@ func TestLoadConfig_Invalid(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err, tc.errPart)
 			}
 		})
+	}
+}
+
+// TestLoadConfig_InvalidCI refuses each malformed ci block, naming the
+// key.
+func TestLoadConfig_InvalidCI(t *testing.T) {
+	repl := func(old, new string) string {
+		if !strings.Contains(w1ConfigYAML, old) {
+			panic("test fixture does not contain " + old)
+		}
+		return strings.Replace(w1ConfigYAML, old, new, 1)
+	}
+	cases := []struct{ name, yaml, errPart string }{
+		{"ci missing", repl("    ci:\n      required_checks: [build, test]\n", ""), ".ci: required"},
+		{"ci no checks", repl("required_checks: [build, test]", "required_checks: []"), "ci.required_checks: required"},
+		{"ci blank check", repl("required_checks: [build, test]", "required_checks: [build, ' ']"), "ci.required_checks[1]: empty"},
+		{"ci duplicate check", repl("required_checks: [build, test]", "required_checks: [build, build]"), "ci.required_checks[1]: \"build\" appears twice"},
+		{"ci bad app", repl("required_checks: [build, test]", "required_checks: [build]\n      check_app: Not An App"), "ci.check_app"},
+		{"ci bad poll", repl("required_checks: [build, test]", "required_checks: [build]\n      poll_every: often"), "ci.poll_every"},
+		{"ci negative timeout", repl("required_checks: [build, test]", "required_checks: [build]\n      timeout: -1m"), "ci.timeout"},
+		{"ci poll too fast", repl("required_checks: [build, test]", "required_checks: [build]\n      poll_every: 5s"), "ci.poll_every: 5s is under"},
+		{"ci timeout under poll", repl("required_checks: [build, test]", "required_checks: [build]\n      poll_every: 2m\n      timeout: 1m"), "ci.timeout: 1m0s is shorter"},
+		{"ci timeout too long", repl("required_checks: [build, test]", "required_checks: [build]\n      timeout: 25h"), "ci.timeout: 25h0m0s is over"},
+		{"ci unknown key", repl("required_checks: [build, test]", "required_checks: [build]\n      required: true"), "parsing YAML"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadConfig(strings.NewReader(tc.yaml))
+			if !errors.Is(err, ErrInvalidConfig) || !strings.Contains(err.Error(), tc.errPart) {
+				t.Fatalf("got %v, want ErrInvalidConfig naming %q", err, tc.errPart)
+			}
+		})
+	}
+}
+
+// TestLoadConfig_CISettings reads every ci setting the owner may give.
+func TestLoadConfig_CISettings(t *testing.T) {
+	yml := strings.Replace(w1ConfigYAML, "required_checks: [build, test]",
+		"required_checks: [verify]\n      check_app: buildkite\n      poll_every: 30s\n      timeout: 2h", 1)
+	cfg, err := LoadConfig(strings.NewReader(yml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := CIPolicy{RequiredChecks: []string{"verify"}, CheckApp: "buildkite", PollEvery: 30 * time.Second, Timeout: 2 * time.Hour}
+	if got := cfg.Repositories[w1TestRepo].CI; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ci %+v, want %+v", got, want)
 	}
 }
 
