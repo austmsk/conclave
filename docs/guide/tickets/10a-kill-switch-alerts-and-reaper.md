@@ -141,7 +141,7 @@ If the schedule exists, startup updates its spec and action and keeps its paused
   - Create the private operations repository, add it to the App's installation, and set `alerts.repository_id` in `deploy/local/github.yaml` (`GET /repos/<owner>/<name>` → `.id`).
   - Until then the worker and the CLI refuse to start. So does the server: a partly filled `alerts:` block fails validation for every process that loads the file.
   - Pass `-alert-log` to the worker and the CLI, and optionally `chflags uappnd` the file.
-- **GitHub Pro and the ETS ruleset.** A ruleset on ETS `main` with no bypass actors: require a PR and the `test` check, and block force pushes. Check it with `gh api repos/austmsk/ets/rules/branches/main`. Until it is in place, FR-SEC16's branch rules are unmet.
+- **ETS ruleset: done 2026-10-31.** Ruleset 26301068 on ETS's default branch has no bypass actors. It requires a pull request and the `test` check from GitHub Actions, and it blocks force pushes and deletion, so FR-SEC16's branch rules now hold. Re-check it before the trials with `gh api repos/austmsk/ets/rules/branches/main`.
 - **A halt removes in-use sandboxes.** An attempt running during the sweep ends `errored`, and its spend is kept.
 - **A halt needs Postgres.** With the database down, `conclave halt` cannot record a halt. Stop the worker processes by hand.
 - **Deferred alert sources:** auto-halt on repeated unknown-actor failures, the weekly digest batch, canary alerts and a second channel (decision 0016).
