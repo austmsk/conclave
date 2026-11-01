@@ -266,3 +266,43 @@ func TestResumeWhenNotHalted(t *testing.T) {
 		t.Fatalf("steps %v, want none", h.calls)
 	}
 }
+
+// TestHaltRecordedWhenEverythingElseIsDown: with Temporal, Docker and
+// GitHub all unreachable, the halt is still recorded first, every later
+// step is attempted and reported, and the halt says it is incomplete.
+func TestHaltRecordedWhenEverythingElseIsDown(t *testing.T) {
+	h := newHarness()
+	h.k.unavailable(errors.New("down"))
+	h.k.connect = func(context.Context) { h.calls = append(h.calls, "connect") }
+	err := h.k.halt(t.Context(), "drill")
+	if !errors.Is(err, errIncomplete) {
+		t.Fatalf("got %v, want errIncomplete", err)
+	}
+	if !h.halt.Halted || len(h.calls) < 2 || h.calls[0] != "set" || h.calls[1] != "connect" {
+		t.Fatalf("halt %+v, steps %v; want the halt recorded, then connect", h.halt, h.calls)
+	}
+	for _, want := range []string{"warning: halt alert", "warning: pausing the reaper", "temporal unavailable: down", "docker unavailable: down"} {
+		if !strings.Contains(h.out.String()+err.Error(), want) {
+			t.Errorf("output lacks %q:\n%s\n%v", want, h.out.String(), err)
+		}
+	}
+}
+
+// TestHaltReasonRedacted: a token typed into -reason never reaches the
+// append-only halt_events table, the alert, or the clear.
+func TestHaltReasonRedacted(t *testing.T) {
+	token := "gh" + "s_" + strings.Repeat("Z9y8", 9)
+	h := newHarness()
+	if err := h.k.halt(t.Context(), "rotating "+token); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(h.halt.Reason, token) || strings.Contains(h.alerts[0].What, token) {
+		t.Fatalf("token kept: reason %q, alert %q", h.halt.Reason, h.alerts[0].What)
+	}
+	if err := h.k.resume(t.Context(), "done with "+token, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(h.halt.Reason, token) {
+		t.Fatalf("clear kept the token: %q", h.halt.Reason)
+	}
+}

@@ -94,6 +94,9 @@ func run() error {
 	if o.blobDir == "" || o.workDir == "" || o.alertLog == "" {
 		return errors.New("-blob-dir, -work-dir and -alert-log are required")
 	}
+	if err := checkHaltGrace(o.haltGrace); err != nil {
+		return err
+	}
 	d, err := loadDeploy(o.deploy)
 	if err != nil {
 		return err

@@ -29,7 +29,7 @@ NFR-R1 moved here from ticket 8, whose testsuite runs no real workers. Exit-chec
 
 `store.SetHalt` inserts a `set` event into `halt_events` (migration `00010_halts.sql`). The application role may select and insert there, never update or delete. The insert runs under an advisory lock, and nothing is recorded if the latest event is already a `set`, so a second halt keeps the first one's ID and time. `store.CurrentHalt` reads the event with the highest ID.
 
-`conclave halt` then:
+`conclave halt` connects only to Postgres before it records the halt, and redacts the reason first, since `halt_events` cannot be scrubbed. Only then does `haltConnector` open the alert log, the App, Temporal and Docker, each within 15 seconds. One it cannot reach is reported, and the steps that need it fail and are skipped; without the App, alerts go to the local log only. It then:
 
 1. raises `alert.Halt`;
 2. pauses the `conclave-reaper` schedule;
@@ -115,8 +115,13 @@ If the schedule exists, startup updates its spec and action and keeps its paused
 - **The kill switch cancels everything and cleans up.**
   - conclave: `TestHaltOrder` checks the steps run in order. `TestHaltTwice` shows a second halt continues the first. `TestHaltCancelsLateStarts` cancels a workflow that opens during the drain, and `TestHaltCancelsRootsOnly` leaves children to their parents.
   - conclave: `TestHaltDeliveryFailureStillHalts` shows a GitHub outage does not stop the halt, and `TestHaltReportsRemaining` covers the remaining counts. `TestResumeCancelsStartedDuringHalt` and `TestResumeKeep` cover resume.
-  - `TestHaltAgainstLiveTemporal` runs it against a real Temporal server with real workers, and shows every workflow cancelled, every sandbox released and the workers exiting.
-- **Workers obey the halt.** worker: `TestWorkerRefusesStartWhileHalted`, `TestWatcherStopsAfterGrace` (stops once, not before the grace period) and `TestWatcherKeepsPollingThroughReadErrors`.
+  - conclave: `TestHaltRecordedWhenEverythingElseIsDown` takes Temporal, Docker and GitHub away: the halt is still recorded first, and every later step is tried and reported. `TestHaltConnectorFallsBack` builds the real connections against a missing GitHub configuration, an unreachable Temporal and an unreachable Docker; the halt alert still lands in the local log. `TestHaltReasonRedacted` puts a token in `-reason`, and it reaches neither `halt_events` nor the alert.
+  - `TestHaltAgainstLiveTemporal` runs the CLI's Temporal half against a real server. Two runs with children are open, and a third starts during the drain. halt pauses the reaper's schedule and cancels every root. It finishes only when nothing is open, and every run's disconnected-context cleanup (a stand-in release) has run, children's included. resume then cancels a run started while halted and unpauses the schedule. The test uses stand-in workflows, a stand-in release, and an in-memory sweep. Three halves are proved elsewhere, not here:
+    - that `FeatureWorkflow` and `TaskWorkflow` release their sandboxes on cancellation: workflow `TestCancelDuringAgentPhase`, `TestCancelParentReleasesChildSandbox`;
+    - that the cutoff-0 sweep releases and reaps: activity `TestSweepOrphans`, sandbox/docker `TestReapRemovesOrphansOlderThanTheGivenAge`, `TestCountSandboxesSeesEveryLabelledContainer`;
+    - that workers exit: the worker tests below.
+  - A halt with a real run in flight, against the real worker, is exercised live in ticket 10b.
+- **Workers obey the halt.** worker: `TestWorkerRefusesStartWhileHalted` (with the reason redacted), `TestWatcherStopsAfterGrace` (stops once, not before the grace period), `TestWatcherKeepsPollingThroughReadErrors`, and `TestCheckHaltGrace` (a grace period no longer than the heartbeat timeout is refused at startup).
 - **An alert is logged before delivery, and delivered once.** alert:
   - Logging: `TestLogWrittenBeforeDelivery` shows the alert and the failure in the log when GitHub fails. `TestLogAppendsAndIsPrivate` shows reopening appends and the file is 0600. `TestLogRefusesSymlink` attempts the symlink.
   - Dedupe: `TestRaiseDedupesOpenIssue`, `TestRaiseTwiceOneComment`, `TestRaiseReopensAfterClose`, `TestKeyMatchesWholeLine` and `TestHaltDoneSharesKey`.

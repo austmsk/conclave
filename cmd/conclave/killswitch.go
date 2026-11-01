@@ -9,6 +9,7 @@ import (
 
 	"github.com/austmsk/conclave/internal/activity"
 	"github.com/austmsk/conclave/internal/alert"
+	"github.com/austmsk/conclave/internal/github"
 	"github.com/austmsk/conclave/internal/store"
 )
 
@@ -45,6 +46,13 @@ type killSwitch struct {
 	remaining func(ctx context.Context) (unreleased, containers int, err error)
 	// raise writes an alert to the local log and delivers it.
 	raise func(ctx context.Context, a alert.Alert) error
+	// connect, when set, is called once the halt is recorded and before
+	// any other step. It replaces runs, sweep, remaining and raise with
+	// working ones where it can reach their systems, and leaves the
+	// failing stand-ins in place where it cannot: Temporal, Docker or
+	// GitHub being down is a reason to halt, never a reason the halt is
+	// not recorded.
+	connect func(ctx context.Context)
 
 	// drain bounds the wait for open workflows to close; poll is the wait
 	// between listings.
@@ -53,6 +61,29 @@ type killSwitch struct {
 	sleep       func(ctx context.Context, d time.Duration) error
 	out         io.Writer
 }
+
+// unavailableRuns stands in for Temporal when it cannot be reached: every
+// call fails with why, so the halt reports the step and goes on.
+type unavailableRuns struct{ err error }
+
+func (u unavailableRuns) open(context.Context) ([]run, error)          { return nil, u.err }
+func (u unavailableRuns) cancel(context.Context, string, string) error { return u.err }
+func (u unavailableRuns) pauseReaper(context.Context, string) error    { return u.err }
+func (u unavailableRuns) unpauseReaper(context.Context, string) error  { return u.err }
+
+// unavailable sets every step that needs Temporal, Docker or GitHub to
+// fail with err, until connect replaces it with a working one.
+func (k *killSwitch) unavailable(err error) {
+	k.runs = unavailableRuns{err: fmt.Errorf("temporal unavailable: %w", err)}
+	k.sweep = func(context.Context) (activity.SweepResult, error) {
+		return activity.SweepResult{}, fmt.Errorf("docker unavailable: %w", err)
+	}
+	k.remaining = func(context.Context) (int, int, error) { return 0, 0, fmt.Errorf("docker unavailable: %w", err) }
+	k.raise = func(context.Context, alert.Alert) error { return fmt.Errorf("alerts: %w", err) }
+}
+
+// errNotConnected is the stand-ins' error before connect has run.
+var errNotConnected = errors.New("not connected")
 
 // errIncomplete means the halt ran every step but something is still
 // open or still exists; the summary says what.
@@ -80,11 +111,15 @@ func (k *killSwitch) printf(format string, args ...any) {
 // not. It returns errIncomplete when a workflow is still open or a
 // sandbox is still there afterwards.
 func (k *killSwitch) halt(ctx context.Context, reason string) error {
+	reason = github.RedactText(reason)
 	st, err := k.setHalt(ctx, reason)
 	if err != nil {
 		return fmt.Errorf("recording the halt: %w", err)
 	}
 	k.printf("halt %d recorded at %s", st.ID, st.Since.UTC().Format(time.RFC3339))
+	if k.connect != nil {
+		k.connect(ctx)
+	}
 	if err := k.raise(ctx, alert.Halt(st.ID, reason, st.Since)); err != nil {
 		k.printf("warning: halt alert: %v", err)
 	}
@@ -215,7 +250,7 @@ func (k *killSwitch) resume(ctx context.Context, reason string, keep bool) error
 	if !keep {
 		k.printf("cancelled %d workflows started during the halt", k.cancelRoots(ctx, late, map[string]bool{}))
 	}
-	if _, err := k.clearHalt(ctx, reason); err != nil {
+	if _, err := k.clearHalt(ctx, github.RedactText(reason)); err != nil {
 		return fmt.Errorf("clearing halt %d: %w", st.ID, err)
 	}
 	if err := k.runs.unpauseReaper(ctx, fmt.Sprintf("resume after halt %d", st.ID)); err != nil {

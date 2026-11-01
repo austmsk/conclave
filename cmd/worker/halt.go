@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/austmsk/conclave/internal/activity"
+	"github.com/austmsk/conclave/internal/github"
 	"github.com/austmsk/conclave/internal/store"
 )
 
@@ -38,7 +40,20 @@ func refuseIfHalted(ctx context.Context, state haltState) error {
 		return fmt.Errorf("reading the kill switch: %w", err)
 	}
 	if st.Halted {
-		return fmt.Errorf("halt %d since %s (%s): %w", st.ID, st.Since.UTC().Format(time.RFC3339), st.Reason, errHalted)
+		// The CLI redacts the reason before storing it; this redacts it
+		// again, since the error is printed as plain text.
+		return fmt.Errorf("halt %d since %s (%s): %w", st.ID, st.Since.UTC().Format(time.RFC3339), github.RedactText(st.Reason), errHalted)
+	}
+	return nil
+}
+
+// checkHaltGrace refuses a grace period that does not exceed the attempt
+// heartbeat timeout: a worker that stops sooner can go before a cancelled
+// attempt hears of its cancellation and releases its sandbox, leaving
+// the halt's sweep as the only cleanup (NFR-R3).
+func checkHaltGrace(grace time.Duration) error {
+	if grace <= activity.HeartbeatTimeout {
+		return fmt.Errorf("-halt-grace %s must exceed the attempt heartbeat timeout, %s, or cancelled attempts may not release their sandboxes", grace, activity.HeartbeatTimeout)
 	}
 	return nil
 }

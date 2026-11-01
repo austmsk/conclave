@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +38,13 @@ func TestWorkerRefusesStartWhileHalted(t *testing.T) {
 	running := func(context.Context) (store.HaltState, error) { return store.HaltState{ID: 5}, nil }
 	if err := refuseIfHalted(t.Context(), running); err != nil {
 		t.Fatalf("not halted: %v", err)
+	}
+	token := "gh" + "s_" + strings.Repeat("Q7w6", 9)
+	leaky := func(context.Context) (store.HaltState, error) {
+		return store.HaltState{Halted: true, ID: 6, Since: time.Now(), Reason: "rotating " + token}, nil
+	}
+	if err := refuseIfHalted(t.Context(), leaky); err == nil || strings.Contains(err.Error(), token) {
+		t.Fatalf("got %v, want a refusal without the token", err)
 	}
 	broken := func(context.Context) (store.HaltState, error) { return store.HaltState{}, errors.New("db down") }
 	if err := refuseIfHalted(t.Context(), broken); err == nil {
@@ -113,6 +121,27 @@ func TestCheckSweepAfterCoversFinalize(t *testing.T) {
 	}
 	if err := checkSweepAfter(sweepAfter, d.LongestSandboxHold()); err != nil {
 		t.Fatalf("default cutoff refused: %v", err)
+	}
+}
+
+// TestCheckHaltGrace: the grace period must outlast the attempt heartbeat
+// timeout, so cancelled attempts release their sandboxes before the
+// worker goes.
+func TestCheckHaltGrace(t *testing.T) {
+	tests := []struct {
+		grace   time.Duration
+		wantErr bool
+	}{
+		{haltGrace, false},
+		{activity.HeartbeatTimeout + time.Second, false},
+		{activity.HeartbeatTimeout, true},
+		{10 * time.Second, true},
+		{0, true},
+	}
+	for _, tt := range tests {
+		if err := checkHaltGrace(tt.grace); (err != nil) != tt.wantErr {
+			t.Errorf("checkHaltGrace(%s) = %v, want error %t", tt.grace, err, tt.wantErr)
+		}
 	}
 }
 

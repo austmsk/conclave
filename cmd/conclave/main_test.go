@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/austmsk/conclave/internal/alert"
 )
 
 // TestReadSecretsNamesMissing names a missing secret, never a value, and
@@ -67,3 +73,36 @@ func TestReportWindow(t *testing.T) {
 }
 
 func lookupEnv(name string) (string, bool) { return os.LookupEnv(name) }
+
+// TestHaltConnectorFallsBack builds the halt's connections with GitHub's
+// configuration missing and Temporal and Docker unreachable: each step
+// fails with its reason, and the halt alert still reaches the local log.
+func TestHaltConnectorFallsBack(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
+	logPath := filepath.Join(t.TempDir(), "alerts.jsonl")
+	o := options{githubConfig: "testdata/missing.yaml", alertLog: logPath, temporalAddr: "127.0.0.1:1", namespace: "default"}
+	var out bytes.Buffer
+	k := newKillSwitch(o, nil, &out)
+	h := &haltConnector{o: o, keyFile: "missing.pem", log: slog.New(slog.NewTextHandler(io.Discard, nil)), timeout: time.Second}
+	defer h.close()
+	h.connect(t.Context(), k)
+
+	if err := k.raise(t.Context(), alert.Halt(1, "drill", time.Now())); err == nil {
+		t.Error("raise reported delivery with GitHub unavailable")
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(raw), `"key":"halt:1"`) || !strings.Contains(string(raw), `"outcome":"failed"`) {
+		t.Fatalf("alert log %q (%v), want the halt alert and its failed delivery", raw, err)
+	}
+	if _, err := k.runs.open(t.Context()); err == nil {
+		t.Error("listing workflows succeeded with Temporal unreachable")
+	}
+	if _, err := k.sweep(t.Context()); err == nil {
+		t.Error("sweep succeeded with Docker unreachable")
+	}
+	for _, want := range []string{"no workflow is cancelled", "no sandbox is swept"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+}

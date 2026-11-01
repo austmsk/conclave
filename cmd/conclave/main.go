@@ -120,6 +120,15 @@ func checkOptions(cmd string, o options) error {
 	return nil
 }
 
+// readOptionalSecret reads and unsets name, which may be unset.
+func readOptionalSecret(name string) (string, error) {
+	v := os.Getenv(name)
+	if err := os.Unsetenv(name); err != nil {
+		return "", fmt.Errorf("unsetting %s: %w", name, err)
+	}
+	return v, nil
+}
+
 // readSecrets reads and unsets each named variable. A missing one stops
 // the command by name, never by value.
 func readSecrets(names ...string) (map[string]string, error) {

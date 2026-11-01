@@ -2,13 +2,12 @@
 
 What to do when Conclave raises an alert, and how to use the kill switch. Each alert issue in the operations repository links to its section here ([`internal/alert`](../internal/alert), FR-SEC31, decision [0015](decisions/0015-kill-switch-alerts-and-reaper.md)). For a suspected compromise, follow the [incident response runbook](security-and-threat-model.md#incident-response-runbook), whose first step is the halt below.
 
-Every `conclave` command runs on the central machine and needs:
+Every `conclave` command runs on the central machine. Each one reads `CONCLAVE_DATABASE_URL` from the secrets file outside the repository, once, and unsets it. Beyond that:
 
-- `CONCLAVE_DATABASE_URL` and `CONCLAVE_GITHUB_APP_KEY_FILE`, from the secrets file outside the repository. The CLI reads each once and unsets it.
-- `-github-config deploy/local/github.yaml`, with its `alerts:` block filled in. Without one the CLI refuses to start.
-- `-alert-log <path>` for `halt` and `alert-test`: the same local alert log the worker writes.
-- `-temporal-address` and `-temporal-namespace`, if not the defaults.
-- Docker access, for the sweep.
+- **`halt` needs only Postgres to record the halt.** Everything else it connects to after the halt is recorded, each connection bounded to 15 seconds. A system it cannot reach is reported as a warning, its steps are skipped, and the halt goes on; the halt then ends "incomplete". That covers Temporal (nothing is cancelled), Docker (nothing is swept), and GitHub: a missing or broken `-github-config`, alerts block or `CONCLAVE_GITHUB_APP_KEY_FILE` means the alerts go to the local log only. Give it `-alert-log <path>`, the same log the worker writes, and normally `-github-config deploy/local/github.yaml` and the key file as well.
+- **`alert-test`** needs `CONCLAVE_GITHUB_APP_KEY_FILE`, `-alert-log`, and `-github-config deploy/local/github.yaml` with its `alerts:` block filled in.
+- **`resume`** needs Temporal, to list and cancel the runs started during the halt. If Temporal is unreachable, it refuses and the halt stands.
+- **All commands:** `-temporal-address` and `-temporal-namespace`, if not the defaults.
 
 ## Halt
 
@@ -28,7 +27,7 @@ conclave halt -reason "why, in a few words" -github-config deploy/local/github.y
 6. **Checks what is left:** attempts with a sandbox and no `sandbox_released_at`, and containers carrying the `conclave.sandbox` label. It prints both counts.
 7. **Comments on the halt's issue** with what it did: workflows cancelled and still open, sandboxes released and reaped, and what remains.
 
-Each worker polls `halt_events` every 5 seconds. When it sees the halt it keeps running for `-halt-grace` (3 minutes by default), which is longer than the attempt heartbeat timeout, so the cancellations it receives can finish their cleanup. Then it exits with "halted by the kill switch". A worker refuses to start while the halt stands.
+Each worker polls `halt_events` every 5 seconds. When it sees the halt it keeps running for `-halt-grace` (3 minutes by default), which must be longer than the attempt heartbeat timeout of 2 minutes, so the cancellations it receives can finish their cleanup. A worker given a shorter grace refuses to start. Then it exits with "halted by the kill switch". A worker refuses to start while the halt stands.
 
 **Check afterwards:**
 
