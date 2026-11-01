@@ -51,6 +51,10 @@ func seedAccounting(t *testing.T, ctx context.Context, tx pgx.Tx, s ids) {
 	if err != nil {
 		t.Fatalf("seeding command: %v", err)
 	}
+	_, err = tx.Exec(ctx, `INSERT INTO halt_events (kind, reason, actor) VALUES ('set', 'seed', 'cli')`)
+	if err != nil {
+		t.Fatalf("seeding halt event: %v", err)
+	}
 }
 
 // TestAppRoleCannotAlterAppendOnlyRows attempts the attack in threat T6: a
@@ -93,6 +97,10 @@ func TestAppRoleCannotAlterAppendOnlyRows(t *testing.T) {
 		{"update command", `UPDATE commands SET outcome = 'accepted', reason = NULL`, permissionDenied},
 		{"delete command", `DELETE FROM commands`, permissionDenied},
 		{"truncate commands", `TRUNCATE commands`, permissionDenied},
+		{"insert halt event", `INSERT INTO halt_events (kind, reason, actor) VALUES ('clear', 'r', 'cli')`, ""},
+		{"update halt event", `UPDATE halt_events SET kind = 'clear'`, permissionDenied},
+		{"delete halt event", `DELETE FROM halt_events`, permissionDenied},
+		{"truncate halt events", `TRUNCATE halt_events`, permissionDenied},
 		{"update ordinary table", `UPDATE repos SET default_branch = 'trunk'`, ""},
 		{"delete from ordinary table", `DELETE FROM repos`, permissionDenied},
 		{"drop append-only table", `DROP TABLE cost_events`, permissionDenied},

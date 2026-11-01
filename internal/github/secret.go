@@ -89,3 +89,8 @@ func RedactAttr(_ []string, a slog.Attr) slog.Attr {
 	}
 	return a
 }
+
+// RedactText replaces every token-shaped string in s with [redacted]. The
+// alert path runs it over owner-written text, such as a halt reason,
+// before that text reaches the local alert log or an issue.
+func RedactText(s string) string { return redact(s) }

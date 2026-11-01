@@ -63,6 +63,60 @@ type Config struct {
 	// Both must be https, except on a loopback host, where tests run.
 	APIBaseURL string `yaml:"api_base_url"`
 	GitBaseURL string `yaml:"git_base_url"`
+	// Alerts is where alert issues are opened (FR-SEC31). The webhook
+	// server never opens one and may leave it out; the worker and the
+	// conclave CLI require it (RequireAlerts).
+	Alerts AlertsConfig `yaml:"alerts"`
+}
+
+// AlertsConfig names the platform's operations repository: a private
+// repository, in the App's one installation, that is never a run
+// repository. Alert issues are opened there and assigned to the owner, so
+// GitHub's own notifications deliver them. Its tokens ask only for issues
+// and metadata (alertTokenPermissions).
+type AlertsConfig struct {
+	// Repository is the full name, owner/name.
+	Repository string `yaml:"repository"`
+	// RepositoryID is its numeric ID; tokens are scoped by it.
+	RepositoryID int64 `yaml:"repository_id"`
+	// Assignee is the owner's login, which GitHub's assignees field takes.
+	// It decides only who is notified, never who is obeyed: commands are
+	// still honoured by OwnerUserID alone.
+	Assignee string `yaml:"assignee"`
+}
+
+// login matches a GitHub user login.
+var login = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+
+// configured reports whether any alerts field is set.
+func (a AlertsConfig) configured() bool { return a != AlertsConfig{} }
+
+func (a AlertsConfig) validate() error {
+	switch {
+	case checkFullName(a.Repository) != nil:
+		return fmt.Errorf("%w: alerts.repository %q is not owner/name", ErrInvalidConfig, a.Repository)
+	case a.RepositoryID <= 0:
+		return fmt.Errorf("%w: alerts.repository_id must be set", ErrInvalidConfig)
+	case !login.MatchString(a.Assignee):
+		return fmt.Errorf("%w: alerts.assignee %q is not a GitHub login", ErrInvalidConfig, a.Assignee)
+	}
+	return nil
+}
+
+// RequireAlerts reports an error unless the alerts block is filled in.
+// The worker and the CLI call it: both raise alerts, and neither may
+// start without somewhere to deliver them.
+func (c Config) RequireAlerts() error {
+	if !c.Alerts.configured() {
+		return fmt.Errorf("%w: alerts must be set (FR-SEC31)", ErrInvalidConfig)
+	}
+	return c.Alerts.validate()
+}
+
+// AlertsRepo is the alerts repository as a RepoRef in the App's one
+// installation.
+func (c Config) AlertsRepo() RepoRef {
+	return RepoRef{ID: c.Alerts.RepositoryID, FullName: c.Alerts.Repository, InstallationID: c.InstallationID}
 }
 
 var appSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,99}$`)
@@ -118,6 +172,9 @@ func (c Config) Validate() error {
 		if err := checkBaseURL(base); err != nil {
 			return fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 		}
+	}
+	if c.Alerts.configured() {
+		return c.Alerts.validate()
 	}
 	return nil
 }

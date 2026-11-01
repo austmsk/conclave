@@ -10,7 +10,7 @@ import (
 
 var wantTables = []string{
 	"attempts", "budget_reservations", "commands", "cost_events", "decisions", "feature_requests", "gate_results",
-	"goose_db_version", "plans", "pr_ci_results", "pull_requests", "repos", "state_transitions", "tasks", "tool_calls",
+	"goose_db_version", "halt_events", "plans", "pr_ci_results", "pull_requests", "repos", "state_transitions", "tasks", "tool_calls",
 }
 
 func publicTables(t *testing.T, ctx context.Context) []string {

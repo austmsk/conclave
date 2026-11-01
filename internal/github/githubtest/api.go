@@ -25,6 +25,9 @@ type APIOptions struct {
 	AppID          int64
 	InstallationID int64
 	AppSlug        string
+	// BotUserID is the user ID the fake gives the App's bot, the author
+	// of every issue it creates.
+	BotUserID int64
 	// Now is the fake's clock, for JWT checks and token expiry. Tests that
 	// move the App's clock give both the same one. Nil is time.Now.
 	Now func() time.Time
@@ -70,6 +73,17 @@ type StoredComment struct {
 	AppID int64
 }
 
+// StoredIssue is an issue as the fake holds it. UserID is its author.
+type StoredIssue struct {
+	Number    int
+	Title     string
+	Body      string
+	Labels    []string
+	Assignees []string
+	Open      bool
+	UserID    int64
+}
+
 type fakePull struct {
 	Number   int
 	Head     string
@@ -107,6 +121,7 @@ type API struct {
 	failures  []apiFailure
 	race      *fakePull
 	checkRuns map[string][]fakeCheckRun
+	issues    []*StoredIssue
 	// graphQLErrors makes the next GraphQL request answer 200 with an
 	// errors array carrying this message.
 	graphQLErrors string
@@ -151,6 +166,8 @@ func NewAPI(t testing.TB, opts APIOptions) *API {
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{n}", f.repo(f.getPull))
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", f.repo(f.listCheckRuns))
 	f.mux.HandleFunc("POST /graphql", f.repo(f.graphQL))
+	f.mux.HandleFunc("POST /repos/{owner}/{repo}/issues", f.repo(f.createIssue))
+	f.mux.HandleFunc("GET /repos/{owner}/{repo}/issues", f.repo(f.listIssues))
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
 	f.URL = srv.URL

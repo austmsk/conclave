@@ -52,6 +52,15 @@ var tokenPermissions = map[string]string{
 	"metadata":      "read",
 }
 
+// alertTokenPermissions is what a token for the alerts repository asks
+// for: issues to open and comment on, metadata to read them, nothing
+// that could push code there (FR-SEC31, RL-18). The alerts repository is
+// never a run repository, so no run token reaches it either.
+var alertTokenPermissions = map[string]string{
+	"issues":   "write",
+	"metadata": "read",
+}
+
 // forbiddenPermissions are refused in a token reply even if a future edit
 // adds them to tokenPermissions by mistake.
 var forbiddenPermissions = map[string]bool{"workflows": true, "administration": true}
@@ -255,12 +264,13 @@ func (a *App) mintToken(ctx context.Context, repoID int64, now time.Time) (cache
 		return cachedToken{}, err
 	}
 	path := "/app/installations/" + strconv.FormatInt(a.cfg.InstallationID, 10) + "/access_tokens"
-	req := tokenRequest{RepositoryIDs: []int64{repoID}, Permissions: tokenPermissions}
+	perms := a.permissionsFor(repoID)
+	req := tokenRequest{RepositoryIDs: []int64{repoID}, Permissions: perms}
 	var reply tokenReply
 	if err := a.do(ctx, "minting installation token", http.MethodPost, path, jwt, req, &reply); err != nil {
 		return cachedToken{}, err
 	}
-	expires, err := checkTokenReply(reply, repoID, now)
+	expires, err := checkTokenReply(reply, repoID, perms, now)
 	if err != nil {
 		return cachedToken{}, fmt.Errorf("github: installation token discarded: %w", err)
 	}
@@ -274,7 +284,7 @@ func (a *App) mintToken(ctx context.Context, repoID int64, now time.Time) (cache
 // permission not asked for or at a higher level, or any repository but
 // the one asked for. GitHub should never send one; a token that could
 // change workflows or reach another repository is not used even once.
-func checkTokenReply(r tokenReply, repoID int64, now time.Time) (time.Time, error) {
+func checkTokenReply(r tokenReply, repoID int64, perms map[string]string, now time.Time) (time.Time, error) {
 	if r.Token == "" {
 		return time.Time{}, fmt.Errorf("%w: reply has no token", ErrRefused)
 	}
@@ -283,7 +293,7 @@ func checkTokenReply(r tokenReply, repoID int64, now time.Time) (time.Time, erro
 		return time.Time{}, fmt.Errorf("%w: reply has no usable expiry", ErrRefused)
 	}
 	for name, level := range r.Permissions {
-		if err := checkPermission(name, level); err != nil {
+		if err := checkPermission(perms, name, level); err != nil {
 			return time.Time{}, err
 		}
 	}
@@ -293,8 +303,18 @@ func checkTokenReply(r tokenReply, repoID int64, now time.Time) (time.Time, erro
 	return expires, nil
 }
 
-func checkPermission(name, level string) error {
-	want, asked := tokenPermissions[name]
+// permissionsFor is the permission set a token for repoID asks for: the
+// alerts set for the configured alerts repository, the run set for every
+// other.
+func (a *App) permissionsFor(repoID int64) map[string]string {
+	if a.cfg.Alerts.RepositoryID != 0 && repoID == a.cfg.Alerts.RepositoryID {
+		return alertTokenPermissions
+	}
+	return tokenPermissions
+}
+
+func checkPermission(perms map[string]string, name, level string) error {
+	want, asked := perms[name]
 	if forbiddenPermissions[name] || !asked {
 		return fmt.Errorf("%w: token grants %q, which was not requested", ErrRefused, name)
 	}
