@@ -15,7 +15,7 @@ One page per merged ticket, in build order. The spec for each ticket is in [`doc
 | 8-pre | Workflow prerequisites | merged (PR #19) | [08-pre-workflow-prerequisites](08-pre-workflow-prerequisites.md) |
 | 8 | Feature workflow core | merged (PR #20) | [08-feature-workflow-core](08-feature-workflow-core.md) |
 | 8b | Commands and status surface | merged (PR #22) | [08b-commands-and-status-surface](08b-commands-and-status-surface.md) |
-| 9 | Pull request delivery | in review (`ticket/9`) | [09-pull-request-delivery](09-pull-request-delivery.md) |
+| 9 | Pull request delivery | merged (PR #24) | [09-pull-request-delivery](09-pull-request-delivery.md) |
 | 10 | End-to-end run and hardening | not started | — |
 
 The order is the working order: 8a runs before 5 (see `milestone-1.md`).

@@ -1,6 +1,6 @@
 # Ticket 9 — Pull request delivery
 
-**Status:** in review on branch `ticket/9` · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-9--pull-request-delivery) · **Requirements:** FR-S10, FR-S16, FR-S17, FR-S19, FR-A5, FR-A7, FR-SEC27 · **Review list:** RL-2, RL-21 · **Decision:** [0014](../../decisions/0014-pull-request-delivery.md)
+**Status:** merged as PR #24 (`1f60f70`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-9--pull-request-delivery) · **Requirements:** FR-S10, FR-S16, FR-S17, FR-S19, FR-A5, FR-A7, FR-SEC27 · **Review list:** RL-2, RL-21 · **Decision:** [0014](../../decisions/0014-pull-request-delivery.md)
 
 ## In one paragraph
 
