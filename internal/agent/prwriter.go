@@ -63,8 +63,10 @@ type PRWriterInput struct {
 	Gates []string
 }
 
-// PRWriterRequest is the pr_writer's model request.
-func PRWriterRequest(in PRWriterInput) contracts.Request {
+// PRWriterRequest is the pr_writer's model request under spec, the role
+// spec the worker configured (FR-SEC28: the platform's instructions in
+// System, everything else in the user message).
+func PRWriterRequest(spec contracts.RoleSpec, in PRWriterInput) contracts.Request {
 	var b strings.Builder
 	writeTask(&b, in.Task)
 	b.WriteString("\n## Gate results (from the platform)\n\n")
@@ -90,7 +92,7 @@ func PRWriterRequest(in PRWriterInput) contracts.Request {
 	b.WriteString("\n## Issue text (untrusted)\n\n")
 	b.WriteString(in.IssueText)
 	return contracts.Request{
-		RepoID: in.RepoID, Role: contracts.RolePRWriter, PromptVersion: PRWriter.PromptVersion,
+		RepoID: in.RepoID, Role: spec.Role, PromptVersion: spec.PromptVersion,
 		System:   prWriterPrompt,
 		Messages: []contracts.Message{{Role: contracts.MessageUser, Text: b.String()}},
 	}
@@ -133,6 +135,15 @@ var (
 	// trailerLine is a line git would read as a trailer ("Token: value").
 	// The platform writes the commit's trailers; a model's body may not.
 	trailerLine = regexp.MustCompile(`^\s*[A-Za-z][A-Za-z0-9-]*\s*:\s`)
+	// closingRef is a GitHub closing keyword followed by an issue or pull
+	// request reference: #N, GH-N, owner/repo#N, or an issues or pull URL.
+	// GitHub closes the referenced issue when a pull request whose body
+	// holds one merges, and when a commit whose message holds one reaches
+	// the default branch. Groups: 1 the keyword and separator, 2 and 3 the
+	// repository and number of a URL, 4 the repository of owner/repo#N,
+	// 5 the number of every other form.
+	closingRef = regexp.MustCompile(`(?i)(\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*)` +
+		`(?:https?://[^\s/]+/([\w.-]+/[\w.-]+)/(?:issues|pull)/(\d+)|(?:([\w.-]+/[\w.-]+)?#|gh-)(\d+))`)
 )
 
 // Bounds on the pr_writer's fields, in bytes.
@@ -147,7 +158,9 @@ const (
 // ParsePRWriterOutput reads and validates a reply: one JSON object,
 // optionally inside a code fence. The body loses every trailer-shaped
 // line, so the model cannot forge a Task, Plan, Model or Generated-by
-// trailer, or any other.
+// trailer, or any other. No field may close an issue: every closing
+// keyword's reference is rewritten so GitHub does not read it as one.
+// The platform writes the one Closes line the pull request carries.
 func ParsePRWriterOutput(text string) (PRWriterOutput, error) {
 	raw := strings.TrimSpace(text)
 	raw = strings.TrimPrefix(raw, "```json")
@@ -165,6 +178,9 @@ func ParsePRWriterOutput(text string) (PRWriterOutput, error) {
 	out.Body = stripTrailers(out.Body)
 	for _, f := range []*string{&out.Type, &out.Scope, &out.Description, &out.Title} {
 		*f = strings.TrimSpace(*f)
+	}
+	for _, f := range []*string{&out.Description, &out.Body, &out.Title, &out.Summary, &out.Risks} {
+		*f = neutralizeClosingRefs(*f)
 	}
 	return out, out.validate()
 }
@@ -216,4 +232,23 @@ func stripTrailers(body string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+// neutralizeClosingRefs rewrites the reference after every closing
+// keyword as plain words: "Fixes #12" becomes "Fixes issue 12", and
+// "closes octo/app#3" or an issues URL becomes "closes octo/app issue 3".
+// The keyword and the number stay, so the prose still reads, but no
+// "#", "GH-" or URL is left for GitHub to resolve. A pull request number
+// is written "issue" too: GitHub numbers both alike.
+func neutralizeClosingRefs(s string) string {
+	return closingRef.ReplaceAllStringFunc(s, func(m string) string {
+		g := closingRef.FindStringSubmatch(m)
+		switch {
+		case g[2] != "":
+			return g[1] + g[2] + " issue " + g[3]
+		case g[4] != "":
+			return g[1] + g[4] + " issue " + g[5]
+		}
+		return g[1] + "issue " + g[5]
+	})
 }

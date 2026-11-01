@@ -133,20 +133,22 @@ func (a *Activities) writePullRequest(ctx context.Context, in DeliveryInput) (De
 	return DeliveryStep{}, err
 }
 
-// callPRWriter makes the pr_writer's call, and one repair call when the
-// reply does not validate, under a feature request scope: the pr_writer
-// runs outside any attempt, so the feature request and monthly caps
-// bound it (FR-SEC9).
+// callPRWriter makes the pr_writer's call under the spec the worker
+// configured in Deps.Roles, repairing an invalid reply while the spec's
+// limits allow: at most MaxSteps calls, a repair only while the calls so
+// far used fewer than MaxTokens, and all of it within MaxWallClock. It
+// runs under a feature request scope: the pr_writer is outside any
+// attempt, so the feature request and monthly caps bound its spend
+// (FR-SEC9).
 func (a *Activities) callPRWriter(ctx context.Context, d delivery, art gate.Artifact) (agent.PRWriterOutput, error) {
-	_, diff, err := gate.Load(ctx, a.d.Blobs, art.Key)
+	spec, err := a.d.roleSpec(contracts.RolePRWriter)
 	if err != nil {
 		return agent.PRWriterOutput{}, err
 	}
-	results, err := a.gateResults.ForArtifact(ctx, d.in.AttemptID, art.Hash)
-	if err != nil {
-		return agent.PRWriterOutput{}, fmt.Errorf("reading gate results of attempt %s: %w", d.in.AttemptID, err)
+	if l := spec.Limits; l.MaxSteps <= 0 || l.MaxTokens <= 0 || l.MaxWallClock <= 0 {
+		return agent.PRWriterOutput{}, fmt.Errorf("%w: pr_writer limits %+v must all be positive", errNonRetryable, l)
 	}
-	report, err := readAttemptReport(ctx, a.d.DB, d.in.AttemptID)
+	req, err := a.prWriterRequest(ctx, d, art, spec)
 	if err != nil {
 		return agent.PRWriterOutput{}, err
 	}
@@ -158,27 +160,46 @@ func (a *Activities) callPRWriter(ctx context.Context, d delivery, art gate.Arti
 	if err != nil {
 		return agent.PRWriterOutput{}, fmt.Errorf("scoping the router to feature request %s: %w", d.pc.FeatureRequestID, err)
 	}
-	req := agent.PRWriterRequest(agent.PRWriterInput{
+	ctx, cancel := context.WithTimeout(ctx, spec.Limits.MaxWallClock)
+	defer cancel()
+	next, tokens := req, 0
+	for call := 1; ; call++ {
+		resp, err := scope.Complete(ctx, next)
+		if err != nil {
+			return agent.PRWriterOutput{}, fmt.Errorf("pr_writer call %d for attempt %s: %w", call, d.in.AttemptID, err)
+		}
+		tokens += resp.Usage.InputTokens + resp.Usage.OutputTokens
+		out, perr := agent.ParsePRWriterOutput(resp.Text)
+		if perr == nil {
+			return out, nil
+		}
+		if call >= spec.Limits.MaxSteps || tokens >= spec.Limits.MaxTokens {
+			return agent.PRWriterOutput{}, fmt.Errorf("%w: pr_writer for attempt %s gave no valid reply (calls %d, tokens %d): %w",
+				errNonRetryable, d.in.AttemptID, call, tokens, perr)
+		}
+		next = agent.PRWriterRepair(req, resp.Text, perr)
+	}
+}
+
+// prWriterRequest builds the pr_writer's first request: the task, the
+// gate results for art, the diff, the completion report and the issue.
+func (a *Activities) prWriterRequest(ctx context.Context, d delivery, art gate.Artifact, spec contracts.RoleSpec) (contracts.Request, error) {
+	_, diff, err := gate.Load(ctx, a.d.Blobs, art.Key)
+	if err != nil {
+		return contracts.Request{}, err
+	}
+	results, err := a.gateResults.ForArtifact(ctx, d.in.AttemptID, art.Hash)
+	if err != nil {
+		return contracts.Request{}, fmt.Errorf("reading gate results of attempt %s: %w", d.in.AttemptID, err)
+	}
+	report, err := readAttemptReport(ctx, a.d.DB, d.in.AttemptID)
+	if err != nil {
+		return contracts.Request{}, err
+	}
+	return agent.PRWriterRequest(spec, agent.PRWriterInput{
 		RepoID: d.pc.RepoID, Task: d.body.Task, IssueText: d.body.IssueText, Report: report, Diff: diff,
 		Gates: gateLines(results),
-	})
-	resp, err := scope.Complete(ctx, req)
-	if err != nil {
-		return agent.PRWriterOutput{}, fmt.Errorf("pr_writer call for attempt %s: %w", d.in.AttemptID, err)
-	}
-	out, perr := agent.ParsePRWriterOutput(resp.Text)
-	if perr == nil {
-		return out, nil
-	}
-	resp, err = scope.Complete(ctx, agent.PRWriterRepair(req, resp.Text, perr))
-	if err != nil {
-		return agent.PRWriterOutput{}, fmt.Errorf("pr_writer repair call for attempt %s: %w", d.in.AttemptID, err)
-	}
-	out, perr = agent.ParsePRWriterOutput(resp.Text)
-	if perr != nil {
-		return agent.PRWriterOutput{}, fmt.Errorf("%w: pr_writer for attempt %s after one repair: %w", errNonRetryable, d.in.AttemptID, perr)
-	}
-	return out, nil
+	}), nil
 }
 
 // Land pushes the attempt's artifact, as it was gated, as one commit on

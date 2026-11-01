@@ -183,7 +183,7 @@ func newFixture(t *testing.T, turns ...faketest.Turn) *fixture {
 			return gate.Artifact{}, errors.New("the fixture's rebase is never reached")
 		},
 		Bot:         BotIdentity{Name: "conclave-test[bot]", Email: "77+conclave-test[bot]@users.noreply.github.com"},
-		Roles:       map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer},
+		Roles:       map[contracts.Role]contracts.RoleSpec{contracts.RoleImplementer: agent.Implementer, contracts.RolePRWriter: agent.PRWriter},
 		Repos:       map[string]Repo{testRepo: testRepoConfig()},
 		OwnerUserID: testOwner, ConfigDigests: map[string]string{"repos.yaml": "sha256:00"},
 		WorkDir: t.TempDir(),

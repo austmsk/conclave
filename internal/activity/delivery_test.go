@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.temporal.io/sdk/testsuite"
 
+	"github.com/austmsk/conclave/internal/agent"
 	"github.com/austmsk/conclave/internal/blob"
 	"github.com/austmsk/conclave/internal/contracts"
 	"github.com/austmsk/conclave/internal/gate"
@@ -365,11 +366,11 @@ func TestFinalizeStops(t *testing.T) {
 			if got := step[DeliveryStep](f, env, f.a.Finalize, in); got.Stop != tc.want {
 				t.Fatalf("Finalize = %+v, want stop %s", got, tc.want)
 			}
-			if _, err := env.ExecuteActivity(f.a.OpenPullRequest, in); err == nil && tc.conflict {
-				t.Fatal("OpenPullRequest opened a pull request after a conflict")
+			if _, err := env.ExecuteActivity(f.a.OpenPullRequest, in); err == nil {
+				t.Fatalf("OpenPullRequest succeeded after %s", tc.want)
 			}
-			if tc.conflict && len(f.gh.pulls) != 0 {
-				t.Fatalf("%d pull requests opened", len(f.gh.pulls))
+			if len(f.gh.pulls) != 0 {
+				t.Fatalf("%d pull requests opened after %s", len(f.gh.pulls), tc.want)
 			}
 		})
 	}
@@ -391,8 +392,43 @@ func TestWritePullRequestRepair(t *testing.T) {
 		f := newFixture(t, prWriterTurn("no"), prWriterTurn("still no"))
 		in := f.deliverable()
 		_, err := f.deliveryEnv().ExecuteActivity(f.a.WritePullRequest, in)
-		if err == nil || !strings.Contains(err.Error(), "after one repair") {
+		if err == nil || !strings.Contains(err.Error(), "no valid reply (calls 2,") {
 			t.Fatalf("WritePullRequest = %v, want a refusal after one repair", err)
+		}
+		if _, err := store.PullRequestForAttempt(f.ctx, appPool, in.AttemptID); !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("a pull request was recorded: %v", err)
+		}
+	})
+}
+
+// TestWritePullRequestUsesConfiguredRole: the pr_writer runs under the
+// spec in Deps.Roles, as every role does. A worker without one refuses,
+// permanently and before any model call; a spec's MaxSteps bounds the
+// repairs.
+func TestWritePullRequestUsesConfiguredRole(t *testing.T) {
+	t.Run("not configured", func(t *testing.T) {
+		f := newFixture(t, prWriterTurn(prWriterReply))
+		in := f.deliverable()
+		spec := f.a.d.Roles[contracts.RolePRWriter]
+		delete(f.a.d.Roles, contracts.RolePRWriter)
+		_, err := f.deliveryEnv().ExecuteActivity(f.a.WritePullRequest, in)
+		requirePermanent(t, err)
+		// The one scripted reply is still unread: no model call was made.
+		f.a.d.Roles[contracts.RolePRWriter] = spec
+		step[DeliveryStep](f, f.deliveryEnv(), f.a.WritePullRequest, in)
+		if pr := f.pullRequest(in.AttemptID); pr.Title != "Add the tally package" {
+			t.Fatalf("title = %q", pr.Title)
+		}
+	})
+	t.Run("no repair step", func(t *testing.T) {
+		f := newFixture(t, prWriterTurn("no"), prWriterTurn(prWriterReply))
+		in := f.deliverable()
+		spec := agent.PRWriter
+		spec.Limits.MaxSteps = 1
+		f.a.d.Roles[contracts.RolePRWriter] = spec
+		_, err := f.deliveryEnv().ExecuteActivity(f.a.WritePullRequest, in)
+		if err == nil || !strings.Contains(err.Error(), "no valid reply (calls 1,") {
+			t.Fatalf("WritePullRequest = %v, want a refusal after one call", err)
 		}
 		if _, err := store.PullRequestForAttempt(f.ctx, appPool, in.AttemptID); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("a pull request was recorded: %v", err)
