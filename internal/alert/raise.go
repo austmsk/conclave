@@ -50,7 +50,7 @@ func Raise(ctx context.Context, log *Log, issues Issues, a Alert) (Delivery, err
 	return d, nil
 }
 
-func keyLine(key string) string        { return "conclave-alert-key: " + key }
+func keyLine(key string) string       { return "conclave-alert-key: " + key }
 func occurrenceLine(id string) string { return "conclave-alert-occurrence: " + id }
 
 func deliver(ctx context.Context, issues Issues, a Alert) (Delivery, error) {
