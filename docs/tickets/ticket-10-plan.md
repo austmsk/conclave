@@ -153,7 +153,7 @@ No contract changes. No new dependencies: the Temporal SDK schedule client and t
 ## 10b — live trials (next session, outline only)
 
 1. Do step 0. Re-run the ruleset check (`gh api repos/austmsk/ets/rules/branches/main`) before the first trial. Then start server, worker and tunnel with the `deploy/local/*` flags.
-2. Write 10 ETS issues in owner-section format (the candidates from M1 status are the missing `@Test` on `droopQuota_forTwoSeats`, TerminalPrintTest never parsing its file, and the seedable tie-break), saved in `docs/trials/local/`. Decide at the start whether the 2 cancellations are 2 of the 10 or extra runs.
+2. Write 10 ETS issues in owner-section format, from the candidates in the owner's local notes (ETS is private, so they are not listed here), saved in `docs/trials/local/`. Decide at the start whether the 2 cancellations are 2 of the 10 or extra runs.
 3. For each trial: label, `/approve`, observe, record base SHA, attempt, gates, PR, CI, cost and duration. A `/retry` is not a new trial. Fix what breaks, with the two-failure circuit breaker, and each fix gets a test.
 4. During one trial, kill the worker process mid-attempt and start a second worker (live NFR-R1).
 5. Run `conclave halt` once with a run in flight, then `resume`. Run `conclave alert-test`.

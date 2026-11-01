@@ -9,30 +9,41 @@ import (
 	"github.com/austmsk/conclave/internal/store"
 )
 
-// TestHaltStateLatestEventWins walks the kill switch through set, clear
-// and set again as the application role: the state is always the latest
-// event, and a repeated set or clear records nothing.
+// TestHaltStateLatestEventWins walks the kill switch through clear, set,
+// clear and set again as the application role: the state is always the
+// latest event, a clear before any halt records nothing, and each
+// recorded event is later than the one before.
 func TestHaltStateLatestEventWins(t *testing.T) {
 	ctx, tx := testTx(t)
+	steps := []struct {
+		name       string
+		set        bool
+		wantHalted bool
+		wantNew    bool
+	}{
+		{"clear before any halt", false, false, false},
+		{"set", true, true, true},
+		{"clear", false, false, true},
+		{"set again", true, true, true},
+	}
 	err := asAppRole(t, ctx, tx, func(sp pgx.Tx) error {
-		st, err := store.CurrentHalt(ctx, sp)
-		if err != nil || st.Halted || st.ID != 0 {
-			t.Fatalf("before any event: %+v, %v; want not halted, no ID", st, err)
-		}
-		if st, err := store.ClearHalt(ctx, sp, "nothing to clear", store.ActorCLI); err != nil || st.Halted || st.ID != 0 {
-			t.Fatalf("clear before any halt: %+v, %v; want nothing recorded", st, err)
-		}
-		first, err := store.SetHalt(ctx, sp, "first", store.ActorCLI)
-		if err != nil || !first.Halted || first.Reason != "first" {
-			t.Fatalf("set: %+v, %v", first, err)
-		}
-		cleared, err := store.ClearHalt(ctx, sp, "resume", store.ActorCLI)
-		if err != nil || cleared.Halted || cleared.ID <= first.ID {
-			t.Fatalf("clear: %+v, %v; want a later, cleared event", cleared, err)
-		}
-		again, err := store.SetHalt(ctx, sp, "again", store.ActorCLI)
-		if err != nil || !again.Halted || again.ID <= cleared.ID {
-			t.Fatalf("second set: %+v, %v; want a later halt", again, err)
+		var last int64
+		for _, step := range steps {
+			record := store.ClearHalt
+			if step.set {
+				record = store.SetHalt
+			}
+			st, err := record(ctx, sp, step.name, store.ActorCLI)
+			if err != nil {
+				return err
+			}
+			if st.Halted != step.wantHalted || (st.ID > last) != step.wantNew {
+				t.Fatalf("%s: %+v after event %d; want halted %t, new event %t", step.name, st, last, step.wantHalted, step.wantNew)
+			}
+			last = st.ID
+			if cur, err := store.CurrentHalt(ctx, sp); err != nil || cur != st {
+				t.Fatalf("%s: CurrentHalt = %+v, %v; want %+v", step.name, cur, err, st)
+			}
 		}
 		return nil
 	})

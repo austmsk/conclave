@@ -13,6 +13,7 @@ secrets.env
 /dist/
 conclave-server
 conclave-worker
+/conclave
 /server
 /worker
 *.exe
@@ -31,6 +32,11 @@ coverage.*
 # files are placeholders that fail validation; the filled-in copies live
 # here, because this repository is public and they name private ones.
 /deploy/local/
+
+# Milestone 1 trial issues and the trial log. They describe the Election
+# Tally repository, which is private, and this repository is public, so the
+# real files stay on disk; docs/trials/README.md says what goes in them.
+/docs/trials/local/
 
 # Local runtime state
 /artifacts/

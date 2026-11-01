@@ -104,10 +104,12 @@ type HaltResult struct {
 }
 
 // HaltDone is the follow-up to Halt with what the halt did. It shares
-// Halt's key, so it lands on the same issue as a comment.
+// Halt's key, so it lands on the same issue as a comment. Each run of
+// `conclave halt` is its own occurrence, named by its time, so a second
+// halt during the same halt reports its own sweep.
 func HaltDone(haltID int64, r HaltResult, at time.Time) Alert {
 	a := Halt(haltID, "-", at)
-	a.OccurrenceID += ":done"
+	a.OccurrenceID += ":done:" + strconv.FormatInt(at.UnixNano(), 10)
 	a.Title = "Kill switch: halt complete"
 	a.What = "The halt finished its sweep."
 	a.Action = fmt.Sprintf("%d workflows cancelled, %d still open; %d recorded sandboxes released, %d unrecorded containers reaped; afterwards %d attempts unreleased and %d labelled containers remain.",
