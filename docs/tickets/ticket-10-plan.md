@@ -167,3 +167,32 @@ No contract changes. No new dependencies: the Temporal SDK schedule client and t
 - Start a fake-provider run, run `conclave halt`, and check: workflows cancelled, worker exited, zero labelled containers. Then run `conclave resume`.
 - After Pro is active: `gh api repos/austmsk/ets/rules/branches/main` shows the three rules, and the ruleset has no bypass actors (step 0, item 4).
 - Then `/review-ticket 10a`, fix the findings, and open the PR.
+
+## Running `conclave alert-test` (owner, after 10a)
+
+This proves the whole alert path: the local log, the ops repository's issues-only token, and the dedupe.
+
+1. **Add the ops repository to the App installation.** Open the App's installation settings, at `github.com/settings/installations/<installation_id>` (the ID is in `deploy/local/github.yaml`). Under **Repository access**, select the ops repository beside ETS, and save.
+2. **Create the log's directory:**
+   ```
+   mkdir -p ~/.local/state/conclave
+   ```
+3. **Raise a test alert** from the repository root. First load the secrets file into the environment, as you do before starting the worker; the command reads `CONCLAVE_DATABASE_URL` and `CONCLAVE_GITHUB_APP_KEY_FILE` from it. Then run:
+   ```
+   go run ./cmd/conclave alert-test -github-config deploy/local/github.yaml -alert-log ~/.local/state/conclave/alerts.jsonl
+   ```
+4. **Check the result.** It prints `test alert delivered: <issue URL> (new issue: true)`, and the issue is assigned to the owner and labelled `conclave-alert` and `severity:digest`.
+5. **Run it again.** It prints `new issue: false` and comments on the same issue: a repeat does not open a duplicate.
+6. **Check the local log:**
+   ```
+   cat ~/.local/state/conclave/alerts.jsonl
+   ```
+   Each run adds an `alert` line, then a `delivery` line with `"outcome":"delivered"`.
+
+If it fails:
+
+- **`installation token discarded`, or HTTP 404/422 at the token exchange:** the ops repository is not in the installation. Redo step 1.
+- **`CONCLAVE_GITHUB_APP_KEY_FILE is not set`:** the secrets file names the key path differently, or it was not loaded.
+- **`alerts must be set`, or another configuration error:** `-github-config` is not pointing at `deploy/local/github.yaml`, or its `alerts:` block is incomplete.
+
+Close the test issue once it works.
