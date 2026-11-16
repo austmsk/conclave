@@ -2,7 +2,7 @@ module github.com/austmsk/conclave
 
 go 1.27.1
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 require (
 	github.com/containerd/errdefs v1.0.0
