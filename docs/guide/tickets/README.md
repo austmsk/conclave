@@ -17,7 +17,7 @@ One page per merged ticket, in build order. The spec for each ticket is in [`doc
 | 8b | Commands and status surface | merged (PR #22) | [08b-commands-and-status-surface](08b-commands-and-status-surface.md) |
 | 9 | Pull request delivery | merged (PR #24) | [09-pull-request-delivery](09-pull-request-delivery.md) |
 | 10a | Kill switch, alerts and scheduled reaper | merged (PR #26) | [10a-kill-switch-alerts-and-reaper](10a-kill-switch-alerts-and-reaper.md) |
-| 10b | End-to-end trials | in review | [10b-end-to-end-trials](10b-end-to-end-trials.md) |
+| 10b | End-to-end trials | merged (PR #28) | [10b-end-to-end-trials](10b-end-to-end-trials.md) |
 
 The order is the working order: 8a runs before 5 (see `milestone-1.md`).
 
