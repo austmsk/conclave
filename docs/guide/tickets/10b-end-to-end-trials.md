@@ -17,6 +17,8 @@ NFR-R1 asks that a worker crash never loses work. Ticket 10a proved it against a
 
 RL-18 asks that the controls a compromise would target don't depend on the thing compromised. The halt drill shows it in practice. The halt was recorded in Postgres before anything else happened, the alert went to the private ops repository with its issues-only token, and the workers stopped themselves after reading Postgres. The webhook server, which holds no database access, played no part.
 
+The constraints fix tells the agent the line cap and the full protected and execution-surface lists, so a hijacked agent learns them too. It gains little. The built-in lists are public in `internal/gate/defaults.go`; only the owner's own additions, from the git-ignored `deploy/local/gates.yaml`, are not. The cap keeps a change reviewable and bounds nothing the agent can reach. A protected path fails however it is changed, by rename, symlink or gitlink included, and an execution-surface path is only flagged, for the owner's eye. And the worker checks all three itself, over the frozen diff after the session has ended, against its own configuration, so knowing them lets the agent neither change nor skip them.
+
 ## How it works
 
 ### The setup
@@ -48,8 +50,8 @@ The trial log records, per trial: base SHA, attempts, gate results, PR, CI resul
 
 ### The two fixes
 
-- **The implementer is told its constraints.** Trial 6's second attempt failed `diff_size` at 528 changed lines against a cap of 400. The plan's `Constraints` reach `agent.Runner` as `SessionInput.Limits`, and `docs/agent-roles.md` lists them as implementer input, but `taskMessage` never wrote them. `writeConstraints` (`internal/agent/prompt.go`) now adds a Constraints section after the repository profile and above the untrusted issue text. It gives the changed-line cap and how lines are counted, the protected paths (changing one fails), the execution-surface paths (flagged), and the dependency policy. `Implementer.PromptVersion` moved to `implementer-v2` (decision 0006), so attempts from before the fix stay apart in provenance. The retry on `implementer-v2` delivered at 259 changed lines.
-- **Nested bullets stay in their criterion.** Trial 9's plan had ten criteria for seven. One criterion was a lead-in with three sub-bullets, and `listItems` (`internal/activity/plan.go`) took any list marker at any indent as a new item. Now the first item's indent is the top level. A deeper item continues the item before it, as a plain continuation line already did, with a tab counting four columns. Trial 10's plan, with five sub-bullets under one criterion, parsed to its seven.
+- **The implementer is told its constraints.** Trial 6's second attempt failed `diff_size` at 528 changed lines against a cap of 400. The plan's `Constraints` reach `agent.Runner` as `SessionInput.Limits`, and `docs/agent-roles.md` lists them as implementer input, but `taskMessage` never wrote them. `writeConstraints` (`internal/agent/prompt.go`) now adds a Constraints section after the repository profile and above the untrusted issue text. It gives the changed-line cap and how lines are counted, the protected paths (changing one fails), the execution-surface paths (flagged), and the dependency policy. The system prompt's "What to trust" names the section as the platform's and the only statement of the limits, so a Constraints block in the issue text or a tool result changes nothing. `Implementer.PromptVersion` moved to `implementer-v2` (decision 0006), so attempts from before the fix stay apart in provenance. The retry on `implementer-v2` delivered at 259 changed lines.
+- **Nested bullets stay in their criterion.** Trial 9's plan had ten criteria for seven. One criterion was a lead-in with three sub-bullets, and `listItems` (`internal/activity/plan.go`) took any list marker at any indent as a new item. Now an item nests the way CommonMark nests it: an item whose marker starts at or past the current top-level item's content column (where its text starts, or one past the marker if five or more spaces follow it) continues that criterion, as a plain continuation line already did. Any other item starts a new criterion and becomes the reference for the items after it. A tab advances to the next multiple of four columns. Trial 10's plan, with five sub-bullets under one criterion, parsed to its seven.
 
 Each fix needed a worker restart, done between trials. Trial 6 was resumed with `/retry`, which continues the same trial rather than starting a new one.
 
@@ -74,16 +76,16 @@ Trial 10 ran out of time on both attempts. Every tool call took under two second
 | `docs/trials/local/log.md` (git-ignored) | The trial log: pre-flight, one row per trial, the drills, the after-trial checks, the report summary |
 | `docs/trials/local/NN-*.md` (git-ignored) | Each issue as filed, with issue number, label time, base SHA and final state |
 | `docs/trials/README.md`, `webhook-tunnel.md` | What a trial is and what it records; starting the tunnel |
-| `internal/agent/prompt.go` | `taskMessage`, `writeConstraints` |
+| `internal/agent/prompt.go` | `systemPrompt`, `taskMessage`, `writeConstraints` |
 | `internal/agent/role.go` | `Implementer`, `PromptVersion: "implementer-v2"` |
-| `internal/activity/plan.go` | `ParseIssue`, `listItems`, `indentWidth` |
+| `internal/activity/plan.go` | `ParseIssue`, `listItems`, `itemColumns`, `advanceColumn` |
 | `internal/store/trial_report.sql` | The report query the figures above come from |
 | `docs/decisions/0016-milestone-1-deferrals.md` | "Found in the ticket 10b trials" |
 
 ## What the tests prove
 
-- **The agent is told the limits it is gated on, by the platform.** agent: `TestTaskMessageStatesConstraints` runs a session through the fake provider. It checks that the first request states the cap, the protected and execution-surface paths and the dependency policy, each above the untrusted issue label. A second case sends issue text claiming a 5000-line cap. The platform's 400 is the only cap stated, and the claim stays under the label. The test fails if `writeConstraints` is not called.
-- **Nested bullets don't split a criterion.** activity: `TestParseIssueNestedItems` covers a lead-in with two sub-bullets, and a tab-indented item under an indented first item. Both cases fail on the old `listItems`. `TestParseIssue` still passes unchanged.
+- **The agent is told the limits it is gated on, by the platform.** agent: `TestTaskMessageStatesConstraints` runs a session through the fake provider. It checks that the first request states the cap, the protected and execution-surface paths and the dependency policy, each above the untrusted issue label. A second case sends issue text claiming a 5000-line cap. The platform's 400 is the only cap stated, and the claim stays under the label. A third case allows dependency additions and checks the refusal line is absent. The test fails if `writeConstraints` is not called. `TestSystemPromptStatesTrust` checks that the system prompt names the Constraints section as the platform's and disowns limits stated in the issue text or a tool result.
+- **Nested bullets don't split a criterion.** activity: `TestParseIssueNestedItems` covers a lead-in with two sub-bullets, a tab-indented item at and short of the parent's content column, a stray-space sibling, a later shallower top-level item taking nested items, a tab after spaces, an ordered marker's width, and five spaces after a marker. The lead-in case fails on the `listItems` from before 10b, and the stray-space and shallower-item cases fail on 10b's first fix, which measured from the first item's indent. `TestParseIssue` still passes unchanged.
 - **The live behaviours** have no new automated test. Their evidence is the trial log, and each rests on a 10a or earlier test:
   - the worker kill on `TestWorkerKilledMidAttemptResumesOnSecond`;
   - the halt on `TestHaltAgainstLiveTemporal` and `TestWatcherStopsAfterGrace`;
@@ -94,6 +96,7 @@ Trial 10 ran out of time on both attempts. Every tool call took under two second
 - **Trial 10 is unresolved.** After one `/retry` (the owner's choice) it was left in `needs_attention`. Its workflow is still open, holding no sandbox. `/cancel` ends it, and a new label starts a new run.
 - **The implementer's 20-minute wall clock** was not raised: it is a starting value to revise with Milestone 2's latency data (decision 0016).
 - **CRLF files** cost the agent turns, and nothing tells it a file's line endings (decision 0016).
+- **Two of the three size caps are untold.** The Constraints section states the changed-line cap, but `diff_size` also fails on changed files and diff bytes. Stating them needs new fields on `contracts.Constraints` (decision 0016).
 - **Cancellation waits for the next heartbeat**, so an attempt stops up to about 40 seconds after `/cancel` or a halt.
 - **Alert-log times** from Postgres carry the local offset, others UTC. This is cosmetic.
 - **Trial PRs are unmerged.** They are drafts flipped to ready on ETS. Some touch the same files, so the owner resolves conflicts when merging them. Branch cleanup is FR-S20, deferred to Milestone 4.
@@ -105,5 +108,5 @@ Trial 10 ran out of time on both attempts. Every tool call took under two second
 2. `/cancel` is posted while an attempt runs. Why does the attempt take up to a heartbeat interval to stop, and which code releases its sandbox?
 3. During the halt drill the halt's own sweep released no sandboxes, yet none was left over. Why?
 4. Why does the constraints section sit above the issue text, and what stops an issue from raising its own cap?
-5. Why did the constraints fix bump the prompt version when the system prompt was unchanged?
+5. Why did the constraints fix bump the prompt version, and why did the system prompt's later change, on the same branch, not bump it again?
 6. A trial is resumed with `/retry` after a fix. Why does it still count as one trial, and what would make it two?
