@@ -31,3 +31,5 @@ make down      # stop the stack
 Temporal's UI is on `localhost:8233` and Jaeger's on `localhost:16686`.
 
 Owner configuration lives in `deploy/`: `router.yaml` (models, prices, routes, rate limits) and `repos.yaml` (each repository's sensitivity tier and role allowlist). Both ship with placeholders that fail validation on purpose, so the router refuses them until real values are filled in.
+
+To run the whole platform locally (worker, webhook server and tunnel), follow [`docs/running-locally.md`](docs/running-locally.md).
