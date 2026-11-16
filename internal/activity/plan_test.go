@@ -85,10 +85,10 @@ func TestParseIssueNestedItems(t *testing.T) {
 	}{
 		{
 			name: "nested items continue their parent criterion",
-			body: "## Task\nName reports.\n## Acceptance criteria\n- `reportPath` returns:\n  - `a_OFFICIAL.txt` for `(\"a.csv\", \"OFFICIAL\")`;\n  - `a_TEST.txt` for `(\"a.csv\", \"TEST\")`.\n- the README matches\n",
+			body: "## Task\nName outputs.\n## Acceptance criteria\n- `outName` returns:\n  - `a.txt` for `(\"a\", \"txt\")`;\n  - `b.csv` for `(\"b\", \"csv\")`.\n- the docs match\n",
 			wantAC: []string{
-				"`reportPath` returns: `a_OFFICIAL.txt` for `(\"a.csv\", \"OFFICIAL\")`; `a_TEST.txt` for `(\"a.csv\", \"TEST\")`.",
-				"the README matches",
+				"`outName` returns: `a.txt` for `(\"a\", \"txt\")`; `b.csv` for `(\"b\", \"csv\")`.",
+				"the docs match",
 			},
 		},
 		{
