@@ -39,8 +39,19 @@ These were found in review and left unfixed by the owner's choice on 2026-10-31.
 - **`minPollEvery` is defined twice**, in the gate policy and in the workflow.
 - **No test covers the pr_writer's budget-cap stop** in delivery. Ticket 10a's `RaiseAlert` call covers both cap paths through `needsAttention`, but only the task path has a workflow test.
 
+### Found in the ticket 10b trials
+
+The live trials (2026-11-16) turned up two defects, both fixed on the 10b branch, and three behaviours that are left as they are. The defects are listed so their tests are found; the rest are choices or gaps.
+
+- **Fixed: the implementer was never told its constraints.** `SessionInput.Limits` reached the agent package but not the prompt, so an attempt could not know the 400-line cap it failed against. The task message now states the cap, protected and execution-surface paths and the dependency policy, and the prompt version is `implementer-v2` (agent `TestTaskMessageStatesConstraints`). Attempts before the fix are recorded as `implementer-v1`.
+- **Fixed: nested bullets split an acceptance criterion.** A criterion written as a lead-in with sub-bullets became one criterion per bullet (activity `TestParseIssueNestedItems`).
+- **Left: the implementer's 20-minute wall clock.** One trial stopped twice on `wall_clock`, with every tool call under two seconds and model turns of up to 23k output tokens taking one to three minutes each. `MaxWallClock` is one of `docs/agent-roles.md`'s starting values, to be revised with Milestone 2 data, so it was not raised during the trials. Milestone 2's benchmark should measure turn latency before choosing a new value.
+- **Gap: CRLF files cost the agent turns.** In both of that trial's attempts the agent inspected and then converted the line endings of the CRLF files it had to edit, which would also have rewritten every line against the diff cap. Nothing tells the agent a file's line endings, and the file tools neither preserve nor report them. A later ticket could state the line endings in `read_file`'s result or the repository profile.
+- **Left: cancellation waits for a heartbeat.** `/cancel` and a halt reach a running attempt only on its next heartbeat (every 30 seconds), so an attempt stops up to about 40 seconds after the request. This is how Temporal delivers activity cancellation, and the sandbox is released in every case.
+- **Cosmetic: alert-log times are not all UTC.** Alert lines whose time comes from Postgres are written with the worker's local offset, others in UTC. Each is the same instant and parses the same.
+
 ## Consequences
 
 - A session that finds one of these behaviours should check this record before treating it as a bug.
-- The Milestone 2 tickets that pick up FR-SEC20 and the canary alert, and the Milestone 4 tickets for FR-S18a, FR-S19 and FR-S20, start from the seams listed in `m1-exit-checklist.md`.
+- The Milestone 2 tickets that pick up FR-SEC20 and the canary alert, and the Milestone 4 tickets for FR-S18a, FR-S19 and FR-S20, start from the seams listed in `m1-exit-checklist.md`. Milestone 2 also inherits the wall-clock and CRLF findings from the ticket 10b trials.
 - Decisions 0002 and 0003 (ticket 2) are still owed by the owner. NFR-M9 is not met for Milestone 1 until they are written.
