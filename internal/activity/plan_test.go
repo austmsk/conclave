@@ -92,9 +92,39 @@ func TestParseIssueNestedItems(t *testing.T) {
 			},
 		},
 		{
-			name:   "a tab-indented item is nested, an indented first item sets the level",
+			name:   "a tab-indented item short of the parent's content column is a sibling",
 			body:   "## Task\nDo it.\n## Acceptance criteria\n  1. first\n\t- detail\n  2. second\n",
+			wantAC: []string{"first", "detail", "second"},
+		},
+		{
+			name:   "a tab-indented item at the parent's content column is nested",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n- first\n\t- detail\n- second\n",
 			wantAC: []string{"first detail", "second"},
+		},
+		{
+			name:   "an item indented by a stray space is a sibling",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n- first\n - second\n",
+			wantAC: []string{"first", "second"},
+		},
+		{
+			name:   "a later, shallower top-level item still takes nested items",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n  - first\n- second\n  - detail\n",
+			wantAC: []string{"first", "second detail"},
+		},
+		{
+			name:   "a tab after spaces advances to the next tab stop",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n  1. first\n \t- second\n",
+			wantAC: []string{"first", "second"},
+		},
+		{
+			name:   "an ordered marker's width sets the content column",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n10. first\n    - detail\n   - second\n",
+			wantAC: []string{"first detail", "second"},
+		},
+		{
+			name:   "five spaces after the marker put the content one column past it",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n-     first\n  - detail\n",
+			wantAC: []string{"first detail"},
 		},
 	}
 	for _, tt := range tests {
