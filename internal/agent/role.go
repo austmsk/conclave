@@ -7,7 +7,9 @@ import (
 )
 
 // Implementer is the Milestone 1 implementer role (docs/agent-roles.md).
-// Its PromptVersion names systemPrompt; change one and change the other.
+// Its PromptVersion names systemPrompt and the layout of taskMessage;
+// change either and change the version. v2 added the Constraints section
+// to the task message (ticket 10b, trial 6).
 //
 // It has every Milestone 1 tool. request_dependency waits for Milestone
 // 3; until then a dependency the change needs goes in the finish report.
@@ -26,7 +28,7 @@ import (
 //   - MaxRepeatErrors 3 identical failures.
 var Implementer = contracts.RoleSpec{
 	Role:          contracts.RoleImplementer,
-	PromptVersion: "implementer-v1",
+	PromptVersion: "implementer-v2",
 	Tools: []contracts.ToolName{
 		contracts.ToolReadFile,
 		contracts.ToolListDir,

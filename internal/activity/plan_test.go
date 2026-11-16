@@ -74,6 +74,70 @@ func TestParseIssue(t *testing.T) {
 	}
 }
 
+// TestParseIssueNestedItems checks a criterion written as a lead-in with
+// sub-bullets stays one criterion. Trial 9 of ticket 10b had its first
+// criterion split into four, the lead-in left as "returns:".
+func TestParseIssueNestedItems(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		wantAC []string
+	}{
+		{
+			name: "nested items continue their parent criterion",
+			body: "## Task\nName outputs.\n## Acceptance criteria\n- `outName` returns:\n  - `a.txt` for `(\"a\", \"txt\")`;\n  - `b.csv` for `(\"b\", \"csv\")`.\n- the docs match\n",
+			wantAC: []string{
+				"`outName` returns: `a.txt` for `(\"a\", \"txt\")`; `b.csv` for `(\"b\", \"csv\")`.",
+				"the docs match",
+			},
+		},
+		{
+			name:   "a tab-indented item short of the parent's content column is a sibling",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n  1. first\n\t- detail\n  2. second\n",
+			wantAC: []string{"first", "detail", "second"},
+		},
+		{
+			name:   "a tab-indented item at the parent's content column is nested",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n- first\n\t- detail\n- second\n",
+			wantAC: []string{"first detail", "second"},
+		},
+		{
+			name:   "an item indented by a stray space is a sibling",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n- first\n - second\n",
+			wantAC: []string{"first", "second"},
+		},
+		{
+			name:   "a later, shallower top-level item still takes nested items",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n  - first\n- second\n  - detail\n",
+			wantAC: []string{"first", "second detail"},
+		},
+		{
+			name:   "a tab after spaces advances to the next tab stop",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n  1. first\n \t- second\n",
+			wantAC: []string{"first", "second"},
+		},
+		{
+			name:   "an ordered marker's width sets the content column",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n10. first\n    - detail\n   - second\n",
+			wantAC: []string{"first detail", "second"},
+		},
+		{
+			name:   "five spaces after the marker put the content one column past it",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n-     first\n  - detail\n",
+			wantAC: []string{"first detail"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec, problem := ParseIssue(tt.body)
+			if problem != "" {
+				t.Fatalf("problem = %q", problem)
+			}
+			checkCriteria(t, spec.Criteria, tt.wantAC)
+		})
+	}
+}
+
 func checkCriteria(t *testing.T, got []contracts.AcceptanceCriteria, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

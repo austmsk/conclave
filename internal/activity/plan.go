@@ -51,7 +51,7 @@ const (
 
 var (
 	headingRE  = regexp.MustCompile(`^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$`)
-	listItemRE = regexp.MustCompile(`^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?(.*\S)[ \t]*$`)
+	listItemRE = regexp.MustCompile(`^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(?:\[[ xX]\][ \t]+)?(.*\S)[ \t]*$`)
 	fenceRE    = regexp.MustCompile("^ {0,3}(```|~~~)")
 )
 
@@ -132,20 +132,61 @@ func heading(line string, inFence bool) (int, string, bool) {
 	return len(m[1]), name, true
 }
 
-// listItems returns the text of each list item. A non-blank line that is
-// not an item continues the item before it.
+// listItems returns the text of each top-level list item. As in
+// CommonMark, an item whose marker starts at or past the content column
+// of the current top-level item is nested in it; any other item is a new
+// top-level item, and its content column is the reference for the items
+// after it. A nested item, like a non-blank line that is not an item,
+// continues the top-level item before it, so a criterion written as a
+// lead-in with sub-bullets stays one criterion (ticket 10b, trial 9).
 func listItems(lines []string) []string {
 	var items []string
+	content := 0
 	for _, line := range lines {
-		if m := listItemRE.FindStringSubmatch(line); m != nil {
-			items = append(items, strings.TrimSpace(m[1]))
-			continue
+		m := listItemRE.FindStringSubmatch(line)
+		text := strings.TrimSpace(line)
+		if m != nil {
+			indent, col := itemColumns(m[1], m[2], m[3])
+			text = strings.TrimSpace(m[4])
+			if len(items) == 0 || indent < content {
+				content = col
+				items = append(items, text)
+				continue
+			}
 		}
-		if t := strings.TrimSpace(line); t != "" && len(items) > 0 {
-			items[len(items)-1] += " " + t
+		if text != "" && len(items) > 0 {
+			items[len(items)-1] += " " + text
 		}
 	}
 	return items
+}
+
+// itemColumns returns a list item's marker column and content column
+// from its indent, marker, and the whitespace after the marker. The
+// content starts after one to four columns of that whitespace; with five
+// or more, CommonMark puts it one column past the marker.
+func itemColumns(indent, marker, gap string) (markerCol, contentCol int) {
+	markerCol = advanceColumn(0, indent)
+	markerEnd := markerCol + len(marker)
+	contentCol = advanceColumn(markerEnd, gap)
+	if contentCol-markerEnd > 4 {
+		contentCol = markerEnd + 1
+	}
+	return markerCol, contentCol
+}
+
+// advanceColumn returns the column reached by writing ws from column col:
+// a space advances one column, a tab to the next multiple of four, the
+// tab stop CommonMark uses.
+func advanceColumn(col int, ws string) int {
+	for _, r := range ws {
+		if r == '\t' {
+			col += 4 - col%4
+			continue
+		}
+		col++
+	}
+	return col
 }
 
 // planMarker is the text by which the plan comment is found again. It is

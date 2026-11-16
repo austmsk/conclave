@@ -81,6 +81,8 @@ The image, limits, install commands and environment for each repository come fro
 
 The agent loop in `internal/agent` sends the task to a model and runs the tool calls the model asks for (read a file, write a file, apply a patch, run the tests) inside the sandbox. It repeats until the model calls `finish` or hits a limit.
 
+The first message gives the task and its acceptance criteria, the repository profile, and the plan's constraints: the changed-line cap the diff gate enforces, the protected and execution-surface paths, and the dependency policy. All of these come from the platform. The issue text follows under a label saying it is untrusted. See [ticket 10b](tickets/10b-end-to-end-trials.md), which added the constraints after a live trial failed a cap the agent had never been told.
+
 - **Tools.** The role's tool list decides which tools are offered. A call to any other tool is refused before the sandbox sees it.
 - **Paths.** Every path is checked and refused, never cleaned up, and `.git` is always out of reach.
 - **Processes.** No process outlives a sandbox command, so nothing can swap a path for a symlink while a file is read or written.

@@ -153,10 +153,15 @@ No contract changes. No new dependencies: the Temporal SDK schedule client and t
 ## 10b — live trials (next session, outline only)
 
 1. Do step 0. Re-run the ruleset check (`gh api repos/austmsk/ets/rules/branches/main`) before the first trial. Then start server, worker and tunnel with the `deploy/local/*` flags.
-2. Write 10 ETS issues in owner-section format, from the candidates in the owner's local notes (ETS is private, so they are not listed here), saved in `docs/trials/local/`. Decide at the start whether the 2 cancellations are 2 of the 10 or extra runs.
+2. The 10 ETS issues are written, in owner-section format, in the git-ignored `docs/trials/local/` (ETS is private, so they are not listed here). **Run exactly those, in order:**
+   - `plan.md` is the source of truth: the schedule, the ground rules, the drill notes, and why each issue was chosen.
+   - `01-<slug>.md` to `10-<slug>.md` each hold one issue body, filed as written. Everything after the `---` line is the body.
+   - `ets-trial-plan.md` is an earlier draft. `plan.md` supersedes it, so don't file from it.
+   - The 2 cancellations are 2 of the 10 (trials 5 and 8), as recorded in `log.md`'s header.
+   - Trials have no dependencies, and no trial PR is merged until all ten are done, so every trial starts from the same ETS base.
 3. For each trial: label, `/approve`, observe, record base SHA, attempt, gates, PR, CI, cost and duration. A `/retry` is not a new trial. Fix what breaks, with the two-failure circuit breaker, and each fix gets a test.
-4. During one trial, kill the worker process mid-attempt and start a second worker (live NFR-R1).
-5. Run `conclave halt` once with a run in flight, then `resume`. Run `conclave alert-test`.
+4. During trial 6, kill the worker process mid-attempt and start a second worker (live NFR-R1). During trial 5, comment `/cancel` while its sandbox is running (cancellation A).
+5. During trial 8, run `conclave halt` with the run in flight, then `resume` (cancellation B: a halt cancels the run and `resume` does not restart it). Run `conclave alert-test`.
 6. After the trials, confirm `UnreleasedAttempts` and `docker ps --filter label=conclave.sandbox` are both empty. Run `conclave report`, and update the checklist's success-criteria rows and the 10b guide page.
 
 ## Verification (10a)
@@ -167,3 +172,32 @@ No contract changes. No new dependencies: the Temporal SDK schedule client and t
 - Start a fake-provider run, run `conclave halt`, and check: workflows cancelled, worker exited, zero labelled containers. Then run `conclave resume`.
 - After Pro is active: `gh api repos/austmsk/ets/rules/branches/main` shows the three rules, and the ruleset has no bypass actors (step 0, item 4).
 - Then `/review-ticket 10a`, fix the findings, and open the PR.
+
+## Running `conclave alert-test` (owner, after 10a)
+
+This proves the whole alert path: the local log, the ops repository's issues-only token, and the dedupe.
+
+1. **Add the ops repository to the App installation.** Open the App's installation settings, at `github.com/settings/installations/<installation_id>` (the ID is in `deploy/local/github.yaml`). Under **Repository access**, select the ops repository beside ETS, and save.
+2. **Create the log's directory:**
+   ```
+   mkdir -p ~/.local/state/conclave
+   ```
+3. **Raise a test alert** from the repository root. First load the secrets file into the environment, as you do before starting the worker; the command reads `CONCLAVE_DATABASE_URL` and `CONCLAVE_GITHUB_APP_KEY_FILE` from it. Then run:
+   ```
+   go run ./cmd/conclave alert-test -github-config deploy/local/github.yaml -alert-log ~/.local/state/conclave/alerts.jsonl
+   ```
+4. **Check the result.** It prints `test alert delivered: <issue URL> (new issue: true)`, and the issue is assigned to the owner and labelled `conclave-alert` and `severity:digest`.
+5. **Run it again.** It prints `new issue: false` and comments on the same issue: a repeat does not open a duplicate.
+6. **Check the local log:**
+   ```
+   cat ~/.local/state/conclave/alerts.jsonl
+   ```
+   Each run adds an `alert` line, then a `delivery` line with `"outcome":"delivered"`.
+
+If it fails:
+
+- **`installation token discarded`, or HTTP 404/422 at the token exchange:** the ops repository is not in the installation. Redo step 1.
+- **`CONCLAVE_GITHUB_APP_KEY_FILE is not set`:** the secrets file names the key path differently, or it was not loaded.
+- **`alerts must be set`, or another configuration error:** `-github-config` is not pointing at `deploy/local/github.yaml`, or its `alerts:` block is incomplete.
+
+Close the test issue once it works.

@@ -1,6 +1,6 @@
 # Ticket 10a — Kill switch, alerts and scheduled reaper
 
-**Status:** in review · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-10a--kill-switch-alerts-and-scheduled-reaper), [`ticket-10-plan.md`](../../tickets/ticket-10-plan.md) · **Requirements:** FR-SEC11, FR-SEC31, NFR-R1, NFR-R3, NFR-M9 · **Review list:** RL-18 · **Decisions:** [0015](../../decisions/0015-kill-switch-alerts-and-reaper.md), [0016](../../decisions/0016-milestone-1-deferrals.md) · **Runbooks:** [`runbooks.md`](../../runbooks.md)
+**Status:** merged (PR #26) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-10a--kill-switch-alerts-and-scheduled-reaper), [`ticket-10-plan.md`](../../tickets/ticket-10-plan.md) · **Requirements:** FR-SEC11, FR-SEC31, NFR-R1, NFR-R3, NFR-M9 · **Review list:** RL-18 · **Decisions:** [0015](../../decisions/0015-kill-switch-alerts-and-reaper.md), [0016](../../decisions/0016-milestone-1-deferrals.md) · **Runbooks:** [`runbooks.md`](../../runbooks.md)
 
 ## In one paragraph
 
