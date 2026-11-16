@@ -85,9 +85,9 @@ Test names are functions; `pkg:` gives the package under `internal/` unless stat
 | NFR-R1 (live) | A worker killed with `kill -9` mid-attempt in a live trial: a second worker continues the workflow, the orphaned sandbox is released, one PR opens | 10b | live drill on trial 6 (`docs/trials/local/log.md`, Live drills): heartbeat timeout exactly 2 min after the last heartbeat, ordinal 1 settled `errored`, its sandbox released by the second worker, ordinal 2 run there, every activity completed before the kill run once in history, one PR. The automated proof stays 10a's `TestWorkerKilledMidAttemptResumesOnSecond` |
 | FR-SEC11 (live) | `conclave halt` with a real run in flight, then `resume` | 10b | live drill on trial 8 (log, Live drills): run `cancelled` and its sandbox released 44 s after the halt, halt alert issue opened with its summary comment, reaper paused, no open workflows or labelled containers, worker exited 3 m 5 s after the halt; `resume` cancelled 0 runs and unpaused the reaper |
 | NFR-R3 (trials) | Zero orphaned sandboxes over the 10 trials, 2 cancellations among them | 10b | after the trials: `store.UnreleasedAttempts` empty and no container carries `conclave.sandbox`; cancellations were trial 5 (`/cancel` mid-execution) and trial 8 (halt) |
-| — | The implementer is told the constraints its gates enforce (the `docs/agent-roles.md` input), above the untrusted issue text | 10b | agent: `TestTaskMessageStatesConstraints` (attempts a larger cap from the issue text) |
-| — | An owner-written criterion with nested bullets stays one criterion | 10b | activity: `TestParseIssueNestedItems` |
-| NFR-M9 | 10b's findings recorded: wall clock, CRLF friction, cancellation latency | 10b | decision 0016, "Found in the ticket 10b trials" |
+| — | The implementer is told the constraints its gates enforce (the `docs/agent-roles.md` input), above the untrusted issue text, and the system prompt names that section as the only statement of the limits | 10b | agent: `TestTaskMessageStatesConstraints` (attempts a larger cap from the issue text), `TestSystemPromptStatesTrust` |
+| — | An owner-written criterion with nested bullets stays one criterion; items nest by the parent's content column, as CommonMark does | 10b | activity: `TestParseIssueNestedItems` |
+| NFR-M9 | 10b's findings recorded: wall clock, CRLF friction, cancellation latency, the two size caps the implementer is not told | 10b | decision 0016, "Found in the ticket 10b trials" |
 
 ## Unmerged tickets
 
