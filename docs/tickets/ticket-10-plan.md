@@ -153,10 +153,15 @@ No contract changes. No new dependencies: the Temporal SDK schedule client and t
 ## 10b — live trials (next session, outline only)
 
 1. Do step 0. Re-run the ruleset check (`gh api repos/austmsk/ets/rules/branches/main`) before the first trial. Then start server, worker and tunnel with the `deploy/local/*` flags.
-2. Write 10 ETS issues in owner-section format, from the candidates in the owner's local notes (ETS is private, so they are not listed here), saved in `docs/trials/local/`. Decide at the start whether the 2 cancellations are 2 of the 10 or extra runs.
+2. The 10 ETS issues are written, in owner-section format, in the git-ignored `docs/trials/local/` (ETS is private, so they are not listed here). **Run exactly those, in order:**
+   - `plan.md` is the source of truth: the schedule, the ground rules, the drill notes, and why each issue was chosen.
+   - `01-<slug>.md` to `10-<slug>.md` each hold one issue body, filed as written. Everything after the `---` line is the body.
+   - `ets-trial-plan.md` is an earlier draft. `plan.md` supersedes it, so don't file from it.
+   - The 2 cancellations are 2 of the 10 (trials 5 and 8), as recorded in `log.md`'s header.
+   - Trials have no dependencies, and no trial PR is merged until all ten are done, so every trial starts from the same ETS base.
 3. For each trial: label, `/approve`, observe, record base SHA, attempt, gates, PR, CI, cost and duration. A `/retry` is not a new trial. Fix what breaks, with the two-failure circuit breaker, and each fix gets a test.
-4. During one trial, kill the worker process mid-attempt and start a second worker (live NFR-R1).
-5. Run `conclave halt` once with a run in flight, then `resume`. Run `conclave alert-test`.
+4. During trial 6, kill the worker process mid-attempt and start a second worker (live NFR-R1). During trial 5, comment `/cancel` while its sandbox is running (cancellation A).
+5. During trial 8, run `conclave halt` with the run in flight, then `resume` (cancellation B: a halt cancels the run and `resume` does not restart it). Run `conclave alert-test`.
 6. After the trials, confirm `UnreleasedAttempts` and `docker ps --filter label=conclave.sandbox` are both empty. Run `conclave report`, and update the checklist's success-criteria rows and the 10b guide page.
 
 ## Verification (10a)
