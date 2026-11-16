@@ -257,7 +257,7 @@ func TestRunCompletesTask(t *testing.T) {
 	if out.Usage != wantUsage {
 		t.Errorf("usage %+v, want %+v", out.Usage, wantUsage)
 	}
-	wantProv := contracts.Provenance{Role: contracts.RoleImplementer, PromptVersion: "implementer-v1", Model: agenttest.Model, Provider: llm.ProviderAnthropic}
+	wantProv := contracts.Provenance{Role: contracts.RoleImplementer, PromptVersion: "implementer-v2", Model: agenttest.Model, Provider: llm.ProviderAnthropic}
 	if out.Provenance != wantProv {
 		t.Errorf("provenance %+v, want %+v", out.Provenance, wantProv)
 	}
@@ -277,7 +277,7 @@ func TestRequestsCarryRoleAndVersion(t *testing.T) {
 	router, _ := agenttest.Router(t, turnCalls(readCall("c1", "a.txt")), turnCalls(finishCall("c2")))
 	g := newRig(t, &spyRouter{inner: router, check: func(req contracts.Request) error {
 		if req.RepoID != agenttest.RepoID || req.Role != contracts.RoleImplementer ||
-			req.PromptVersion != "implementer-v1" || req.System != systemPrompt || len(req.Tools) != 10 {
+			req.PromptVersion != "implementer-v2" || req.System != systemPrompt || len(req.Tools) != 10 {
 			return fmt.Errorf("request %+v", req)
 		}
 		return nil
