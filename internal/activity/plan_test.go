@@ -74,6 +74,40 @@ func TestParseIssue(t *testing.T) {
 	}
 }
 
+// TestParseIssueNestedItems checks a criterion written as a lead-in with
+// sub-bullets stays one criterion. Trial 9 of ticket 10b had its first
+// criterion split into four, the lead-in left as "returns:".
+func TestParseIssueNestedItems(t *testing.T) {
+	tests := []struct {
+		name   string
+		body   string
+		wantAC []string
+	}{
+		{
+			name: "nested items continue their parent criterion",
+			body: "## Task\nName reports.\n## Acceptance criteria\n- `reportPath` returns:\n  - `a_OFFICIAL.txt` for `(\"a.csv\", \"OFFICIAL\")`;\n  - `a_TEST.txt` for `(\"a.csv\", \"TEST\")`.\n- the README matches\n",
+			wantAC: []string{
+				"`reportPath` returns: `a_OFFICIAL.txt` for `(\"a.csv\", \"OFFICIAL\")`; `a_TEST.txt` for `(\"a.csv\", \"TEST\")`.",
+				"the README matches",
+			},
+		},
+		{
+			name:   "a tab-indented item is nested, an indented first item sets the level",
+			body:   "## Task\nDo it.\n## Acceptance criteria\n  1. first\n\t- detail\n  2. second\n",
+			wantAC: []string{"first detail", "second"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec, problem := ParseIssue(tt.body)
+			if problem != "" {
+				t.Fatalf("problem = %q", problem)
+			}
+			checkCriteria(t, spec.Criteria, tt.wantAC)
+		})
+	}
+}
+
 func checkCriteria(t *testing.T, got []contracts.AcceptanceCriteria, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

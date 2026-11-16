@@ -51,7 +51,7 @@ const (
 
 var (
 	headingRE  = regexp.MustCompile(`^ {0,3}(#{1,6})[ \t]+(.*?)[ \t#]*$`)
-	listItemRE = regexp.MustCompile(`^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?(.*\S)[ \t]*$`)
+	listItemRE = regexp.MustCompile(`^([ \t]*)(?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?(.*\S)[ \t]*$`)
 	fenceRE    = regexp.MustCompile("^ {0,3}(```|~~~)")
 )
 
@@ -132,20 +132,38 @@ func heading(line string, inFence bool) (int, string, bool) {
 	return len(m[1]), name, true
 }
 
-// listItems returns the text of each list item. A non-blank line that is
-// not an item continues the item before it.
+// listItems returns the text of each top-level list item. The first
+// item's indent is the top level. An item indented deeper is nested and,
+// like a non-blank line that is not an item, continues the item before
+// it, so a criterion written as a lead-in with sub-bullets stays one
+// criterion (ticket 10b, trial 9).
 func listItems(lines []string) []string {
 	var items []string
+	top := 0
 	for _, line := range lines {
-		if m := listItemRE.FindStringSubmatch(line); m != nil {
-			items = append(items, strings.TrimSpace(m[1]))
+		m := listItemRE.FindStringSubmatch(line)
+		if m != nil && (len(items) == 0 || indentWidth(m[1]) <= top) {
+			if len(items) == 0 {
+				top = indentWidth(m[1])
+			}
+			items = append(items, strings.TrimSpace(m[2]))
 			continue
 		}
-		if t := strings.TrimSpace(line); t != "" && len(items) > 0 {
-			items[len(items)-1] += " " + t
+		text := strings.TrimSpace(line)
+		if m != nil {
+			text = strings.TrimSpace(m[2])
+		}
+		if text != "" && len(items) > 0 {
+			items[len(items)-1] += " " + text
 		}
 	}
 	return items
+}
+
+// indentWidth measures leading whitespace, a tab counting as four
+// columns, the width CommonMark gives it for list nesting.
+func indentWidth(ws string) int {
+	return len(ws) + 3*strings.Count(ws, "\t")
 }
 
 // planMarker is the text by which the plan comment is found again. It is
