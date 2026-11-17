@@ -1,6 +1,6 @@
 # Ticket 10b — End-to-end trials
 
-**Status:** in review · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-10b--end-to-end-trials), [`ticket-10-plan.md`](../../tickets/ticket-10-plan.md#10b--live-trials-next-session-outline-only) · **Requirements:** NFR-R1 (live), NFR-R3, NFR-M9 · **Review list:** RL-18 · **Decisions:** [0016](../../decisions/0016-milestone-1-deferrals.md#found-in-the-ticket-10b-trials) · **Trials:** [`docs/trials/README.md`](../../trials/README.md)
+**Status:** merged as PR #28 (`f764719`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-10b--end-to-end-trials), [`ticket-10-plan.md`](../../tickets/ticket-10-plan.md#10b--live-trials-next-session-outline-only) · **Requirements:** NFR-R1 (live), NFR-R3, NFR-M9 · **Review list:** RL-18 · **Decisions:** [0016](../../decisions/0016-milestone-1-deferrals.md#found-in-the-ticket-10b-trials) · **Trials:** [`docs/trials/README.md`](../../trials/README.md)
 
 ## In one paragraph
 
