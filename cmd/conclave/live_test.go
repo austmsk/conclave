@@ -175,11 +175,11 @@ func createReaperSchedule(ctx context.Context, t *testing.T, c client.Client) {
 func checkCancelled(ctx context.Context, t *testing.T, c client.Client, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
-		desc, err := c.DescribeWorkflowExecution(ctx, id, "")
+		desc, err := c.DescribeWorkflow(ctx, id, "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if s := desc.GetWorkflowExecutionInfo().GetStatus(); s != enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED {
+		if s := desc.RawResponse.GetWorkflowExecutionInfo().GetStatus(); s != enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED {
 			t.Errorf("%s ended %s, want cancelled", id, s)
 		}
 	}
