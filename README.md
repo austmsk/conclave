@@ -15,7 +15,9 @@ Multi-agent coordination, done by deterministic Go rather than by a manager agen
 
 ## Status
 
-Milestone 1 (walking skeleton) is in progress. Tickets 1–4 are merged: the repository skeleton and CI, the contracts package and schema, the Docker sandbox, and the LLM router. The working order for the rest is in [`docs/tickets/milestone-1.md`](docs/tickets/milestone-1.md). Nothing runs end to end yet; `cmd/server` and `cmd/worker` are placeholders until tickets 6 and 8.
+Milestone 1 (walking skeleton) is complete. All fourteen tickets are merged ([`docs/tickets/m1-tickets/milestone-1.md`](docs/tickets/m1-tickets/milestone-1.md)), and a labelled issue on the Election Tally repository now becomes a pull request that passes its CI: 7 of 10 live trials delivered, with no orphaned sandboxes across them. The exit checklist ([`m1-exit-checklist.md`](docs/tickets/m1-tickets/m1-exit-checklist.md)) maps each requirement to the test that proves it and lists what Milestone 2 starts from. What Milestone 1 defers is in [decision 0016](docs/decisions/0016-milestone-1-deferrals.md).
+
+Milestone 2, the evaluation harness, is being designed in [`docs/tickets/m2-tickets`](docs/tickets/m2-tickets/).
 
 ## Development
 

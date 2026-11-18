@@ -1,6 +1,6 @@
 # Ticket N — Title
 
-**Status:** merged in `<commit or PR>` · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-n--title) · **Requirements:** FR-… · **Review list:** RL-…
+**Status:** merged in `<commit or PR>` · **Spec:** [`milestone-1.md`](../../tickets/m1-tickets/milestone-1.md#ticket-n--title) · **Requirements:** FR-… · **Review list:** RL-…
 
 ## In one paragraph
 

@@ -1,5 +1,7 @@
 # Milestone 1 exit checklist
 
+**Milestone 1 closed 2026-11-17.** Every row below is filled, the three success criteria are met, and every item in "What Milestone 2 must find in place" is in place. Still open: decisions 0002 and 0003 (ticket 2), owed by the owner.
+
 One row per requirement ID that Milestone 1 claims, with the ticket that owns it and the test that proves it. A ticket's PR description names the test for every ID it claims and updates this file (`CLAUDE.md`, Session discipline). The ticket reviewer checks the PR against this table. Rows for unmerged tickets say *named in the PR*; the ticket session fills them.
 
 The point of the table is the last section: what Milestone 2 must find in place when Milestone 1 closes. Tickets 8-pre, 8, 8b, 9, 10a and 10b are kept in scope by that section, not by this table alone.

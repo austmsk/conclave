@@ -1,6 +1,6 @@
 # Ticket 4 — LLM router and fake provider
 
-**Status:** merged as PR #4 (`0a71acd`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-4--llm-router-and-fake-provider) · **Requirements:** FR-I2, FR-SEC12, FR-SEC13, FR-SEC9 · **Review list:** RL-17, RL-6
+**Status:** merged as PR #4 (`0a71acd`) · **Spec:** [`milestone-1.md`](../../tickets/m1-tickets/milestone-1.md#ticket-4--llm-router-and-fake-provider) · **Requirements:** FR-I2, FR-SEC12, FR-SEC13, FR-SEC9 · **Review list:** RL-17, RL-6
 
 ## In one paragraph
 

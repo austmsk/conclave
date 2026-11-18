@@ -1,6 +1,6 @@
 # Starting the webhook tunnel
 
-GitHub needs a public address to deliver webhooks to the local server. This is step 0, item 1 of [`ticket-10-plan.md`](../tickets/ticket-10-plan.md).
+GitHub needs a public address to deliver webhooks to the local server. This is step 0, item 1 of [`ticket-10-plan.md`](../tickets/m1-tickets/ticket-10-plan.md).
 
 ## 1. Start the tunnel
 

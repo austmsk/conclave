@@ -1,6 +1,6 @@
 # Milestone 1 trials
 
-Milestone 1 is done when a labelled issue on the Election Tally repository produces a pull request that passes that repository's CI in at least 7 of 10 trials, with no orphaned sandboxes ([`milestone-1.md`](../tickets/milestone-1.md), ticket 10b). This page says what a trial is, what each one records, and how the report is produced. The trials also seed Milestone 2's replay benchmark (`m1-exit-checklist.md`, item 7).
+Milestone 1 is done when a labelled issue on the Election Tally repository produces a pull request that passes that repository's CI in at least 7 of 10 trials, with no orphaned sandboxes ([`milestone-1.md`](../tickets/m1-tickets/milestone-1.md), ticket 10b). This page says what a trial is, what each one records, and how the report is produced. The trials also seed Milestone 2's replay benchmark (`m1-exit-checklist.md`, item 7).
 
 ## Where the files live
 

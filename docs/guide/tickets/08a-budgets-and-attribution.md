@@ -1,6 +1,6 @@
 # Ticket 8a — Budgets and attribution
 
-**Status:** merged as PR #10 (`9d383a2`; feature `26e69b7`, review fixes `2fcbd22` and `d6921d2`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-8a--budgets-and-attribution) · **Decision:** [0009](../../decisions/0009-budget-caps-route-to-needs-attention.md) · **Requirements:** FR-SEC9, NFR-M7 · **Review list:** RL-2
+**Status:** merged as PR #10 (`9d383a2`; feature `26e69b7`, review fixes `2fcbd22` and `d6921d2`) · **Spec:** [`milestone-1.md`](../../tickets/m1-tickets/milestone-1.md#ticket-8a--budgets-and-attribution) · **Decision:** [0009](../../decisions/0009-budget-caps-route-to-needs-attention.md) · **Requirements:** FR-SEC9, NFR-M7 · **Review list:** RL-2
 
 ## In one paragraph
 

@@ -1,6 +1,6 @@
 # Ticket 1 — Repository skeleton and CI
 
-**Status:** merged in `2574d49`, CI later refined in PR #2 and PR #5 · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-1--repository-skeleton-and-ci) · **Requirements:** NFR-M1, NFR-M8, NFR-PO1
+**Status:** merged in `2574d49`, CI later refined in PR #2 and PR #5 · **Spec:** [`milestone-1.md`](../../tickets/m1-tickets/milestone-1.md#ticket-1--repository-skeleton-and-ci) · **Requirements:** NFR-M1, NFR-M8, NFR-PO1
 
 ## In one paragraph
 

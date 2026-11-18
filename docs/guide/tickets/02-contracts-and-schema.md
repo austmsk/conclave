@@ -1,6 +1,6 @@
 # Ticket 2 — Contracts package and schema
 
-**Status:** merged in `f7856c6`, with review fixes in `721ed17` and `7a25a50` · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-2--contracts-package-and-schema) · **Requirements:** FR-SEC10, NFR-M7 · **Review list:** RL-4, RL-13
+**Status:** merged in `f7856c6`, with review fixes in `721ed17` and `7a25a50` · **Spec:** [`milestone-1.md`](../../tickets/m1-tickets/milestone-1.md#ticket-2--contracts-package-and-schema) · **Requirements:** FR-SEC10, NFR-M7 · **Review list:** RL-4, RL-13
 
 ## In one paragraph
 
