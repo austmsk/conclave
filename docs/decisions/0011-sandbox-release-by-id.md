@@ -1,7 +1,7 @@
 # 0011 — Sandboxes are released by ID, cancellation is a reason, and the trial image is built locally
 
 **Date:** 2026-10-26
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
@@ -30,3 +30,33 @@ The same review turned up two more gaps:
 - If the container is removed and the network removal then fails, a retry returns nil and the network waits for `Reap`.
 - Resolve-rate queries must count `errored` attempts with `cancelled` or `budget_cap` as neither passes nor agent failures.
 - Until FR-SEC30's pipeline exists, the image's provenance is the owner's machine. The digest pins what runs, but not how it was built.
+
+## Amendment, 2026-11-21: the image build moves to the start of Milestone 2, with a backup until then
+
+"Deferred to ticket 10 or later" did not happen. Milestone 1 closed with the java21 sandbox image held in one place only, the owner's Docker daemon:
+
+- **The recipe is in the repository:** `deploy/images/java21/Dockerfile`, with its base image pinned by digest. Its `apt-get install git` is not pinned, so a rebuild can produce a different image.
+- **The pin is not:** `deploy/local/sandboxes.yaml` is git-ignored, and names `localhost:5055/conclave-sandbox-java21@sha256:8fcd9711…`.
+- **The registry that name points to is not running.** The image works only because `ensureImage` pulls only when the daemon lacks the image. The ticket 10b trial log recorded this on 2026-11-16.
+
+A `docker system prune -a`, a Docker Desktop reset or a new machine would therefore leave no sandbox image. The worker would start normally and every attempt would fail at sandbox creation, trying to pull from a registry that isn't there.
+
+Two changes follow:
+
+1. **Until the pipeline exists, each pinned image has two copies off the daemon.** Both keep the digest, because the daemon uses the containerd image store, which pushes and saves the original manifest.
+   - **A private GHCR package.** On 2026-11-21 the java21 image was pushed by hand to `ghcr.io/austmsk/conclave-sandbox-java21`, digest unchanged, and `deploy/local/sandboxes.yaml` now names it there. A worker host pulls it after `docker login ghcr.io` with a token holding `read:packages`. This replaces the `localhost:5055` name and survives losing the machine.
+   - **A `docker save` archive** kept by the owner outside the repository, for when GitHub is unreachable.
+
+   The restore steps for both are in `docs/runbooks.md`, "Sandbox image lost". Neither copy gives provenance: the image was still built by hand.
+2. **FR-SEC30's image build is the first Milestone 2 ticket that touches images, before any new image is made.** Milestone 2's first vertical slice already needs a Python image, and the plan adds five languages and 25 SWE-bench instances. Building each by hand would multiply this gap. The ticket:
+   - builds each `deploy/images/<name>` in GitHub Actions when its directory changes, and weekly;
+   - pushes it to GitHub Container Registry as a private package and records the digest it produced;
+   - scans the image, and opens a pull request that changes the digest in the shipped `deploy/sandboxes.yaml`, so every digest change is reviewed (threat I11);
+   - pins the packages each Dockerfile installs, so a rebuild without an intended change produces the same contents.
+
+   CI publishes to the same GHCR package the hand-pushed image is in, so the worker's pull path does not change.
+
+The same ticket should add a startup check to the worker: confirm every image named in `sandboxes.yaml` is present or pullable, and refuse to start otherwise. A lost image then stops the worker once, with a message naming the image, instead of failing every attempt.
+
+Until this lands, the image's provenance is still the owner's machine.
+

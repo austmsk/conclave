@@ -21,7 +21,7 @@ Milestone 1 claims a set of requirements (`m1-exit-checklist.md`), and several o
 | FR-SEC17 | Pre-run secret and personal-data scans before content reaches a model | The gitleaks gate scans the agent's output, not the input. ETS is the owner's own private repository. | After Milestone 1 |
 | FR-SEC20 | Canary tokens and their detector | The detector and prompt-injection fixtures belong with the evaluation harness. Tests use the `canary_*` format already. | Milestone 2 |
 | FR-SEC22 | Excluded-path substitution | No Milestone 1 repository has excluded paths. | After Milestone 1 |
-| FR-SEC30 (build) | CI build of sandbox images, the weekly rebuild and scan, and GHCR publication | The java21 image is built locally and pinned by digest. Workers already pull by digest only, enforced at startup (0011). | After Milestone 1 |
+| FR-SEC30 (build) | CI build of sandbox images, the weekly rebuild and scan, and GHCR publication | The java21 image is built locally and pinned by digest. Workers already pull by digest only, enforced at startup (0011). Until the build exists, the owner keeps a `docker save` archive of each pinned image (0011, amendment of 2026-11-21). | Milestone 2, before its first new image (0011, amendment) |
 | FR-SEC31 (auto-halt) | Halting on "repeated authorization failure from an unknown actor" | No threshold is specified. The webhook server, which sees the failures, has no database access to record a halt (0015). Refused commands and labels are logged by the receiver. | After Milestone 1 |
 | FR-SEC31 (digest) | Batching `digest` alerts weekly | Milestone 1's only digest alert is `conclave alert-test`, delivered at once. | After Milestone 1 |
 | FR-SEC31 (canary) | The canary-hit `halt` alert | It needs FR-SEC20's detector. | Milestone 2 |

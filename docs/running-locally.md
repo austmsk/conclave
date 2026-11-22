@@ -28,7 +28,7 @@ The server only verifies webhooks and asks Temporal to start workflows. It holds
 
   Each shipped `deploy/*.yaml` file's header comment says what its fields mean. `repos.yaml`, `toolchains.yaml`, `sandboxes.yaml` and `gates.yaml` must name the same repositories, and the alerts repository in `github.yaml` must not be one of them; the worker refuses to start otherwise.
 
-- The sandbox image. Build `deploy/images/java21` (or the image your repository needs), push it to a registry the worker can pull from, and pin it in `deploy/local/sandboxes.yaml` as `name@sha256:<digest>`. A tag is refused.
+- The sandbox image. Build `deploy/images/java21` (or the image your repository needs), push it to a registry the worker can pull from (the private GHCR package `ghcr.io/<owner>/conclave-sandbox-<name>`, decision 0011), and pin it in `deploy/local/sandboxes.yaml` as `name@sha256:<digest>`. A tag is refused. The worker's host needs `docker login ghcr.io` with a token holding `read:packages`.
 
 ## 2. Secrets
 
