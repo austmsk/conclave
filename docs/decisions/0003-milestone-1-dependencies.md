@@ -1,7 +1,7 @@
 # 0003 — Milestone 1's database, migration, Docker and test dependencies, and sqlc deferred to Milestone 2
 
 **Date:** 2026-11-21 (reserved at ticket 2, 2026-10; written after Milestone 1 closed)
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 

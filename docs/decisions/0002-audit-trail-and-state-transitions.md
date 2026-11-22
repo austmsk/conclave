@@ -1,7 +1,7 @@
 # 0002 — State changes and the audit trail: compare-and-set in Go, audit rows and logins written by the database, and one database role per process
 
 **Date:** 2026-11-21 (reserved at ticket 2, 2026-10; written after Milestone 1 closed)
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
