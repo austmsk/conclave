@@ -1,7 +1,7 @@
 # 0016 — What Milestone 1 defers, and the known gaps it leaves
 
 **Date:** 2026-10-31
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
@@ -56,3 +56,31 @@ The live trials (2026-11-16) turned up two defects, both fixed on the 10b branch
 - A session that finds one of these behaviours should check this record before treating it as a bug.
 - The Milestone 2 tickets that pick up FR-SEC20 and the canary alert, and the Milestone 4 tickets for FR-S18a, FR-S19 and FR-S20, start from the seams listed in `m1-exit-checklist.md`. Milestone 2 also inherits the wall-clock and CRLF findings from the ticket 10b trials.
 - Decisions 0002 and 0003 (ticket 2) are still owed by the owner. NFR-M9 is not met for Milestone 1 until they are written.
+
+## Amendment, 2026-11-21: corrections, cost data, and what was found after the milestone closed
+
+Reviewed after Milestone 1 closed and accepted.
+
+**Corrected.** The last consequence above no longer holds: decisions 0002 and 0003 were written and accepted on 2026-11-21, so NFR-M9 is met for Milestone 1. The FR-SEC30 (build) row lands at the start of Milestone 2, per 0011's amendment, which also adds that the image pipeline never publishes an image for a `local_only` repository.
+
+**Cost data for the wall-clock finding.** A read-only query over the trials' `cost_events` and `attempts` (10 trials, 154 model calls, $51.41) puts numbers on it:
+- The two wall-clock stops on issue #17 were the most expensive outcome: $12.97 with nothing delivered.
+- They were output-heavy: about 95,000 to 106,000 output tokens per attempt, against 15,000 to 31,000 for a passing one. Output is billed at five times input, so long model turns are the costliest failure, not only the slowest.
+- About half the trials' spend, roughly $25.60, went to attempts that did not deliver: the two wall-clock stops, a gate failure that cost $8.88 after 37 steps, and the two cancelled trials.
+- On passing attempts, 65% of implementer cost was input: each step resends 13,000 to 19,000 tokens, uncached (decision 0008, item 5).
+- Among the seven passing attempts, cost tracked steps (correlation 0.92) and diff size (0.84). Seven is too few for more than direction.
+
+Milestone 2 should weigh these alongside turn latency when it revises `MaxWallClock`.
+
+**Found after the milestone closed.** Each item is recorded in the decision named, so a later session should look there before treating it as a bug:
+
+| Finding | Recorded in |
+|---|---|
+| Temporal has no authentication: a client that can reach it can signal a workflow past the owner check. The dev stack is bound to `127.0.0.1`; a second machine needs Tailscale ACLs or mTLS first | 0002, "Left for later"; `docs/running-locally.md` |
+| `db_user` is recorded on `state_transitions`, `halt_events` and `commands`, not yet on `cost_events`, `tool_calls` or `pr_ci_results`; a change to `repos.tier` writes no audit row | 0002, "Left for later" |
+| The adapter sends no effort, drops thinking blocks, fails a refusal as an unsupported reply, does not stream, and requests no prompt caching; a future Ollama adapter must validate its endpoint as local | 0008, amendment |
+| The java21 image was held only by the owner's Docker daemon; it now has a private GHCR copy and a local archive until CI builds images | 0011, amendment |
+| The sweep's cutoff covers how long an attempt runs, not how long it waits on its queue, so a benchmark backlog could have its sandbox released | 0012, amendment |
+| One monthly cap is shared by live work and the benchmark; cap-stopped benchmark tasks stay in `needs_attention` unless the runner moves them | 0009, amendment |
+| The halt covers the benchmark only within the same Temporal namespace | 0015, amendment |
+| `/retry` reads as starting over; `/continue` becomes the owner's command, with `/retry` as an alias | `docs/tickets/m2-tickets/continue-command.md` |

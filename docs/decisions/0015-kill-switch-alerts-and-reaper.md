@@ -1,7 +1,7 @@
 # 0015 — The kill switch, alerts and the scheduled reaper: a CLI halt in Postgres, alert issues in a private operations repository, and a Temporal schedule
 
 **Date:** 2026-10-31
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
@@ -100,3 +100,17 @@ After Milestone 1 closed, a review of where access is checked found that anythin
 - **Only the CLI's database role records a halt event.** Decision 0002, items 6 to 8: `conclave_operator` alone may insert into `halt_events`, the CLI connects through `CONCLAVE_OPERATOR_DATABASE_URL`, and every halt event records the authenticated login.
 
 Tests: conclave `TestResumeConfirmsBeforeChangingAnything`, `TestResumeRefusedLeavesHaltStanding`, `TestAttackScriptedResumeRefused`, `TestConfirmID`, `TestResumeAlertSaysWhatWasKept`; alert `TestResumedLandsOnHaltIssue`; store `TestAttackAppLoginCannotLiftHalt`.
+
+## Amendment, 2026-11-21: the halt and Milestone 2's benchmark
+
+Reviewed after Milestone 1 closed and accepted. The live drill on trial 8 went as decided: the run was cancelled and its sandbox released 44 seconds after the halt, the alert and its summary comment were posted, the reaper was paused, and the worker exited after its grace. `resume` unpaused the reaper.
+
+The amendment above changed one sentence of the decision: `halt_events` is now inserted into only by `conclave_operator`, the CLI's role, and the application role may only read it (decision 0002).
+
+Milestone 2's benchmark runs `TaskWorkflow` from its own runner, on its own worker and task queue. The halt covers it as follows, and the benchmark is built to keep it that way:
+
+- **The halt's drain covers the benchmark only while it shares the namespace.** The drain cancels every root workflow the namespace lists as running, and a benchmark `TaskWorkflow`, started by the runner with no parent, is a root. A benchmark in a namespace of its own would be outside the halt, so it stays in the same namespace. If it ever needs its own, the halt must list and drain that namespace too, in the same change.
+- **The benchmark worker obeys the halt like any worker.** It polls `halt_events`, stops after its grace and refuses to start while the halt stands, with a login in `conclave_app` that can read the halt but not clear it.
+- **The runner checks the halt before it starts each task,** so it does not queue work during a halt that `resume` would then cancel.
+- **The Grade step's sandbox is recorded where the sweep can find it,** and Grade's timeout counts in `Deps.LongestSandboxHold`. Otherwise the reaper could remove a grading sandbox in use, or miss one a dead worker left.
+- **Benchmark outcomes raise no alerts.** A failed, unresolved or `budget_exhausted` task is a result, not an incident. The halt alert is raised by the CLI whatever is running, and the pause alert stays with `FeatureWorkflow`, which the benchmark does not run.
