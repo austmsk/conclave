@@ -69,14 +69,15 @@ func (f *fakeRuns) unpauseReaper(context.Context, string) error {
 
 // harness is a kill switch over fakes that records every step in calls.
 type harness struct {
-	k        *killSwitch
-	runs     *fakeRuns
-	calls    []string
-	halt     store.HaltState
-	alerts   []alert.Alert
-	out      bytes.Buffer
-	left     [2]int
-	raiseErr error
+	k          *killSwitch
+	runs       *fakeRuns
+	calls      []string
+	halt       store.HaltState
+	alerts     []alert.Alert
+	out        bytes.Buffer
+	left       [2]int
+	raiseErr   error
+	confirmErr error
 }
 
 func newHarness(listings ...[]run) *harness {
@@ -113,6 +114,10 @@ func newHarness(listings ...[]run) *harness {
 			h.calls = append(h.calls, "alert "+a.OccurrenceID)
 			h.alerts = append(h.alerts, a)
 			return h.raiseErr
+		},
+		confirm: func(int64) error {
+			h.calls = append(h.calls, "confirm")
+			return h.confirmErr
 		},
 		drain: time.Minute, poll: time.Second,
 		now:   func() time.Time { return clock },
@@ -304,5 +309,67 @@ func TestHaltReasonRedacted(t *testing.T) {
 	}
 	if strings.Contains(h.halt.Reason, token) {
 		t.Fatalf("clear kept the token: %q", h.halt.Reason)
+	}
+}
+
+// TestResumeConfirmsBeforeChangingAnything: the late runs are listed
+// first, so the owner sees what will be cancelled, and nothing is
+// cancelled, cleared or unpaused until the owner confirms.
+func TestResumeConfirmsBeforeChangingAnything(t *testing.T) {
+	h := newHarness([]run{{ID: "during", Start: t0.Add(time.Minute)}})
+	h.halt = store.HaltState{Halted: true, ID: 3, Since: t0}
+	if err := h.k.resume(t.Context(), "drill over", false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"list", "confirm", "cancel during", "clear", "unpause", "alert halt:3:resumed:3"}
+	if !slices.Equal(h.calls, want) {
+		t.Fatalf("steps %v, want %v", h.calls, want)
+	}
+}
+
+// TestResumeRefusedLeavesHaltStanding: without confirmation the halt
+// stands and nothing changes.
+func TestResumeRefusedLeavesHaltStanding(t *testing.T) {
+	tests := []struct {
+		name    string
+		confirm func(int64) error
+	}{
+		{"not confirmed", func(int64) error { return errNotConfirmed }},
+		{"no terminal", func(int64) error { return errNoTerminal }},
+		{"no confirm wired", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness([]run{{ID: "during", Start: t0.Add(time.Minute)}})
+			h.halt = store.HaltState{Halted: true, ID: 3, Since: t0}
+			h.k.confirm = tt.confirm
+			err := h.k.resume(t.Context(), "let me in", false)
+			if err == nil || !strings.Contains(err.Error(), "halt 3 stands") {
+				t.Fatalf("resume = %v, want the halt to stand", err)
+			}
+			if !h.halt.Halted || !slices.Equal(h.calls, []string{"list"}) {
+				t.Fatalf("halted %t, steps %v; want still halted and only the listing", h.halt.Halted, h.calls)
+			}
+		})
+	}
+}
+
+// TestResumeAlertSaysWhatWasKept: the alert counts the late runs kept and
+// cancelled, and a failed delivery does not undo the resume.
+func TestResumeAlertSaysWhatWasKept(t *testing.T) {
+	h := newHarness([]run{{ID: "during", Start: t0.Add(time.Minute)}})
+	h.halt = store.HaltState{Halted: true, ID: 3, Since: t0}
+	h.raiseErr = errors.New("GitHub down")
+	if err := h.k.resume(t.Context(), "keep it", true); err != nil {
+		t.Fatal(err)
+	}
+	if h.halt.Halted || len(h.alerts) != 1 {
+		t.Fatalf("halted %t, %d alerts; want cleared and one alert", h.halt.Halted, len(h.alerts))
+	}
+	if a := h.alerts[0]; a.Key != "halt:3" || !strings.Contains(a.Action, "0 cancelled, 1 kept") {
+		t.Fatalf("alert %+v, want it on the halt's key counting one kept run", a)
+	}
+	if !strings.Contains(h.out.String(), "warning: resume alert") {
+		t.Fatalf("the failed delivery was not reported:\n%s", h.out.String())
 	}
 }

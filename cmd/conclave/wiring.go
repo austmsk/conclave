@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -223,8 +224,24 @@ func runHalt(ctx context.Context, o options, out io.Writer, log *slog.Logger) er
 	return k.halt(ctx, o.reason)
 }
 
+// runResume needs a terminal on stdin and the alert log before it touches
+// anything; the App key is optional, as for halt, and without it the
+// resume alert goes to the local log only.
 func runResume(ctx context.Context, o options, out io.Writer, log *slog.Logger) error {
+	if !isTerminal(os.Stdin) {
+		return errNoTerminal
+	}
 	sec, err := readSecrets(databaseURLEnv)
+	if err != nil {
+		return err
+	}
+	keyFile, err := readOptionalSecret(github.AppKeyFileEnv)
+	if err != nil {
+		return err
+	}
+	h := &haltConnector{o: o, keyFile: keyFile, log: log}
+	defer h.close()
+	raise, err := h.alerts()
 	if err != nil {
 		return err
 	}
@@ -240,6 +257,8 @@ func runResume(ctx context.Context, o options, out io.Writer, log *slog.Logger) 
 	defer c.Close()
 	k := newKillSwitch(o, pool, out)
 	k.runs = temporalRuns{c: c, namespace: o.namespace}
+	k.raise = raise
+	k.confirm = terminalConfirm(os.Stdin, os.Stderr)
 	return k.resume(ctx, o.reason, o.keep)
 }
 

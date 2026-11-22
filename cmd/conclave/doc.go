@@ -8,7 +8,10 @@
 //     what remains. Workers see the halt, stop after their grace period,
 //     and refuse to start while it stands.
 //   - resume: clears the halt, after cancelling every run started while it
-//     stood (unless -keep), and unpauses the reaper.
+//     stood (unless -keep), unpauses the reaper, and raises a resume alert
+//     on the halt's issue. It runs only with a terminal on stdin and only
+//     once the owner types the halt's ID, so a script or an agent cannot
+//     lift a halt.
 //   - alert-test: raises a test alert, to prove the local log and issue
 //     delivery work (FR-SEC31).
 //   - report: prints the trial report from the database: resolve rate,

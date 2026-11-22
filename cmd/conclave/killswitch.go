@@ -46,6 +46,9 @@ type killSwitch struct {
 	remaining func(ctx context.Context) (unreleased, containers int, err error)
 	// raise writes an alert to the local log and delivers it.
 	raise func(ctx context.Context, a alert.Alert) error
+	// confirm asks the owner to confirm lifting the halt with this ID. A
+	// nil confirm refuses every resume.
+	confirm func(haltID int64) error
 	// connect, when set, is called once the halt is recorded and before
 	// any other step. It replaces runs, sweep, remaining and raise with
 	// working ones where it can reach their systems, and leaves the
@@ -226,7 +229,9 @@ func roots(open []run) []run {
 // resume clears the halt. Every workflow started after the halt was
 // recorded, by a label applied while no worker ran, is listed and, unless
 // keep, cancelled first, so the halt does not end with work the owner did
-// not see start. Workers are started again by hand.
+// not see start. Nothing changes until the owner confirms, after seeing
+// that list. Once the halt is cleared a resume alert is raised on the
+// halt's issue. Workers are started again by hand.
 func (k *killSwitch) resume(ctx context.Context, reason string, keep bool) error {
 	st, err := k.currentHalt(ctx)
 	if err != nil {
@@ -236,9 +241,39 @@ func (k *killSwitch) resume(ctx context.Context, reason string, keep bool) error
 		k.printf("not halted; nothing to resume")
 		return nil
 	}
+	late, err := k.lateRuns(ctx, st)
+	if err != nil {
+		return err
+	}
+	if err := k.confirmResume(st.ID); err != nil {
+		return err
+	}
+	cancelled := 0
+	if !keep {
+		cancelled = k.cancelRoots(ctx, late, map[string]bool{})
+		k.printf("cancelled %d workflows started during the halt", cancelled)
+	}
+	reason = github.RedactText(reason)
+	cleared, err := k.clearHalt(ctx, reason)
+	if err != nil {
+		return fmt.Errorf("clearing halt %d: %w", st.ID, err)
+	}
+	if err := k.runs.unpauseReaper(ctx, fmt.Sprintf("resume after halt %d", st.ID)); err != nil {
+		k.printf("warning: unpausing the reaper: %v", err)
+	}
+	if err := k.raise(ctx, alert.Resumed(st.ID, cleared.ID, reason, len(late), cancelled, k.now())); err != nil {
+		k.printf("warning: resume alert: %v", err)
+	}
+	k.printf("halt %d cleared; start the workers again", st.ID)
+	return nil
+}
+
+// lateRuns lists, and prints, every open workflow started after the halt
+// was recorded.
+func (k *killSwitch) lateRuns(ctx context.Context, st store.HaltState) ([]run, error) {
 	open, err := k.runs.open(ctx)
 	if err != nil {
-		return fmt.Errorf("listing open workflows: %w", err)
+		return nil, fmt.Errorf("listing open workflows: %w", err)
 	}
 	var late []run
 	for _, r := range open {
@@ -247,15 +282,17 @@ func (k *killSwitch) resume(ctx context.Context, reason string, keep bool) error
 			k.printf("started during the halt: %s (%s)", r.ID, r.Start.UTC().Format(time.RFC3339))
 		}
 	}
-	if !keep {
-		k.printf("cancelled %d workflows started during the halt", k.cancelRoots(ctx, late, map[string]bool{}))
+	return late, nil
+}
+
+// confirmResume asks for the owner's confirmation; without it the halt
+// stands and nothing has changed.
+func (k *killSwitch) confirmResume(haltID int64) error {
+	if k.confirm == nil {
+		return fmt.Errorf("halt %d stands: %w", haltID, errNotConfirmed)
 	}
-	if _, err := k.clearHalt(ctx, github.RedactText(reason)); err != nil {
-		return fmt.Errorf("clearing halt %d: %w", st.ID, err)
+	if err := k.confirm(haltID); err != nil {
+		return fmt.Errorf("halt %d stands: %w", haltID, err)
 	}
-	if err := k.runs.unpauseReaper(ctx, fmt.Sprintf("resume after halt %d", st.ID)); err != nil {
-		k.printf("warning: unpausing the reaper: %v", err)
-	}
-	k.printf("halt %d cleared; start the workers again", st.ID)
 	return nil
 }

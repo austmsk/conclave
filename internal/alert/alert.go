@@ -121,6 +121,24 @@ func HaltDone(haltID int64, r HaltResult, at time.Time) Alert {
 	return a
 }
 
+// Resumed is the alert `conclave resume` raises once it has cleared a
+// halt. It shares Halt's key, so it lands on the halt's issue, and it
+// stops nothing: its point is that a halt lifted by someone other than
+// the owner is seen. clearID names the clear event, so each resume is its
+// own occurrence. late is how many runs started during the halt, of which
+// cancelled were cancelled and the rest kept.
+func Resumed(haltID, clearID int64, reason string, late, cancelled int, at time.Time) Alert {
+	a := Halt(haltID, reason, at)
+	a.OccurrenceID += ":resumed:" + strconv.FormatInt(clearID, 10)
+	a.Severity = SeverityDigest
+	a.Title = "Kill switch: halt lifted"
+	a.What = "conclave resume lifted the halt: " + ownerText(reason)
+	a.Action = fmt.Sprintf("The halt is cleared and the reaper unpaused. %d workflows started during the halt: %d cancelled, %d kept. Workers stay stopped until started by hand.",
+		late, cancelled, late-cancelled)
+	a.OwnerAction = "If you did not run conclave resume, run conclave halt now and follow the incident runbook."
+	return a
+}
+
 // BudgetCap is the pause alert for a feature request stopped by a budget
 // cap. revision is the feature request's revision after the move, so each
 // stop is its own occurrence and a /retry that stops again comments on the
