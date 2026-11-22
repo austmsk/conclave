@@ -50,6 +50,8 @@ make dev       # Temporal (7233, UI on 8233), Postgres with pgvector (5432), Jae
 make migrate   # apply migrations as the database owner
 ```
 
+Every port is published on `127.0.0.1` only. Temporal has no authentication and the dev Postgres login is the table owner, so anyone who could reach them could approve runs or rewrite the audit tables. Do not change the bindings to reach them from another machine; that needs Tailscale and authentication (threat model, B6).
+
 `make migrate` connects as the owner (`DATABASE_URL` in the `Makefile`). The worker must not: it connects as a login role that is a member of `conclave_app`, so the migrations' grants are the ceiling of what it can do (`internal/store/migrations/00004_app_role.sql`). Create that role once, outside the repository, choosing your own name and password:
 
 ```sql
