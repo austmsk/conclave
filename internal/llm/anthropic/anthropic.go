@@ -364,7 +364,11 @@ func decodeContent(w response, out llm.ProviderResponse) (llm.ProviderResponse, 
 		case "tool_use":
 			out.ToolCalls = append(out.ToolCalls, contracts.ToolCall{ID: b.ID, Name: contracts.ToolName(b.Name), Arguments: b.Input})
 		case "thinking", "redacted_thinking":
-			// Not surfaced; extended thinking is not requested.
+			// Dropped, and not replayed on the next turn. The request sets
+			// no thinking option, but current models think anyway: Fable
+			// 5.2 and Opus 5.5 cannot turn it off. Replaying the blocks
+			// needs their signature and a contracts.Message change, which
+			// Milestone 2 decides (decision 0008, amendment of 2026-11-21).
 		default:
 			return out, fmt.Errorf("anthropic: content block type %q: %w", b.Type, llm.ErrUnsupportedReply)
 		}
