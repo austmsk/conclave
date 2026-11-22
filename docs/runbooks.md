@@ -99,20 +99,31 @@ This raises a `digest` alert titled "Alert test". The local log gains an `alert`
 
 ## Sandbox image lost
 
-**When:** every attempt errors at sandbox creation with `pulling image: …`. Or, before that happens, `docker image inspect <image@sha256:…>` from `deploy/local/sandboxes.yaml` reports no such image. The daemon no longer holds the pinned image, and the registry its name points to (`localhost:5055`) is not running.
+**When:** every attempt errors at sandbox creation with `pulling image: …`. Or, before that happens, `docker image inspect <image@sha256:…>` from `deploy/local/sandboxes.yaml` reports no such image. The daemon no longer holds the pinned image, and could not pull it.
 
-Until FR-SEC30's image build exists (decision 0011, amendment of 2026-11-21), the only other copy is the `docker save` archive you keep outside the repository.
+Each pinned image has two copies off the daemon (decision 0011, amendment of 2026-11-21): the private GHCR package `sandboxes.yaml` names, and a `docker save` archive you keep outside the repository.
+
+**From GHCR, the normal path:**
+
+1. Log Docker in with a token that has `read:packages`, for example `gh auth token | docker login ghcr.io -u <your user> --password-stdin`. A `pulling image: … denied` or `unauthorized` error means this step is missing or the token has lost the scope.
+2. Pull by digest: `docker pull <image@sha256:…>`, exactly as `sandboxes.yaml` names it.
+
+**From the archive, when GitHub is unreachable:**
 
 1. Check the archive is the one you saved: `shasum -a 256 -c <archive>.sha256`.
 2. Load it: `docker load -i <archive>.tar`.
-3. Confirm the daemon holds the pinned digest again: `docker image inspect <image@sha256:…>` prints the image, and its `Id` is the digest in `sandboxes.yaml`.
-4. Start the worker. Run `/retry` on any feature request that stopped in `needs_attention` while the image was missing.
+
+**Then, either way:**
+
+1. Confirm the daemon holds the pinned digest again: `docker image inspect <image@sha256:…>` prints the image, and its `Id` is the digest in `sandboxes.yaml`.
+2. Start the worker. Run `/retry` on any feature request that stopped in `needs_attention` while the image was missing.
 
 If you have no archive, rebuild from `deploy/images/<name>/Dockerfile`. The rebuild will very likely have a new digest, because the Dockerfile's packages are not pinned. Put the new digest in `deploy/local/sandboxes.yaml`, and treat it as a new image: every later run uses it.
 
-**Keeping the archive current:** whenever you rebuild an image and change its digest, save it again:
+**Keeping both copies current:** until CI builds the images, whenever you rebuild one and change its digest, push it and save it again:
 
 ```
+docker push <image>:<tag>            # prints the digest to pin
 docker save <image>:<tag> -o <archive>.tar
 shasum -a 256 <archive>.tar > <archive>.tar.sha256
 ```

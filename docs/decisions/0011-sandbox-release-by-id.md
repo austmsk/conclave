@@ -43,14 +43,18 @@ A `docker system prune -a`, a Docker Desktop reset or a new machine would theref
 
 Two changes follow:
 
-1. **Until the pipeline exists, the owner keeps a `docker save` archive of each pinned image outside the repository and off the daemon.** The daemon uses the containerd image store, so the archive holds the original manifest, and `docker load` restores the same digest the pin names. The restore steps are in `docs/runbooks.md`, "Sandbox image lost". This protects against losing the image, not against losing the machine, and it gives no provenance.
+1. **Until the pipeline exists, each pinned image has two copies off the daemon.** Both keep the digest, because the daemon uses the containerd image store, which pushes and saves the original manifest.
+   - **A private GHCR package.** On 2026-11-21 the java21 image was pushed by hand to `ghcr.io/austmsk/conclave-sandbox-java21`, digest unchanged, and `deploy/local/sandboxes.yaml` now names it there. A worker host pulls it after `docker login ghcr.io` with a token holding `read:packages`. This replaces the `localhost:5055` name and survives losing the machine.
+   - **A `docker save` archive** kept by the owner outside the repository, for when GitHub is unreachable.
+
+   The restore steps for both are in `docs/runbooks.md`, "Sandbox image lost". Neither copy gives provenance: the image was still built by hand.
 2. **FR-SEC30's image build is the first Milestone 2 ticket that touches images, before any new image is made.** Milestone 2's first vertical slice already needs a Python image, and the plan adds five languages and 25 SWE-bench instances. Building each by hand would multiply this gap. The ticket:
    - builds each `deploy/images/<name>` in GitHub Actions when its directory changes, and weekly;
    - pushes it to GitHub Container Registry as a private package and records the digest it produced;
    - scans the image, and opens a pull request that changes the digest in the shipped `deploy/sandboxes.yaml`, so every digest change is reviewed (threat I11);
    - pins the packages each Dockerfile installs, so a rebuild without an intended change produces the same contents.
 
-   The worker host then pulls by digest from GHCR with a read-only package token, and the local registry name goes away.
+   CI publishes to the same GHCR package the hand-pushed image is in, so the worker's pull path does not change.
 
 The same ticket should add a startup check to the worker: confirm every image named in `sandboxes.yaml` is present or pullable, and refuse to start otherwise. A lost image then stops the worker once, with a message naming the image, instead of failing every attempt.
 
