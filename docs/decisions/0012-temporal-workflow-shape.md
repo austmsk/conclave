@@ -1,7 +1,7 @@
 # 0012 — The Temporal Go SDK, one activity per attempt, and the attempt timeout
 
 **Date:** 2026-10-28
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
@@ -37,3 +37,17 @@ Ticket 8 is the first code that needs a workflow engine. `ARCHITECTURE.md` names
 - The sweep's cutoff (`-sweep-after`, two hours by default) must stay above the attempt timeout, or a second worker would remove a live attempt's sandbox. The worker refuses to start when it does not exceed `Deps.LongestAttempt`, the longest timeout over every configured role and repository.
 - A change to the role's wall clock or a repository's `command_timeout` changes the timeout of attempts prepared after it, not of those in flight.
 - Workflow changes are deployed by draining in-flight workflows in Milestone 1; from ticket 8b's first change, `workflow.GetVersion`. The replay fixtures under `internal/workflow/testdata/` are recaptured with `CONCLAVE_CAPTURE_REPLAY=1` when a deliberate change makes them diverge.
+
+## Amendment, 2026-11-21: what changed through tickets 9 to 10b, and a limit for Milestone 2
+
+Reviewed after Milestone 1 closed. The core decisions held in the trials and in ticket 10b's worker-kill drill, which went as the consequences above predict: a heartbeat timeout after two minutes, ordinal 1 settled `errored`, its sandbox released by the second worker, ordinal 2 run there, and one pull request. No attempt's spend was repeated across the ten trials. Four details have moved since this record was written:
+
+- **The SDK is pinned exactly in `go.mod` and upgraded deliberately,** each upgrade in its own change with `make check` run first. The version is whatever `go.mod` names, not the v1.50.0 above. The upgrade to 1.51 needed a test change for a deprecated client call.
+- **The sweep cutoff is checked against `Deps.LongestSandboxHold`, not `LongestAttempt`.** Since ticket 9, delivery's `Finalize` also holds a sandbox, for up to `FinalizeTimeout` (45 minutes) with two tries. `LongestSandboxHold` is the longer of that and the longest attempt timeout. The worker refuses a `-sweep-after` at or below it (`TestCheckSweepAfterCoversFinalize`), and the scheduled reaper refuses the same (ticket 10a).
+- **Retry bounds differ by activity.** Most activities keep the one-hour `ScheduleToCloseTimeout`, including `WritePullRequest`. Command replies and alerts are bounded at 10 minutes, the reaper at 30 minutes with three tries, and `Finalize` at two tries. `RunAttempt` is still never retried.
+- **`workflow.GetVersion` is current practice, not a plan.** Every workflow change since ticket 8 is gated: `commands-8b`, `delivery-9` and `alerts-10`. The replay fixtures prove that older histories still replay (`TestReplayMidAttempt`, `TestReplayDetectsRerun`).
+
+One limit for Milestone 2. The sweep's cutoff covers how long an attempt can run, not how long it can wait. `attempts.started_at` is set when the row is created, before the attempt waits on its one-slot queue. Under a benchmark backlog, a queued attempt's row can pass the two-hour cutoff before its sandbox exists, and the sweep then releases a sandbox the attempt is about to use. Milestone 2's runner keeps in-flight workflows at or below the attempt slot count, or the sweep keys on when the sandbox was recorded. One of the two must land before a benchmark runs more tasks than it has slots.
+
+The implementer's 20-minute wall clock is the one budget the trials strained. Decision 0016 leaves it to Milestone 2, to revise from turn-latency data.
+
