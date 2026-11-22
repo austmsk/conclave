@@ -171,7 +171,7 @@ Initial targets, to be revised using Milestone 2 measurements.
 
 Platform code:
 
-- **NFR-M1 Boring code.** Standard library first. No web frameworks, no dependency-injection containers, no reflection-based magic. Code generation is limited to sqlc. Generics only when they remove clear duplication.
+- **NFR-M1 Boring code.** Standard library first. No web frameworks, no dependency-injection containers, no reflection-based magic. Code generation is limited to sqlc, which is deferred to Milestone 2 (decision 0003); until then there is none. Generics only when they remove clear duplication.
 - **NFR-M2 Simple control flow.** Early returns, nesting no deeper than three levels, functions around 60 lines or fewer as a guideline, and every error wrapped with context.
 - **NFR-M3 Documented packages.** Each package has a single responsibility and a `doc.go` explaining its purpose and how it fits into the system.
 - **NFR-M4 Justified dependencies.** Every new third-party dependency requires a decision record.

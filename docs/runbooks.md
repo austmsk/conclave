@@ -2,7 +2,7 @@
 
 What to do when Conclave raises an alert, and how to use the kill switch. Each alert issue in the operations repository links to its section here ([`internal/alert`](../internal/alert), FR-SEC31, decision [0015](decisions/0015-kill-switch-alerts-and-reaper.md)). For a suspected compromise, follow the [incident response runbook](security-and-threat-model.md#incident-response-runbook), whose first step is the halt below.
 
-Every `conclave` command runs on the central machine. Each one reads `CONCLAVE_DATABASE_URL` from the secrets file outside the repository, once, and unsets it. Beyond that:
+Every `conclave` command runs on the central machine. Each one reads `CONCLAVE_OPERATOR_DATABASE_URL`, a login in `conclave_operator`, from the secrets file outside the repository, once, and unsets it. `halt` warns and tries anyway if the login is wrong, since a kill switch must not wait on configuration; the database still refuses a halt from a login that cannot record one. Every other command refuses a wrong login. Each halt and resume prints the database login that recorded it. Beyond that:
 
 - **`halt` needs only Postgres to record the halt.** Everything else it connects to after the halt is recorded, each connection bounded to 15 seconds. A system it cannot reach is reported as a warning, its steps are skipped, and the halt goes on; the halt then ends "incomplete". That covers Temporal (nothing is cancelled), Docker (nothing is swept), and GitHub: a missing or broken `-github-config`, alerts block or `CONCLAVE_GITHUB_APP_KEY_FILE` means the alerts go to the local log only. Give it `-alert-log <path>`, the same log the worker writes, and normally `-github-config deploy/local/github.yaml` and the key file as well.
 - **`alert-test`** needs `CONCLAVE_GITHUB_APP_KEY_FILE`, `-alert-log`, and `-github-config deploy/local/github.yaml` with its `alerts:` block filled in.
@@ -40,10 +40,12 @@ Each worker polls `halt_events` every 5 seconds. When it sees the halt it keeps 
 **Resume** when it is safe to start work again:
 
 ```
-conclave resume -reason "why" [-keep] -github-config deploy/local/github.yaml
+conclave resume -reason "why" -alert-log <path> [-keep] -github-config deploy/local/github.yaml
 ```
 
-`resume` lists every workflow started after the halt's time. These are labels applied during the halt, which the webhook server, having no database access, could not refuse. It cancels them unless you pass `-keep`, so nothing you didn't see starts on its own. It then records a `clear` row and unpauses the reaper schedule. Start the workers again afterwards. To run an issue that was cancelled this way, remove the trigger label and apply it again.
+Run it yourself at a terminal. It lists the runs it would cancel, then asks you to type the halt's ID, and it refuses when stdin is not a terminal, so a script or a coding agent cannot lift a halt. There is no flag to skip this.
+
+`resume` lists every workflow started after the halt's time. These are labels applied during the halt, which the webhook server, having no database access, could not refuse. It cancels them unless you pass `-keep`, so nothing you didn't see starts on its own. It then records a `clear` row, unpauses the reaper schedule, and comments "Kill switch: halt lifted" on the halt's alert issue. **If you see that comment and did not run `resume`, halt again at once and treat it as an incident.** Start the workers again afterwards. To run an issue that was cancelled this way, remove the trigger label and apply it again.
 
 ## Budget cap
 

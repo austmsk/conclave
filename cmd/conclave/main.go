@@ -17,8 +17,11 @@ import (
 	"github.com/austmsk/conclave/internal/github"
 )
 
-// databaseURLEnv names the database secret, as for the worker.
-const databaseURLEnv = "CONCLAVE_DATABASE_URL"
+// databaseURLEnv names the CLI's database secret: a login in
+// conclave_operator, which alone may record a halt or a resume. It is a
+// different login from the worker's, whose URL must not lift a halt
+// (decision 0002).
+const databaseURLEnv = "CONCLAVE_OPERATOR_DATABASE_URL"
 
 // defaultDrain is how long halt waits for open workflows to close. It
 // matches the worker's halt grace, so cancellations land while the
@@ -32,7 +35,8 @@ const usage = `usage: conclave <command> [flags]
 
 commands:
   halt -reason <text>          the kill switch: cancel all work and stop the workers
-  resume -reason <text> [-keep] clear the halt; cancels runs started during it unless -keep
+  resume -reason <text> -alert-log <path> [-keep]
+                               clear the halt, at a terminal; cancels runs started during it unless -keep
   alert-test                   raise a test alert through the log and the alerts repository
   report [-from T] [-to T]     print the trial report (times in RFC 3339)`
 
@@ -93,6 +97,7 @@ func parseFlags(cmd string, args []string) (options, error) {
 		fs.StringVar(&o.reason, "reason", "", "why (required)")
 	case "resume":
 		fs.StringVar(&o.reason, "reason", "", "why (required)")
+		fs.StringVar(&o.alertLog, "alert-log", "", "local append-only alert log (required)")
 		fs.BoolVar(&o.keep, "keep", false, "keep runs started during the halt instead of cancelling them")
 	case "alert-test":
 		fs.StringVar(&o.alertLog, "alert-log", "", "local append-only alert log (required)")
@@ -112,7 +117,7 @@ func checkOptions(cmd string, o options) error {
 	switch {
 	case (cmd == "halt" || cmd == "resume") && o.reason == "":
 		return fmt.Errorf("%s needs -reason", cmd)
-	case (cmd == "halt" || cmd == "alert-test") && o.alertLog == "":
+	case cmd != "report" && o.alertLog == "":
 		return fmt.Errorf("%s needs -alert-log", cmd)
 	case cmd == "halt" && o.drain < 0:
 		return errors.New("-drain must not be negative")

@@ -90,3 +90,13 @@ The owner decided, on 2026-10-31:
 - **The halt depends on Postgres.** With the database down, workers neither start nor do work, and `conclave halt` cannot record a halt. Stopping the worker processes by hand is then the fallback.
 - **A retried delivery can write an occurrence to the log twice.** Readers group by occurrence ID.
 - **Alerts that are not delivered are not batched.** The `digest` severity is delivered at once in Milestone 1. The weekly batch, unknown-actor auto-halt, canary alerts and a second channel are deferred (decision 0016).
+
+## Amendment, 2026-11-21: resume needs the owner at a terminal, and only the CLI's login records a halt
+
+After Milestone 1 closed, a review of where access is checked found that anything able to run `conclave resume`, or to reach the database with the worker's login, could lift a halt unseen. Three changes followed:
+
+- **`resume` runs only with a terminal on stdin.** It lists the runs it would cancel, then changes nothing until the owner types the halt's ID. There is no flag to skip this, so a script, a scheduler or a coding agent's shell cannot lift a halt. This is a speed bump, not authentication: a process that allocates a pseudo-terminal passes it. `halt` gets no such check, because pulling the kill switch must never get harder.
+- **`resume` raises an alert.** `alert.Resumed` comments "Kill switch: halt lifted" on the halt's issue, with how many late runs were cancelled and how many kept, and tells the owner to halt again if they did not run it. A failed delivery does not undo the resume, and the alert is still in the local log. `resume` now takes `-alert-log`.
+- **Only the CLI's database role records a halt event.** Decision 0002, items 6 to 8: `conclave_operator` alone may insert into `halt_events`, the CLI connects through `CONCLAVE_OPERATOR_DATABASE_URL`, and every halt event records the authenticated login.
+
+Tests: conclave `TestResumeConfirmsBeforeChangingAnything`, `TestResumeRefusedLeavesHaltStanding`, `TestAttackScriptedResumeRefused`, `TestConfirmID`, `TestResumeAlertSaysWhatWasKept`; alert `TestResumedLandsOnHaltIssue`; store `TestAttackAppLoginCannotLiftHalt`.

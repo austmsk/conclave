@@ -1,7 +1,9 @@
 GOLANGCI_LINT_VERSION := v2.14.0
 WORKFLOWCHECK_VERSION := v0.5.0
 GOVULNCHECK_VERSION := v1.8.0
-GOOSE_VERSION := v3.28.0
+# The goose CLI runs at the library's version, so `make migrate` applies
+# migrations exactly as the tests do (decision 0003).
+GOOSE_VERSION := $(shell go list -m -f '{{.Version}}' github.com/pressly/goose/v3)
 
 MIGRATIONS_DIR := internal/store/migrations
 DATABASE_URL ?= postgres://conclave:conclave@localhost:5432/conclave?sslmode=disable

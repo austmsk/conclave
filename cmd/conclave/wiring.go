@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -82,6 +83,17 @@ func (u unreachableIssues) CommentOnAlertIssue(context.Context, int, string) (gi
 
 func (u unreachableIssues) AlertIssueComments(context.Context, int) ([]github.Comment, error) {
 	return nil, u.err
+}
+
+// operatorLogin checks that the CLI connected as a conclave_operator
+// login, not the owner, a superuser or the worker's login, and returns
+// the login's name (decision 0002).
+func operatorLogin(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	l, err := store.CurrentLogin(ctx, pool)
+	if err != nil {
+		return "", err
+	}
+	return l.Name, l.CheckOperator()
 }
 
 func openPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
@@ -216,6 +228,12 @@ func runHalt(ctx context.Context, o options, out io.Writer, log *slog.Logger) er
 		return err
 	}
 	defer pool.Close()
+	// A wrong login is reported, never a reason not to try: the kill
+	// switch is attempted with whatever login it has, and the database
+	// refuses the halt only if that login cannot record one.
+	if _, err := operatorLogin(ctx, pool); err != nil {
+		_, _ = fmt.Fprintf(out, "warning: %v; trying the halt anyway\n", err)
+	}
 	h := &haltConnector{o: o, pool: pool, keyFile: keyFile, log: log}
 	defer h.close()
 	k := newKillSwitch(o, pool, out)
@@ -223,8 +241,24 @@ func runHalt(ctx context.Context, o options, out io.Writer, log *slog.Logger) er
 	return k.halt(ctx, o.reason)
 }
 
+// runResume needs a terminal on stdin and the alert log before it touches
+// anything; the App key is optional, as for halt, and without it the
+// resume alert goes to the local log only.
 func runResume(ctx context.Context, o options, out io.Writer, log *slog.Logger) error {
+	if !isTerminal(os.Stdin) {
+		return errNoTerminal
+	}
 	sec, err := readSecrets(databaseURLEnv)
+	if err != nil {
+		return err
+	}
+	keyFile, err := readOptionalSecret(github.AppKeyFileEnv)
+	if err != nil {
+		return err
+	}
+	h := &haltConnector{o: o, keyFile: keyFile, log: log}
+	defer h.close()
+	raise, err := h.alerts()
 	if err != nil {
 		return err
 	}
@@ -233,6 +267,9 @@ func runResume(ctx context.Context, o options, out io.Writer, log *slog.Logger) 
 		return err
 	}
 	defer pool.Close()
+	if _, err := operatorLogin(ctx, pool); err != nil {
+		return err
+	}
 	c, err := dialTemporal(ctx, o, connectTimeout, log)
 	if err != nil {
 		return err
@@ -240,6 +277,8 @@ func runResume(ctx context.Context, o options, out io.Writer, log *slog.Logger) 
 	defer c.Close()
 	k := newKillSwitch(o, pool, out)
 	k.runs = temporalRuns{c: c, namespace: o.namespace}
+	k.raise = raise
+	k.confirm = terminalConfirm(os.Stdin, os.Stderr)
 	return k.resume(ctx, o.reason, o.keep)
 }
 

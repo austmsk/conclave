@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: conclave
       POSTGRES_DB: conclave
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -25,8 +25,8 @@ services:
       - --db-filename
       - /home/temporal/temporal.db
     ports:
-      - "7233:7233" # gRPC frontend
-      - "8233:8233" # Web UI
+      - "127.0.0.1:7233:7233" # gRPC frontend
+      - "127.0.0.1:8233:8233" # Web UI
     volumes:
       - temporal-data:/home/temporal
 
@@ -35,9 +35,9 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
-      - "16686:16686" # Web UI
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
+      - "127.0.0.1:16686:16686" # Web UI
+      - "127.0.0.1:4317:4317" # OTLP gRPC
+      - "127.0.0.1:4318:4318" # OTLP HTTP
 
 volumes:
   postgres-data:
