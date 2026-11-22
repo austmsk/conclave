@@ -115,6 +115,9 @@ func run() error {
 		return fmt.Errorf("connecting to Postgres: %w", err)
 	}
 	defer pool.Close()
+	if err := checkLogin(ctx, pool, log); err != nil {
+		return err
+	}
 	halt := func(ctx context.Context) (store.HaltState, error) { return store.CurrentHalt(ctx, pool) }
 	if err := refuseIfHalted(ctx, halt); err != nil {
 		return err

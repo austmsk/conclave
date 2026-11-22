@@ -36,7 +36,8 @@ Secrets come from the environment, set from your secrets file outside the reposi
 
 | Variable | Read by | What it is |
 |---|---|---|
-| `CONCLAVE_DATABASE_URL` | worker, `conclave` | Postgres URL for a login role in `conclave_app` (see step 3) |
+| `CONCLAVE_DATABASE_URL` | worker | Postgres URL for the worker's login, in `conclave_app` (see step 3) |
+| `CONCLAVE_OPERATOR_DATABASE_URL` | `conclave` | Postgres URL for the CLI's login, in `conclave_operator` (see step 3). Never load it where the worker runs. |
 | `CONCLAVE_ANTHROPIC_API_KEY` | worker | the model provider's API key |
 | `CONCLAVE_GITHUB_APP_KEY_FILE` | worker, `conclave` | path to the App's private key file |
 | `CONCLAVE_GITHUB_WEBHOOK_SECRET` | server | the App's webhook secret, at least 32 characters |
@@ -52,13 +53,21 @@ make migrate   # apply migrations as the database owner
 
 Every port is published on `127.0.0.1` only. Temporal has no authentication and the dev Postgres login is the table owner, so anyone who could reach them could approve runs or rewrite the audit tables. Do not change the bindings to reach them from another machine; that needs Tailscale and authentication (threat model, B6).
 
-`make migrate` connects as the owner (`DATABASE_URL` in the `Makefile`). The worker must not: it connects as a login role that is a member of `conclave_app`, so the migrations' grants are the ceiling of what it can do (`internal/store/migrations/00004_app_role.sql`). Create that role once, outside the repository, choosing your own name and password:
+`make migrate` connects as the owner (`DATABASE_URL` in the `Makefile`). Nothing else may: the worker and the CLI each connect as their own login role, so the migrations' grants are the ceiling of what each can do ([decision 0002](decisions/0002-audit-trail-and-state-transitions.md)). Both refuse to start as the owner or a superuser.
+
+- **The worker** connects as a member of `conclave_app` only. It can read the kill switch but not set or clear it.
+- **The CLI** (`conclave`) connects as a member of `conclave_operator`, which includes everything `conclave_app` can do and is alone allowed to record a halt or a resume.
+
+Create both logins once, outside the repository, choosing your own names and passwords:
 
 ```sql
-CREATE ROLE <login> LOGIN PASSWORD '<password>' IN ROLE conclave_app;
+CREATE ROLE <worker login> LOGIN PASSWORD '<password>' IN ROLE conclave_app;
+CREATE ROLE <operator login> LOGIN PASSWORD '<another password>' IN ROLE conclave_operator;
 ```
 
-Then set `CONCLAVE_DATABASE_URL` in your secrets file to `postgres://<login>:<password>@localhost:5432/conclave?sslmode=disable`.
+Then set `CONCLAVE_DATABASE_URL` to `postgres://<worker login>:<password>@localhost:5432/conclave?sslmode=disable`, and `CONCLAVE_OPERATOR_DATABASE_URL` to the same with the operator login. Keep the operator URL in a separate secrets file that you load only in the terminal where you run `conclave`; if the worker's environment holds it, the worker's host can lift a halt.
+
+Every halt event and every command records `db_user`, the login that wrote it, so `SELECT id, kind, actor, db_user, occurred_at FROM halt_events ORDER BY id` shows which login set and cleared each halt.
 
 ## 4. Start the worker
 
@@ -92,9 +101,10 @@ Other flags, with their defaults:
 
 On startup the worker:
 1. loads and validates every configuration file, and stops on the first error;
-2. refuses to start while a halt is in effect (`conclave resume` lifts it, see [`runbooks.md`](runbooks.md#halt));
-3. records the enabled repositories, sweeps orphaned sandboxes and logs `startup sweep`;
-4. creates or updates the `conclave-reaper` Temporal schedule, then polls its task queues.
+2. checks its database login, refusing the owner, a superuser or an operator login, and logs `database login` with the login's name;
+3. refuses to start while a halt is in effect (`conclave resume` lifts it, see [`runbooks.md`](runbooks.md#halt));
+4. records the enabled repositories, sweeps orphaned sandboxes and logs `startup sweep`;
+5. creates or updates the `conclave-reaper` Temporal schedule, then polls its task queues.
 
 **Check:** `temporal schedule list` shows `conclave-reaper`, and the Temporal UI at `localhost:8233` shows the worker polling.
 
@@ -135,6 +145,7 @@ Stop in this order, each with Ctrl-C:
 | `CONCLAVE_… is not set` | The secrets file was not loaded in that terminal, or names the variable differently. |
 | An error naming a `deploy/local` file | That file is missing, still has placeholder values, or names a different set of repositories from the other per-repository files. |
 | `alerts.repository … is also a run repository` | The alerts repository is listed in `repos.yaml`. Give alerts their own repository. |
-| `halt <n> since …: halted by the kill switch` | A halt is in effect. Run `conclave resume` once you are sure it can be lifted. |
+| `halt <n> since … by <login>: halted by the kill switch` | A halt is in effect, set by that database login. Run `conclave resume` once you are sure it can be lifted. If the login is not your operator login, treat it as an incident. |
+| `wrong database login: …` | The process connected as the owner, a superuser, or the other process's login. Check which URL the secrets file sets (step 3). |
 | `connecting to Temporal at …` | `make dev` is not running, or Temporal is still starting. |
 | Webhook deliveries fail | See [`trials/webhook-tunnel.md`](trials/webhook-tunnel.md#if-it-fails). |

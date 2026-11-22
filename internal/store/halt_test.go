@@ -10,7 +10,7 @@ import (
 )
 
 // TestHaltStateLatestEventWins walks the kill switch through clear, set,
-// clear and set again as the application role: the state is always the
+// clear and set again as the operator role: the state is always the
 // latest event, a clear before any halt records nothing, and each
 // recorded event is later than the one before.
 func TestHaltStateLatestEventWins(t *testing.T) {
@@ -26,7 +26,7 @@ func TestHaltStateLatestEventWins(t *testing.T) {
 		{"clear", false, false, true},
 		{"set again", true, true, true},
 	}
-	err := asAppRole(t, ctx, tx, func(sp pgx.Tx) error {
+	err := asOperatorRole(t, ctx, tx, func(sp pgx.Tx) error {
 		var last int64
 		for _, step := range steps {
 			record := store.ClearHalt
@@ -56,7 +56,7 @@ func TestHaltStateLatestEventWins(t *testing.T) {
 // ID and time, which resume uses to find runs started during the halt.
 func TestSetHaltTwiceStaysOne(t *testing.T) {
 	ctx, tx := testTx(t)
-	err := asAppRole(t, ctx, tx, func(sp pgx.Tx) error {
+	err := asOperatorRole(t, ctx, tx, func(sp pgx.Tx) error {
 		a, err := store.SetHalt(ctx, sp, "first", store.ActorCLI)
 		if err != nil {
 			return err

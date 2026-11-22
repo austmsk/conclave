@@ -85,6 +85,17 @@ func (u unreachableIssues) AlertIssueComments(context.Context, int) ([]github.Co
 	return nil, u.err
 }
 
+// operatorLogin checks that the CLI connected as a conclave_operator
+// login, not the owner, a superuser or the worker's login, and returns
+// the login's name (decision 0002).
+func operatorLogin(ctx context.Context, pool *pgxpool.Pool) (string, error) {
+	l, err := store.CurrentLogin(ctx, pool)
+	if err != nil {
+		return "", err
+	}
+	return l.Name, l.CheckOperator()
+}
+
 func openPool(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
@@ -217,6 +228,12 @@ func runHalt(ctx context.Context, o options, out io.Writer, log *slog.Logger) er
 		return err
 	}
 	defer pool.Close()
+	// A wrong login is reported, never a reason not to try: the kill
+	// switch is attempted with whatever login it has, and the database
+	// refuses the halt only if that login cannot record one.
+	if _, err := operatorLogin(ctx, pool); err != nil {
+		_, _ = fmt.Fprintf(out, "warning: %v; trying the halt anyway\n", err)
+	}
 	h := &haltConnector{o: o, pool: pool, keyFile: keyFile, log: log}
 	defer h.close()
 	k := newKillSwitch(o, pool, out)
@@ -250,6 +267,9 @@ func runResume(ctx context.Context, o options, out io.Writer, log *slog.Logger) 
 		return err
 	}
 	defer pool.Close()
+	if _, err := operatorLogin(ctx, pool); err != nil {
+		return err
+	}
 	c, err := dialTemporal(ctx, o, connectTimeout, log)
 	if err != nil {
 		return err
