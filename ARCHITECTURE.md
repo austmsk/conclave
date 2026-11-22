@@ -48,7 +48,7 @@ Milestone 1 implements a thin vertical slice: one issue, one implementer, one sa
 | Language | Go | Everything |
 | Orchestration | Temporal (Go SDK) | Durable workflows, retries, signals |
 | Database | PostgreSQL + pgvector | Domain records, audit log, embeddings |
-| DB access | `pgx` + `sqlc` + `goose` | Typed queries from visible SQL; migrations. The queries so far are hand-written `pgx`; `sqlc` arrives with the first ticket that needs generated queries |
+| DB access | `pgx` + `goose` ([0003](docs/decisions/0003-milestone-1-dependencies.md)) | Hand-written queries in visible SQL, tested against real Postgres; migrations. `sqlc` is deferred to Milestone 2, for a package of read-heavy queries if that ticket chooses it |
 | HTTP | `net/http` | Webhook receiver; no framework |
 | Logging | `log/slog` | Structured logs |
 | Artifacts | Local disk → Cloudflare R2 | Transcripts, diffs, logs |
