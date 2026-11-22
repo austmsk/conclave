@@ -52,7 +52,8 @@ Two changes follow:
    - builds each `deploy/images/<name>` in GitHub Actions when its directory changes, and weekly;
    - pushes it to GitHub Container Registry as a private package and records the digest it produced;
    - scans the image, and opens a pull request that changes the digest in the shipped `deploy/sandboxes.yaml`, so every digest change is reviewed (threat I11);
-   - pins the packages each Dockerfile installs, so a rebuild without an intended change produces the same contents.
+   - pins the packages each Dockerfile installs, so a rebuild without an intended change produces the same contents;
+   - never publishes an image that serves a `local_only` repository. FR-SEC30 requires those to be built locally and never pushed, so the pipeline refuses to push one, and the GHCR package holds images for `public` and `private` repositories only. The java21 image serves ETS, which is `private`, so the hand-pushed copy is within the rule.
 
    CI publishes to the same GHCR package the hand-pushed image is in, so the worker's pull path does not change.
 
