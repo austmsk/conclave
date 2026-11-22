@@ -96,3 +96,24 @@ conclave alert-test -github-config deploy/local/github.yaml -alert-log <path>
 ```
 
 This raises a `digest` alert titled "Alert test". The local log gains an `alert` entry and a `delivery` entry, and an issue opens in the operations repository, labelled `conclave-alert` and `severity:digest` and assigned to you. Running it again while that issue is open adds a comment rather than a second issue, which shows deduplication works. Close the issue when you are done.
+
+## Sandbox image lost
+
+**When:** every attempt errors at sandbox creation with `pulling image: …`. Or, before that happens, `docker image inspect <image@sha256:…>` from `deploy/local/sandboxes.yaml` reports no such image. The daemon no longer holds the pinned image, and the registry its name points to (`localhost:5055`) is not running.
+
+Until FR-SEC30's image build exists (decision 0011, amendment of 2026-11-21), the only other copy is the `docker save` archive you keep outside the repository.
+
+1. Check the archive is the one you saved: `shasum -a 256 -c <archive>.sha256`.
+2. Load it: `docker load -i <archive>.tar`.
+3. Confirm the daemon holds the pinned digest again: `docker image inspect <image@sha256:…>` prints the image, and its `Id` is the digest in `sandboxes.yaml`.
+4. Start the worker. Run `/retry` on any feature request that stopped in `needs_attention` while the image was missing.
+
+If you have no archive, rebuild from `deploy/images/<name>/Dockerfile`. The rebuild will very likely have a new digest, because the Dockerfile's packages are not pinned. Put the new digest in `deploy/local/sandboxes.yaml`, and treat it as a new image: every later run uses it.
+
+**Keeping the archive current:** whenever you rebuild an image and change its digest, save it again:
+
+```
+docker save <image>:<tag> -o <archive>.tar
+shasum -a 256 <archive>.tar > <archive>.tar.sha256
+```
+
