@@ -21,7 +21,8 @@ const (
 )
 
 // ActorCLI attributes a change made by the owner through cmd/conclave,
-// such as a halt or a resume.
+// such as a halt or a resume. It is self-reported; the row's db_user is
+// the authenticated login, and only a RoleOperator member may insert one.
 const ActorCLI = "cli"
 
 // HaltState is the kill switch's current state: the latest halt event.
@@ -32,6 +33,9 @@ type HaltState struct {
 	ID     int64
 	Since  time.Time
 	Reason string
+	// DBUser is the authenticated login that recorded the event, or
+	// "unrecorded" for one from before migration 00011.
+	DBUser string
 }
 
 // ErrEmptyReason means a halt or resume was recorded without a reason.
@@ -43,8 +47,8 @@ func CurrentHalt(ctx context.Context, db DBTX) (HaltState, error) {
 		st   HaltState
 		kind string
 	)
-	err := db.QueryRow(ctx, `SELECT id, kind, occurred_at, reason FROM halt_events ORDER BY id DESC LIMIT 1`).
-		Scan(&st.ID, &kind, &st.Since, &st.Reason)
+	err := db.QueryRow(ctx, `SELECT id, kind, occurred_at, reason, db_user FROM halt_events ORDER BY id DESC LIMIT 1`).
+		Scan(&st.ID, &kind, &st.Since, &st.Reason, &st.DBUser)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return HaltState{}, nil
 	}

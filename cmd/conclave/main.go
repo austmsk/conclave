@@ -17,8 +17,11 @@ import (
 	"github.com/austmsk/conclave/internal/github"
 )
 
-// databaseURLEnv names the database secret, as for the worker.
-const databaseURLEnv = "CONCLAVE_DATABASE_URL"
+// databaseURLEnv names the CLI's database secret: a login in
+// conclave_operator, which alone may record a halt or a resume. It is a
+// different login from the worker's, whose URL must not lift a halt
+// (decision 0002).
+const databaseURLEnv = "CONCLAVE_OPERATOR_DATABASE_URL"
 
 // defaultDrain is how long halt waits for open workflows to close. It
 // matches the worker's halt grace, so cancellations land while the

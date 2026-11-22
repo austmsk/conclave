@@ -30,7 +30,9 @@ Terms as this project uses them. Where a term maps to code, the code location is
 
 **Audit row / `state_transitions`.** Written by the trigger `record_state_transition`, not by Go code, so no state change can skip it. `actor` is whatever the application reported. `db_user` is the login Postgres authenticated, which the application can't forge.
 
-**Append-only.** `cost_events` and `state_transitions`: the application role (`conclave_app`) can insert and read them, but never update or delete.
+**Append-only.** `cost_events`, `state_transitions`, `tool_calls`, `commands`, `halt_events` and `pr_ci_results`: the application role (`conclave_app`) can insert and read them, but never update or delete. `halt_events` is the exception: only the operator role can insert. See [decision 0002](../decisions/0002-audit-trail-and-state-transitions.md).
+
+**Operator role.** `conclave_operator`, the CLI's database role. It is a member of `conclave_app` and the only role that can record a halt or a resume, so the worker's login cannot lift a halt.
 
 **Idempotency key.** A unique key chosen before a side effect, so a retry that repeats it is ignored (`ON CONFLICT DO NOTHING`). This is how a cost is never recorded twice.
 

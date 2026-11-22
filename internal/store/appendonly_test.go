@@ -51,7 +51,15 @@ func seedAccounting(t *testing.T, ctx context.Context, tx pgx.Tx, s ids) {
 	if err != nil {
 		t.Fatalf("seeding command: %v", err)
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO halt_events (kind, reason, actor) VALUES ('set', 'seed', 'cli')`)
+	// Only the operator role may record a halt event (00011); the role
+	// goes back to the application role for the rest of the test.
+	_, err = tx.Exec(ctx, `SET LOCAL ROLE conclave_operator`)
+	if err == nil {
+		_, err = tx.Exec(ctx, `INSERT INTO halt_events (kind, reason, actor) VALUES ('set', 'seed', 'cli')`)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `SET LOCAL ROLE conclave_app`)
+	}
 	if err != nil {
 		t.Fatalf("seeding halt event: %v", err)
 	}
@@ -97,7 +105,7 @@ func TestAppRoleCannotAlterAppendOnlyRows(t *testing.T) {
 		{"update command", `UPDATE commands SET outcome = 'accepted', reason = NULL`, permissionDenied},
 		{"delete command", `DELETE FROM commands`, permissionDenied},
 		{"truncate commands", `TRUNCATE commands`, permissionDenied},
-		{"insert halt event", `INSERT INTO halt_events (kind, reason, actor) VALUES ('clear', 'r', 'cli')`, ""},
+		{"insert halt event", `INSERT INTO halt_events (kind, reason, actor) VALUES ('clear', 'r', 'cli')`, permissionDenied},
 		{"update halt event", `UPDATE halt_events SET kind = 'clear'`, permissionDenied},
 		{"delete halt event", `DELETE FROM halt_events`, permissionDenied},
 		{"truncate halt events", `TRUNCATE halt_events`, permissionDenied},
@@ -116,4 +124,45 @@ func TestAppRoleCannotAlterAppendOnlyRows(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOperatorRoleHaltEventsAppendOnly: the CLI's role may record a halt
+// event, which the application role may not, and still cannot change or
+// remove one (threat T6).
+func TestOperatorRoleHaltEventsAppendOnly(t *testing.T) {
+	ctx, tx := testTx(t)
+	cases := []struct {
+		name, sql, want string
+	}{
+		{"insert", `INSERT INTO halt_events (kind, reason, actor) VALUES ('set', 'r', 'cli')`, ""},
+		{"update", `UPDATE halt_events SET kind = 'clear'`, permissionDenied},
+		{"delete", `DELETE FROM halt_events`, permissionDenied},
+		{"truncate", `TRUNCATE halt_events`, permissionDenied},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := asOperatorRole(t, ctx, tx, func(sp pgx.Tx) error {
+				_, err := sp.Exec(ctx, tc.sql)
+				return err
+			})
+			if got := sqlState(err); got != tc.want {
+				t.Fatalf("got error %v (SQLSTATE %q), want SQLSTATE %q", err, got, tc.want)
+			}
+		})
+	}
+}
+
+// asOperatorRole is asAppRole for the CLI's role, which alone may record
+// halt events.
+func asOperatorRole(t *testing.T, ctx context.Context, tx pgx.Tx, fn func(pgx.Tx) error) error {
+	t.Helper()
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	defer func() { _ = sp.Rollback(ctx) }()
+	if _, err := sp.Exec(ctx, `SET LOCAL ROLE conclave_operator`); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+	return fn(sp)
 }
