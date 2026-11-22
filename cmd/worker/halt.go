@@ -42,7 +42,7 @@ func refuseIfHalted(ctx context.Context, state haltState) error {
 	if st.Halted {
 		// The CLI redacts the reason before storing it; this redacts it
 		// again, since the error is printed as plain text.
-		return fmt.Errorf("halt %d since %s (%s): %w", st.ID, st.Since.UTC().Format(time.RFC3339), github.RedactText(st.Reason), errHalted)
+		return fmt.Errorf("halt %d since %s by %s (%s): %w", st.ID, st.Since.UTC().Format(time.RFC3339), st.DBUser, github.RedactText(st.Reason), errHalted)
 	}
 	return nil
 }

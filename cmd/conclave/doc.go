@@ -17,6 +17,9 @@
 //   - report: prints the trial report from the database: resolve rate,
 //     cost per resolved task and time per task.
 //
-// Secrets come from the environment, as for the worker, and are unset
-// once read.
+// Secrets come from the environment and are unset once read. The
+// database URL is CONCLAVE_OPERATOR_DATABASE_URL, a login in
+// conclave_operator, which alone may record a halt or a resume; it is
+// never the worker's login (decision 0002). halt warns about a wrong login
+// and tries anyway; every other command refuses one.
 package main

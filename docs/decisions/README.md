@@ -5,7 +5,7 @@ One record per non-obvious choice, written after the ticket merges ([0001](0001-
 | # | Decision | Status |
 |---|---|---|
 | [0001](0001-record-decisions.md) | Record decisions | accepted |
-| 0002 | *Reserved: ticket 2, audit trail and state transitions* | not written |
+| [0002](0002-audit-trail-and-state-transitions.md) | State changes and the audit trail: compare-and-set in Go, audit rows and logins written by the database, and one database role per process | accepted |
 | 0003 | *Reserved: ticket 2, new dependencies (pgx, goose, testcontainers-go)* | not written |
 | [0004](0004-exec-on-sandbox-mounts.md) | Sandbox mounts allow exec | accepted |
 | 0005 | *Reserved: Jev as a decision provider ([`jev.md`](../tickets/m1-tickets/jev.md))* | not written |

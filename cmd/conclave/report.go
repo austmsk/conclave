@@ -27,6 +27,9 @@ func runReport(ctx context.Context, o options, out io.Writer) error {
 		return err
 	}
 	defer pool.Close()
+	if _, err := operatorLogin(ctx, pool); err != nil {
+		return err
+	}
 	rep, err := store.ReadTrialReport(ctx, pool, from, to)
 	if err != nil {
 		return err

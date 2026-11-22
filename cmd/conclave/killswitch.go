@@ -119,7 +119,7 @@ func (k *killSwitch) halt(ctx context.Context, reason string) error {
 	if err != nil {
 		return fmt.Errorf("recording the halt: %w", err)
 	}
-	k.printf("halt %d recorded at %s", st.ID, st.Since.UTC().Format(time.RFC3339))
+	k.printf("halt %d recorded at %s by %s", st.ID, st.Since.UTC().Format(time.RFC3339), st.DBUser)
 	if k.connect != nil {
 		k.connect(ctx)
 	}
@@ -264,7 +264,7 @@ func (k *killSwitch) resume(ctx context.Context, reason string, keep bool) error
 	if err := k.raise(ctx, alert.Resumed(st.ID, cleared.ID, reason, len(late), cancelled, k.now())); err != nil {
 		k.printf("warning: resume alert: %v", err)
 	}
-	k.printf("halt %d cleared; start the workers again", st.ID)
+	k.printf("halt %d (set by %s) cleared by %s; start the workers again", st.ID, st.DBUser, cleared.DBUser)
 	return nil
 }
 
