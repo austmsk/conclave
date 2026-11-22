@@ -209,6 +209,7 @@ func newLiveKillSwitch(c client.Client) *killSwitch {
 		sweep:       func(context.Context) (activity.SweepResult, error) { return activity.SweepResult{}, nil },
 		remaining:   func(context.Context) (int, int, error) { return 0, 0, nil },
 		raise:       func(context.Context, alert.Alert) error { return nil },
+		confirm:     func(int64) error { return nil },
 		drain:       2 * time.Minute, poll: 500 * time.Millisecond, now: time.Now, sleep: sleepCtx,
 		out: &bytes.Buffer{},
 	}

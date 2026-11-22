@@ -40,10 +40,12 @@ Each worker polls `halt_events` every 5 seconds. When it sees the halt it keeps 
 **Resume** when it is safe to start work again:
 
 ```
-conclave resume -reason "why" [-keep] -github-config deploy/local/github.yaml
+conclave resume -reason "why" -alert-log <path> [-keep] -github-config deploy/local/github.yaml
 ```
 
-`resume` lists every workflow started after the halt's time. These are labels applied during the halt, which the webhook server, having no database access, could not refuse. It cancels them unless you pass `-keep`, so nothing you didn't see starts on its own. It then records a `clear` row and unpauses the reaper schedule. Start the workers again afterwards. To run an issue that was cancelled this way, remove the trigger label and apply it again.
+Run it yourself at a terminal. It lists the runs it would cancel, then asks you to type the halt's ID, and it refuses when stdin is not a terminal, so a script or a coding agent cannot lift a halt. There is no flag to skip this.
+
+`resume` lists every workflow started after the halt's time. These are labels applied during the halt, which the webhook server, having no database access, could not refuse. It cancels them unless you pass `-keep`, so nothing you didn't see starts on its own. It then records a `clear` row, unpauses the reaper schedule, and comments "Kill switch: halt lifted" on the halt's alert issue. **If you see that comment and did not run `resume`, halt again at once and treat it as an incident.** Start the workers again afterwards. To run an issue that was cancelled this way, remove the trigger label and apply it again.
 
 ## Budget cap
 

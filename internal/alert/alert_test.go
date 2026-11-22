@@ -278,6 +278,27 @@ func TestHaltDoneSharesKey(t *testing.T) {
 	}
 }
 
+// TestResumedLandsOnHaltIssue: a resume comments on the halt's issue, as
+// its own occurrence, so a halt lifted by someone else is seen there.
+func TestResumedLandsOnHaltIssue(t *testing.T) {
+	api, app, log, _ := fixture(t)
+	if _, err := alert.Raise(t.Context(), log, app, alert.Halt(8, "drill", at)); err != nil {
+		t.Fatal(err)
+	}
+	for _, clearID := range []int64{9, 9, 11} {
+		if _, err := alert.Raise(t.Context(), log, app, alert.Resumed(8, clearID, "drill over", 3, 2, at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := api.Comments()
+	if n := len(api.Issues()); n != 1 || len(c) != 2 {
+		t.Fatalf("%d issues, %d comments; want one issue and one comment per resume", n, len(c))
+	}
+	if !strings.Contains(c[0].Body, "2 cancelled, 1 kept") || !strings.Contains(c[0].Body, "If you did not run conclave resume") {
+		t.Fatalf("resume comment does not say what was kept or what to do:\n%s", c[0].Body)
+	}
+}
+
 // TestLogRefusesSymlink: the log is never opened through a symlink, which
 // could point it at a file the owner did not choose.
 func TestLogRefusesSymlink(t *testing.T) {
