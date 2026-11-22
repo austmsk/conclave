@@ -44,3 +44,30 @@ The amended requirements are FR-S11, FR-S12, FR-SEC9 and FR-SEC31, plus threat m
 - Raising a cap needs a worker restart, because cap values are read and validated at startup. This is acceptable for a single owner, but it is friction. Reloading config live would be a separate decision.
 - The alert severity is still called `pause` while the status it produces is `needs_attention`. I kept the name so Ticket 10's alert work doesn't change, though the mismatch reads a little oddly.
 - FR-S11 still lists `/help`, but `ARCHITECTURE.md`'s command table doesn't. That gap is unrelated to this record, and gets decided before Ticket 8b.
+
+## Amendment, 2026-11-21: what closed, how a cap stop ends without an owner, and one monthly cap for live work and the benchmark
+
+Reviewed after Milestone 1 closed. The decision held: one rule for the owner, no contract or schema change.
+
+**What closed.**
+- Ticket 8b built `/retry` as described: it continues in the phase left, keeps every attempt and its cost, and re-checks the caps first (`TestRetryAfterCapRaised`, `TestRetryStillOverCap`, `TestRetryFromPlanningWaitsForApprove`).
+- Ticket 10a raises the `pause` alert on a cap stop (`TestBudgetCapRaisesPauseAlert`).
+- The `/help` gap noted above was settled by ticket 8b and decision 0013.
+- The reason is written `budget_cap:<kind>`, with the cap's kind after the colon.
+- Raising a cap still means editing `router.yaml` and restarting the worker.
+
+**The command is being renamed.** The owner found "retry" misleading, since it continues rather than starts over. The ticket in `docs/tickets/m2-tickets/continue-command.md` makes `/continue` the name the owner types and reads, keeps `/retry` as an alias, and keeps `retry` as the internal signal and audit value so waiting runs and replay are unaffected. Until it lands, `/retry` is the command.
+
+**A cap stop with no owner.** The wait for the owner belongs to `FeatureWorkflow`, not to the task. On a cap stop, `TaskWorkflow` moves its task to `needs_attention`, returns outcome `TaskBudgetCap` with the cap's kind, and ends. The pause alert is raised only by the parent. So Milestone 2's benchmark, which runs `TaskWorkflow` without a parent, gets a final result it can record as `budget_exhausted`, and raises no alerts. Nothing in this decision changes for it.
+
+The attempt-budget rule carries over the same way. An attempt that runs out of its own tokens is `failed` (`token_limit`), a model result, scored as unresolved. A feature-request or monthly cap stop is a platform limit, scored as `budget_exhausted` and not counted against the model.
+
+Two consequences for the benchmark runner:
+- **Its tasks stay in `needs_attention`.** No one continues a benchmark task, so the runner moves each cap-stopped task to a final state when it records the result, or every query that does not tell benchmark rows from live ones will show them as stuck work.
+- **Its spend is attributed like any other.** Every model call is a `cost_events` row with its feature request and attempt, so a report can separate benchmark spend from live spend by the rows the runner seeded.
+
+**One monthly cap, shared by live work and the benchmark.** Decided by the owner on 2026-11-21. The monthly cap stays a single dollar total across every repository and every kind of run, and the benchmark gets no separate allowance.
+- **Why:** it is the one number that bounds the month's spend, whatever is running. A second allowance would mean two numbers to keep in step, and a total no single cap enforces.
+- **The cost of it:** a large benchmark run and live work draw on the same money. The shipped cap is $200 a month, and the ten trials spent $51.41, about a quarter of it. Milestone 2's official runs (tasks × 3 seeds × 2 models, plus the SWE-bench subset) would come to hundreds of attempts at the trials' $5 to $7 each, far over $200. Before an official run, the owner raises the cap for that month, and the per-run cap in the Milestone 2 plan bounds the run itself, so one run cannot use the whole month by itself.
+- **Live work during a run.** While a benchmark run is in flight, a live feature request can stop on the monthly cap because of benchmark spend. It goes to `needs_attention` with `budget_cap:month` like any cap stop, and continues once the cap is raised or the month turns. The owner times official runs for when live work can wait.
+
