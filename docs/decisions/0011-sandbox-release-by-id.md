@@ -1,7 +1,7 @@
 # 0011 — Sandboxes are released by ID, cancellation is a reason, and the trial image is built locally
 
 **Date:** 2026-10-26
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
