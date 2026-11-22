@@ -110,7 +110,7 @@ func (t *taskRun) settle(ctx workflow.Context, attemptID string) (activity.Attem
 
 // route decides the task from an attempt's recorded outcome and the error
 // its activity returned, if any. The outcome table is in
-// docs/tickets/ticket-8-pre-plan.md.
+// docs/tickets/m1-tickets/ticket-8-pre-plan.md.
 func (t *taskRun) route(ctx workflow.Context, out activity.AttemptOutcome, runErr error) (TaskResult, bool, error) {
 	res := TaskResult{AttemptID: out.AttemptID, ArtifactHash: out.ArtifactHash, Reason: out.Reason}
 	switch {

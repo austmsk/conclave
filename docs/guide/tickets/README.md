@@ -1,6 +1,6 @@
 # Tickets
 
-One page per merged ticket, in build order. The spec for each ticket is in [`docs/tickets/milestone-1.md`](../../tickets/milestone-1.md). These pages describe what the merged code actually does.
+One page per merged ticket, in build order. The spec for each ticket is in [`docs/tickets/m1-tickets/milestone-1.md`](../../tickets/m1-tickets/milestone-1.md). These pages describe what the merged code actually does.
 
 | # | Ticket | Status | Page |
 |---|---|---|---|

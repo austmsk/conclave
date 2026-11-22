@@ -122,5 +122,5 @@ The `pr_writer` model writes the PR's title, summary, risks and commit subject, 
 ## Where to go next
 
 - [`ARCHITECTURE.md`](../../ARCHITECTURE.md): the decisions above, stated as decisions, plus later milestones (planning, competing attempts, judging, stacked PRs).
-- [`docs/tickets/milestone-1.md`](../tickets/milestone-1.md): the spec for every Milestone 1 ticket and the order they run in.
+- [`docs/tickets/m1-tickets/milestone-1.md`](../tickets/m1-tickets/milestone-1.md): the spec for every Milestone 1 ticket and the order they run in.
 - [`docs/security-and-threat-model.md`](../security-and-threat-model.md): what the controls defend against.

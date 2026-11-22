@@ -66,7 +66,7 @@ Terms as this project uses them. Where a term maps to code, the code location is
 
 ## Process
 
-**Ticket.** One unit of the build plan (`docs/tickets/milestone-1.md`), done in one Claude Code session on a `ticket/<n>` branch.
+**Ticket.** One unit of the build plan (`docs/tickets/m1-tickets/milestone-1.md`), done in one Claude Code session on a `ticket/<n>` branch.
 
 **`FR-*` / `NFR-*`.** Functional and non-functional requirement IDs (`docs/scope-and-requirements.md`). `FR-SEC*` are the security requirements.
 

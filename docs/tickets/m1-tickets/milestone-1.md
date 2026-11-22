@@ -1,5 +1,7 @@
 # Milestone 1 — Walking Skeleton
 
+**Status:** closed 2026-11-17. Every ticket is merged and the success criteria were met on 2026-11-16; evidence in [`m1-exit-checklist.md`](m1-exit-checklist.md), deferrals in [decision 0016](../../decisions/0016-milestone-1-deferrals.md).
+
 **Done when:** a labeled issue on the Election Tally repository produces a pull request that passes that repository's CI in at least 7 of 10 trials, with zero orphaned sandboxes across 10 runs including at least 2 cancellations, and every run traceable end to end in the Temporal UI and the database.
 
 **Scope:** one issue, one implementer, one sandbox, one pull request. No planner, no judge, no test writer, no merge queue. The implementer writes its own tests; the test writer and hidden-test split arrive at the start of Milestone 2 (`FR-S7`).
@@ -99,7 +101,7 @@ Enforce every limit in `Limits`. Validate the finish report against its schema w
 
 ## Ticket 6 — GitHub App and webhooks
 
-Webhook receiver on `net/http` with constant-time signature verification. Command parser honouring only the owner's numeric user ID; comments from the App itself and from other bots are ignored. App authentication on `net/http`: the App JWT and installation tokens are written in the package, not taken from `ghinstallation` ([0010](../decisions/0010-github-client-on-net-http.md)). Clone, branch push restricted to `agent/` prefixes, PR creation, comment posting and in-place editing, reaction adding.
+Webhook receiver on `net/http` with constant-time signature verification. Command parser honouring only the owner's numeric user ID; comments from the App itself and from other bots are ignored. App authentication on `net/http`: the App JWT and installation tokens are written in the package, not taken from `ghinstallation` ([0010](../../decisions/0010-github-client-on-net-http.md)). Clone, branch push restricted to `agent/` prefixes, PR creation, comment posting and in-place editing, reaction adding.
 
 Webhooks acknowledge within two seconds and dispatch work asynchronously.
 

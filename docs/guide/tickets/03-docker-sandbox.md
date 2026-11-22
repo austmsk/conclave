@@ -1,6 +1,6 @@
 # Ticket 3 — Docker sandbox
 
-**Status:** merged in `e894259` (feature `82de9d8`, review fixes `729e0b5`) · **Spec:** [`milestone-1.md`](../../tickets/milestone-1.md#ticket-3--docker-sandbox) · **Requirements:** FR-SEC4, FR-SEC21, FR-SEC23, NFR-R3 · **Review list:** RL-5, RL-3
+**Status:** merged in `e894259` (feature `82de9d8`, review fixes `729e0b5`) · **Spec:** [`milestone-1.md`](../../tickets/m1-tickets/milestone-1.md#ticket-3--docker-sandbox) · **Requirements:** FR-SEC4, FR-SEC21, FR-SEC23, NFR-R3 · **Review list:** RL-5, RL-3
 
 > **Changed after merge — `writeTree` moved (ticket 7).**
 > - **When:** 2026-10-23, in ticket 7's groundwork commit `e674d81` on branch `ticket/7`.
