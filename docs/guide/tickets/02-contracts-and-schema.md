@@ -79,10 +79,10 @@ The store tests run against real Postgres via `testcontainers-go`.
 
 ## Left open
 
-- Decision 0003 (pgx, goose, testcontainers-go) is reserved but not yet written. [Decision 0002](../../decisions/0002-audit-trail-and-state-transitions.md) records this ticket's design and what was added after Milestone 1.
+- [Decision 0003](../../decisions/0003-milestone-1-dependencies.md) records why this ticket chose pgx, goose and testcontainers-go. [Decision 0002](../../decisions/0002-audit-trail-and-state-transitions.md) records this ticket's design and what was added after Milestone 1.
 - The `actor` string is self-reported. Only `db_user` is authenticated. Since migration 00011, `halt_events` and `commands` record `db_user` too, and the worker and the CLI each refuse to start as the owner, a superuser, or the other's login (decision 0002).
 - `00004` grants table-wide UPDATE on `repos`, so the app role can change `repos.tier`. The grant stays, because `EnsureRepo` writes the tier from configuration; the router refuses a mismatch (decision 0002, item 9, and [ticket 4](04-llm-router.md)).
-- Typed queries via `sqlc` aren't set up yet. The store code so far is hand-written `pgx`.
+- Typed queries via `sqlc` aren't set up. The store is hand-written `pgx`, and `sqlc` is deferred to Milestone 2 (decision 0003).
 
 ## Check your understanding
 

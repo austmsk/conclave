@@ -47,7 +47,7 @@ make down         # docker compose down
 
 Follow the maintainability requirements (`NFR-M1` through `NFR-M9`). In short:
 
-- Standard library first. No web framework, no DI container, no reflection-based magic. `sqlc` is the only code generation.
+- Standard library first. No web framework, no DI container, no reflection-based magic. No code generation yet: the store is hand-written `pgx`, and `sqlc` is the only generator a later ticket may adopt, deferred to Milestone 2 ([0003](docs/decisions/0003-milestone-1-dependencies.md)).
 - Early returns; nesting no deeper than three levels; functions around 60 lines.
 - Wrap every error with context: `fmt.Errorf("creating sandbox for attempt %s: %w", id, err)`.
 - Interfaces only at real boundaries (sandbox, model provider, blob store, GitHub client). Not one per struct.
