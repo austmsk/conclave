@@ -1,7 +1,7 @@
 # 0009 — A stopped feature request goes to needs_attention, and /retry continues it
 
 **Date:** 2026-10-17
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
