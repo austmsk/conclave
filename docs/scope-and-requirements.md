@@ -67,7 +67,7 @@ Grouping follows the ISO/IEC 9126 functionality sub-characteristics: suitability
 - **FR-S4 New codebases.** When a repository has little or no code, the platform skips convention extraction; the plan includes a scaffolding task and proposes conventions for owner approval.
 - **FR-S5 Plan approval.** No implementation starts before `/approve`. `/revise <feedback>` produces a new plan version.
 - **FR-S6 Discussion.** `/ask <question>` on an issue or PR returns an answer grounded in the codebase brief, the plan, and recorded decisions. `/ask` never changes any state.
-- **FR-S7 Tests first.** Every behavior change includes tests. A test writer produces tests from acceptance criteria before implementation begins. Milestone 1 exception: the implementer writes its own tests; the separate test writer and the hidden-test split ship at the start of Milestone 2, before any benchmark results are generated.
+- **FR-S7 Tests first.** Every behavior change includes tests. A test writer produces tests from acceptance criteria before implementation begins. Milestones 1 and 2 exception: the implementer writes its own tests. In Milestone 2 the test writer drafts hidden tests for benchmark tasks only (FR-A2), and those ship before any benchmark results are generated. A later decision brings the test writer into the production pipeline (decision 0017).
 - **FR-S8 Competing attempts.** The number of attempts per task is configurable.
 - **FR-S9 Integration.** Winning attempts land through a merge queue, with the full test suite rerun after each landing.
 - **FR-S10 Pull requests.** Each PR description covers what changed and why, links the approved plan, includes test evidence, lists risks, and summarizes key decisions. PRs above the size cap are split into stacked PRs.
@@ -87,7 +87,7 @@ Grouping follows the ISO/IEC 9126 functionality sub-characteristics: suitability
 ### Accuracy: results are correct
 
 - **FR-A1 Deterministic gates first.** Build, lint and typecheck, existing tests, new tests, secret scan, and dependency scan all run before any LLM judging.
-- **FR-A2 Hidden tests.** A portion of the test writer's tests is withheld from implementers and applied only during gating.
+- **FR-A2 Hidden tests.** Hidden tests are withheld from implementers and applied only when grading, in a fresh sandbox after the task completes. Their results never reach an implementer or start a new attempt (decision 0017).
 - **FR-A3 Gate-weakening detection.** Attempts that delete or skip tests, alter test configuration, or touch protected paths are rejected unless the owner explicitly approves.
 - **FR-A4 Flaky tests.** A failing test is rerun against the unmodified base commit before an attempt is blamed for it.
 - **FR-A5 Freshness.** Before a PR opens, the work is rebased onto the latest default branch and all gates rerun.
