@@ -61,7 +61,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 - `plans.body` stays the authoritative record of what the agent saw; the manifest never duplicates or replaces it.
 - Manifest: one YAML file per dataset in the repo, versioned by git commit plus content hash. `task_kind` values: `public_replay`, `authored`, `swebench_verified`.
 - Three new tables only: `benchmark_run`, `run_task`, `fixture`.
-- One canonical JSON run snapshot, stored with its hash: models, prompt hashes, config hashes, image digests, runner commit, rerun policy.
+- One canonical JSON run snapshot, stored with its hash: models and implementer effort, prompt hashes, config hashes, image digests, runner commit, rerun policy.
 - Result identity binds the candidate diff digest, not just run ID and task ID.
 
 ## 6. Fixtures and hidden-test isolation
@@ -120,7 +120,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 ## 12. Ticket plan
 
 1. M1 close-out (tag, owed decisions) and contract inventory
-2. Vertical slice: minimal runner, Grade activity, 3 hand-written Python tasks (dev-only results)
+2. Vertical slice: minimal runner, Grade activity, 3 hand-written Python tasks (dev-only results); runs them at two effort levels on both models to choose the implementer's effort
 3. Persistence, run snapshot, intent rows, restart reconciliation; runner keeps in-flight workflows at or below the attempt slot count; benchmark worker without GitHub
 4. `test_writer` fixture lifecycle, qualification, owner sign-off
 5. Hidden-test isolation tests
@@ -139,7 +139,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 | Wall time: one attempt slot per worker, \~8 minutes per attempt; a full official run is \~44 hours serial | Several attempt workers; fewer seeds or one model until the pipeline is proven |
 | The reaper releases live sandboxes of queued attempts: at one slot, roughly the 15th task onward passes the 2-hour sweep cutoff | Runner bounds in-flight workflows to the slot count (ticket 3) |
 | N workers send N times the configured rate limit | Divide the per-process limit by the worker count |
-| Opus 5 and 5.5 compared at different default effort (high vs. medium) | Set effort per route and record it per attempt |
+| Opus 5 and 5.5 compared at different default effort (high vs. medium) | One explicit implementer effort, the same on both models, recorded per attempt and in the run snapshot |
 | Hidden-test output reaches a later attempt (latent: `PriorFailure` is defined but unset in production) | Grade after the attempt, never in the M1 gate (decision 0017); isolation test on `SessionInput` |
 | `test_writer` produces weak or wrong tests | Qualification against the reference plus owner sign-off |
 
@@ -157,7 +157,7 @@ These weren't settled in discussion and should be decided before drafting the fu
 - [x] Benchmark deploy entries: a separate deploy set on its own task queue, as decision 0012 anticipates.
 - [ ] M1 close-out: tag `m1-complete`; write decisions 0002, 0003 and 0005; accept or revise 0008 through 0016
 - [x] Decision 0017, accepted 2026-11-24: hidden tests run in a separate Grade step after the task, on an evaluator-only worker. `test_writer` is benchmark-only in Milestone 2, and a gate-failed task's Grade result is kept for diagnosis only.
-- [ ] Effort value per route for Opus 5 and Opus 5.5 (the same explicit value on both)
+- [x] Decided, 2026-11-24: effort follows a rule rather than a per-route list. The implementer runs at one explicit effort, the same on every model being compared, and it is recorded on every attempt and in the run snapshot. Other roles keep their defaults. Ticket 2 picks the value by running its tasks at two effort levels on both models, and the value is fixed before any official run. It lives in the benchmark's deploy set, so changing it later means a new run version.
 - [ ] Thinking blocks: keep discarding them, or replay them (changes `contracts.Message`)
 - [ ] A `refusal` outcome in the taxonomy, so a refused call is not counted as a provider error
 - [ ] How many attempt workers for official runs, given the per-process rate limit and the shared blob directory
