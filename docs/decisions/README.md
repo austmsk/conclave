@@ -20,5 +20,6 @@ One record per non-obvious choice, written after the ticket merges ([0001](0001-
 | [0014](0014-pull-request-delivery.md) | Pull request delivery: delivered after CI, polled checks, a sandboxed rebase, and deterministic commits | proposed |
 | [0015](0015-kill-switch-alerts-and-reaper.md) | The kill switch, alerts and the scheduled reaper: a CLI halt in Postgres, alert issues in a private operations repository, and a Temporal schedule | accepted |
 | [0016](0016-milestone-1-deferrals.md) | What Milestone 1 defers, and the known gaps it leaves | accepted |
+| [0017](0017-test-writer-and-hidden-test-grading.md) | Hidden tests are graded after the attempt, and `test_writer` writes benchmark fixtures, not production tests | proposed |
 
 New records take the next free number, and this table gains a row in the same change.
