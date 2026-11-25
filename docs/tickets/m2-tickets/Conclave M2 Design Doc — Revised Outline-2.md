@@ -15,7 +15,7 @@ This outline revises the original M2 plan with four changes: hidden tests are gr
 - Replace "20+ owner-repo tasks" with internal tasks from recent public PRs plus authored tasks, across Python, Java, C++, Go and JS/TS. `docs/scope-and-requirements.md` line 38 still says "at least 20 tasks built from the owner's repositories".
 - Keep the SWE-bench Verified subset, reported separately.
 - Add requirements for multiple seeds per task and a paired comparison report.
-- Reword FR-A2 ("applied only during gating") and exit-checklist item 5 (hidden tests as a gate overlay) to match the post-attempt grade step, pending decision 0017.
+- Reword FR-A2 ("applied only during gating") and exit-checklist item 5 (hidden tests as a gate overlay) to match the post-attempt grade step. Done with decision 0017, which also reworded FR-S7 and threat T2.
 - Carry the M2 work the repo already assigns: FR-SEC27's `clean_room` vs. `reset_in_place` cost measurement, FR-SEC20's canary detector and the canary-hit halt alert (decision 0016), and revising the implementer's 20-minute wall clock from turn-latency data (decision 0016).
 
 ## 3. M1 integration map (T1 output)
@@ -37,7 +37,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 | Thinking blocks and refusals | Thinking blocks are discarded under a stale comment; `stopReason` treats a refusal as a provider error | Decide: thinking-block replay, and a refusal outcome. |
 | Opus 5.5 route | Missing from `router.yaml` | Add a model entry. |
 | Worker build version | Not recorded | Add to the run snapshot. |
-| `test_writer` role | Contract exists; `roles()` and `TestRolesAreMilestoneOne` allow only implementer and pr\_writer | Extend, per decision 0017. |
+| `test_writer` role | Contract exists; `roles()` and `TestRolesAreMilestoneOne` allow only implementer and pr\_writer | Keep: the production `roles()` is unchanged. `test_writer` goes in the evaluator worker's own role map (decision 0017). |
 | Deploy files for benchmark repos | `sameRepositories` only checks that the loaded files agree, and every path is a flag; the `ci` block is required but never read by a benchmark | Separate deploy set for the benchmark worker, with a placeholder check name. |
 | JUnit test reports | Already required by the gate (`/tmp/conclave-junit/`) | Reuse: matches the five-language plan. |
 | Attempt throughput | One attempt slot per worker (decision 0012); the rate limiter is per worker process; the blob store is a local directory | Several attempt workers on one host or shared mount, with the rate limit divided across them. |
@@ -156,7 +156,7 @@ These weren't settled in discussion and should be decided before drafting the fu
 - [x] M1 assumptions checked (section 3).
 - [x] Benchmark deploy entries: a separate deploy set on its own task queue, as decision 0012 anticipates.
 - [ ] M1 close-out: tag `m1-complete`; write decisions 0002, 0003 and 0005; accept or revise 0008 through 0016
-- [ ] Decision 0017: `test_writer` in the production pipeline, and where hidden tests run (draft proposed)
+- [x] Decision 0017, accepted 2026-11-24: hidden tests run in a separate Grade step after the task, on an evaluator-only worker. `test_writer` is benchmark-only in Milestone 2, and a gate-failed task's Grade result is kept for diagnosis only.
 - [ ] Effort value per route for Opus 5 and Opus 5.5 (the same explicit value on both)
 - [ ] Thinking blocks: keep discarding them, or replay them (changes `contracts.Message`)
 - [ ] A `refusal` outcome in the taxonomy, so a refused call is not counted as a provider error
