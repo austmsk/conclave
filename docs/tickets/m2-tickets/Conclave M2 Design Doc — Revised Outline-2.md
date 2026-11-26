@@ -166,5 +166,6 @@ These weren't settled in discussion and should be decided before drafting the fu
   - No server-side fallbacks in the benchmark: they would switch models mid-attempt and drop the replayed thinking. Production fallbacks are a later decision.
   - The contract change, for review by hand: `StopRefusal` and `ReasonRefused` in `internal/contracts`, and a place to record the category.
   - This is not `agent.Refusal`, which is a tool declining a bad call.
+- [x] Decided, 2026-11-26: Milestone 2's datasets cover Python, JS/TS and Java only. Go and C++ are deferred, with the Go tasks authored from Conclave. Sections 2, 7 and 8, ticket 6 and the C++ risk row still show the five-language plan; `m2-design.md` has the current counts (25 or 26 internal tasks).
 - [ ] How many attempt workers for official runs, given the per-process rate limit and the shared blob directory
 - [ ] Verify recent PR activity and shortlist repos per language
