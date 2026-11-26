@@ -304,6 +304,7 @@ The three languages are *decided*. The counts are *confirmed*: the outline had 4
 - The official harness as the grader, behind the Grade interface.
 - A conformance check per instance: the gold patch resolves it, and the empty patch does not.
 - Reported separately, with contamination and test-quality caveats stated.
+- *Decided, 2026-11-26:* one seed per model on official runs, to save cost. Its own `benchmark_run` records `seeds: 1`, and the report gives no seed-variance figure for it.
 
 *Confirmed:* choose the 25 by a recorded random draw from instances whose images build and pass conformance, rather than by hand, so the choice cannot favour either model.
 
@@ -361,7 +362,7 @@ One outcome per `run_task`. Precedence runs top to bottom: the first row that ap
 |---|---|
 | Resolve rate | Resolved `run_task`s over eligible `run_task`s, pooled across seeds. *Decided:* 1 seed in development, 3 on official runs |
 | Interval | The headline interval is a bootstrap that resamples tasks, keeping each task's seeds together (*confirmed*). A Wilson interval on the pooled proportion is shown beside it (*decided*), labelled as optimistic: it treats the seeds of one task as independent, so it is narrower than the data supports |
-| Paired comparison | Between two runs on the same frozen tasks: per-task flips, and a bootstrap interval on the difference in resolve rate, resampling tasks. *Decided* |
+| Paired comparison | Between two runs on the same frozen tasks: per-task flips, and a bootstrap interval on the difference in resolve rate, resampling tasks. *Decided.* A comparison reuses a stored run as its baseline when the dataset version, fixtures, image digests and everything in the run snapshot except the change under test match. Only the new arm runs. A baseline is rerun only when one of those has changed (*decided*, 2026-11-26) |
 | Cost per resolved task | Total cost of eligible `run_task`s over resolved ones. Fixture generation cost is tracked separately. *Decided* |
 | Time per task | Median and P95 from attempt start to gate result. Batch makespan is reported separately. *Decided* |
 | Turn latency | Per model call, by model and effort, to revise `MaxWallClock` (decision 0016) |
@@ -381,14 +382,15 @@ One outcome per `run_task`. Precedence runs top to bottom: the first row that ap
 
 | Owed | How Milestone 2 measures it |
 |---|---|
-| Implementer effort (outline, 2026-11-24) | Ticket 2 runs its tasks at two effort levels on both models. The value is fixed before any official run |
+| Implementer effort (outline, 2026-11-24) | Ticket 2 runs its tasks at two effort levels on both models and chooses the lowest level that holds the resolve rate, so the choice weighs cost as well as quality (*decided*, 2026-11-26). The value is fixed before any official run |
+| Task budget | Ticket 2 records tokens per passing attempt and sets the `task_budget` value from them (section 10.4) |
 | `MaxWallClock` (0016) | Turn latency and wall-clock stops from the development runs |
 | FR-SEC27 default | After a scoring run, re-gate a sample of its frozen artifacts in both modes and compare time and result. No model calls |
 | Run budget cap | Set after ticket 2 measures cost per task |
 
 ### 10.4 Cost
 
-*Decided, 2026-11-26:* two cost controls, applied before ticket 2 measures anything.
+*Decided, 2026-11-26:* the cost controls below. Prompt caching and the task-budget plumbing land in ticket 1, before ticket 2 measures anything. The other controls are in sections 8.2 (one SWE-bench seed), 10.1 (baselines reused) and 10.3 (effort chosen for cost).
 
 **Prompt caching.** The Anthropic adapter today sends every request uncached (decision 0008, item 5). In the Milestone 1 trials, input was 65% of the implementer's cost, because each step resends the whole conversation.
 - The adapter marks the end of the system prompt and tools with an explicit cache breakpoint, and sets top-level automatic caching for the growing conversation. This is the pattern the API documents for agent loops.
@@ -402,15 +404,23 @@ One outcome per `run_task`. Precedence runs top to bottom: the first row that ap
 - Opus stays for ticket 2's effort measurement, for `test_writer` and for official runs.
 - **Haiku 5.5 has two rate cards:** $0.10 / $0.50 per million tokens when the prompt is 100K tokens or fewer, and $0.50 / $2.50 when it is longer. The router holds one price per model, so the benchmark deploy set prices Haiku at the higher card. Cost and budget caps then never undercount; they overcount short prompts. Its cache prices follow the same card: reads at 0.1× and 5-minute writes at 1.25× the input rate.
 
-**Estimated cost** (extrapolated from the ten Milestone 1 trials on Fable 5.2, so a direction, not a budget; ticket 2 replaces it with measured cost per task):
+**Task budget.** The API's `task_budget` (beta `task-budgets-2026-03-13`, in `output_config`) tells the model how many tokens it has for the whole loop, and shows it a countdown. It is advisory, unlike `max_tokens`, and is meant to make an attempt wrap up instead of running into the wall clock. The two Milestone 1 wall-clock stops cost $12.97 and delivered nothing.
+- It changes how the agent works, so it applies to production attempts as well as benchmark ones, through the same adapter and role configuration. Otherwise the benchmark would measure an agent that production does not run.
+- Its value is not guessed. Ticket 2 measures tokens per passing attempt without it and sets the value from that, with a margin. The minimum is 20,000 tokens. Attempts after that carry the value in their provenance, and the run snapshot records it.
+- The budget leaves `remaining` unset: the API tracks the countdown from the history the loop resends, and the loop never rewrites that history.
+- It is a request field and a configured value per role. It needs no contract change, but it does need an entry in decision 0008's amendment.
 
-| Item | Before | With caching and Haiku |
+**A clean Haiku pass before every official run.** An official run starts only after a Haiku development pass over the same frozen dataset versions ends with no `infra_error`, `fixture_invalid` or `provenance_invalid` rows. Infrastructure faults are then found at Haiku prices, not Opus ones.
+
+**Estimated cost** (extrapolated from the ten Milestone 1 trials on Fable 5.2, so a direction, not a budget; ticket 2 replaces it with measured cost per task). It does not count savings from a lower effort or the task budget, which ticket 2 measures:
+
+| Item | Before | With these controls |
 |---|---|---|
 | Ticket 2's effort measurement | ~$35 | ~$20 |
 | Development passes | ~$700–1,000 | ~$15–55 |
 | `test_writer` fixtures | ~$100 | ~$50 |
-| One official run (61 tasks × 3 seeds × 2 models) | ~$1,050 | ~$470 |
-| **Milestone 2 total** | **~$2,000–2,300** | **~$550–600** |
+| One official run (36 internal tasks × 3 seeds + 25 SWE-bench × 1 seed, × 2 models) | ~$1,050 | ~$340 |
+| **Milestone 2 total** | **~$2,000–2,300** | **~$430–470** |
 
 The local router's `monthly_usd` cap is $200. An official run needs that raised for its month, or a run budget of its own (open item 4).
 
@@ -436,7 +446,7 @@ Contracts are reviewed by hand. These are the changes this milestone asks for, g
 Platform changes outside contracts:
 
 - `llm.RoleRoute` gains `effort`; the adapter sends it and replays thinking blocks.
-- The adapter turns on prompt caching (section 10.4), with a dated amendment to decision 0008.
+- The adapter turns on prompt caching and sends a `task_budget` from the role's configuration (section 10.4), with a dated amendment to decision 0008.
 - A refused attempt ends `failed/refused` and gets no retry ordinal. This changes `TaskWorkflow`'s routing, so it is gated with `workflow.GetVersion` and the replay fixtures must still pass.
 - `internal/gate` exports staging and gains a per-test JUnit parser. `gate.Input` is unchanged.
 - `sandboxes.yaml` accepts a per-task image.
@@ -451,7 +461,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 | # | Ticket | Depends on | Review list |
 |---|---|---|---|
 | 0 | `/continue` command (already written: [`continue-command.md`](continue-command.md)) | — | RL-9 |
-| 1 | Close-out and contracts: accept 0010, 0013, 0014; the four contract changes; effort, thinking replay, prompt caching and refusals in the adapter and workflow | 0 | RL-6, RL-16 |
+| 1 | Close-out and contracts: accept 0010, 0013, 0014; the four contract changes; effort, thinking replay, prompt caching, task budget and refusals in the adapter and workflow | 0 | RL-6, RL-16 |
 | 2 | Vertical slice: minimal runner, evaluator worker, Grade, three hand-written Python tasks; the effort measurement | 1 | RL-2, RL-3, RL-14 |
 | 3 | Persistence and operations: the three tables, run snapshot, intent rows and reattachment, in-flight bound, benchmark worker without GitHub, several attempt workers | 2 | RL-2, RL-4, RL-13 |
 | 4 | Fixture lifecycle: `test_writer` role, qualification runs, owner sign-off | 3 | RL-11 |
@@ -459,7 +469,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 | 6a | Image build in CI (FR-SEC30) | — | RL-5 |
 | 6b–6d | Datasets, one ticket per language: Python, JS/TS, Java | 4, 6a | — |
 | 7 | SWE-bench Verified subset | 3, 6a | — |
-| 8 | Seeds, the comparison report, the owed measurements, exit checks | 5, 6, 7 | — |
+| 8 | Seeds, the comparison report with baseline reuse, the owed measurements, the clean-Haiku-pass entry check, exit checks | 5, 6, 7 | — |
 
 - Splitting ticket 6 by language and pulling the image build out are *confirmed*; the outline has one ticket 6.
 - Ticket 2's results are development-only. No number from before ticket 5 is reported as a benchmark result, because the isolation tests do not exist yet.
@@ -497,6 +507,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 5. Whether the Multi-Language Dataset Plan comes into the repository.
 6. Decisions 0010, 0013 and 0014 are still `proposed`.
 7. The cache TTL: 5 minutes unless ticket 2 finds lapses (10.4).
+8. The `task_budget` value (ticket 2 measures it, 10.4).
 
 **Proposed in this draft and confirmed by the owner, 2026-11-26**
 
