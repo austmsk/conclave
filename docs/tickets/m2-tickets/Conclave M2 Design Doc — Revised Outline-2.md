@@ -15,7 +15,7 @@ This outline revises the original M2 plan with four changes: hidden tests are gr
 - Replace "20+ owner-repo tasks" with internal tasks from recent public PRs plus authored tasks, across Python, Java, C++, Go and JS/TS. `docs/scope-and-requirements.md` line 38 still says "at least 20 tasks built from the owner's repositories".
 - Keep the SWE-bench Verified subset, reported separately.
 - Add requirements for multiple seeds per task and a paired comparison report.
-- Reword FR-A2 ("applied only during gating") and exit-checklist item 5 (hidden tests as a gate overlay) to match the post-attempt grade step, pending decision 0017.
+- Reword FR-A2 ("applied only during gating") and exit-checklist item 5 (hidden tests as a gate overlay) to match the post-attempt grade step. Done with decision 0017, which also reworded FR-S7 and threat T2.
 - Carry the M2 work the repo already assigns: FR-SEC27's `clean_room` vs. `reset_in_place` cost measurement, FR-SEC20's canary detector and the canary-hit halt alert (decision 0016), and revising the implementer's 20-minute wall clock from turn-latency data (decision 0016).
 
 ## 3. M1 integration map (T1 output)
@@ -34,10 +34,10 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 | Grade sandbox ID | `attempts.sandbox_id` is write-once and belongs to the attempt | New: a record for the grade sandbox, so cleanup can find it. |
 | Sweep clock | `attempts.started_at` is set when the row is created, before the attempt waits on the queue; the sweep releases sandboxes older than `-sweep-after` (2 hours) | Runner keeps in-flight workflows at or below the slot count, or the sweep keys on when the sandbox was recorded. Grade's timeout counts in `LongestSandboxHold`. |
 | Effort per attempt | Missing: the adapter never sets it; Opus 5 defaults to high, Opus 5.5 to medium | New: `effort` on `llm.RoleRoute`, sent as `output_config.effort`, recorded in `contracts.Provenance` plus an `attempts` column (contract change, by hand). |
-| Thinking blocks and refusals | Thinking blocks are discarded under a stale comment; `stopReason` treats a refusal as a provider error | Decide: thinking-block replay, and a refusal outcome. |
+| Thinking blocks and refusals | Thinking blocks are discarded under a stale comment; `stopReason` treats a refusal as a provider error | Change: replay thinking blocks through an opaque `contracts.Message` field (contract change, by hand). Change: a refusal ends the attempt `failed/refused` with its category recorded (contract change, by hand). |
 | Opus 5.5 route | Missing from `router.yaml` | Add a model entry. |
 | Worker build version | Not recorded | Add to the run snapshot. |
-| `test_writer` role | Contract exists; `roles()` and `TestRolesAreMilestoneOne` allow only implementer and pr\_writer | Extend, per decision 0017. |
+| `test_writer` role | Contract exists; `roles()` and `TestRolesAreMilestoneOne` allow only implementer and pr\_writer | Keep: the production `roles()` is unchanged. `test_writer` goes in the evaluator worker's own role map (decision 0017). |
 | Deploy files for benchmark repos | `sameRepositories` only checks that the loaded files agree, and every path is a flag; the `ci` block is required but never read by a benchmark | Separate deploy set for the benchmark worker, with a placeholder check name. |
 | JUnit test reports | Already required by the gate (`/tmp/conclave-junit/`) | Reuse: matches the five-language plan. |
 | Attempt throughput | One attempt slot per worker (decision 0012); the rate limiter is per worker process; the blob store is a local directory | Several attempt workers on one host or shared mount, with the rate limit divided across them. |
@@ -61,7 +61,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 - `plans.body` stays the authoritative record of what the agent saw; the manifest never duplicates or replaces it.
 - Manifest: one YAML file per dataset in the repo, versioned by git commit plus content hash. `task_kind` values: `public_replay`, `authored`, `swebench_verified`.
 - Three new tables only: `benchmark_run`, `run_task`, `fixture`.
-- One canonical JSON run snapshot, stored with its hash: models, prompt hashes, config hashes, image digests, runner commit, rerun policy.
+- One canonical JSON run snapshot, stored with its hash: models and implementer effort, prompt hashes, config hashes, image digests, runner commit, rerun policy.
 - Result identity binds the candidate diff digest, not just run ID and task ID.
 
 ## 6. Fixtures and hidden-test isolation
@@ -104,7 +104,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 - Each test carries an expected class: resolution (fail to pass), maintenance (pass to pass), setup check.
 - Stability reruns happen at qualification; diagnostic reruns during scoring classify instability and never improve a score.
 - Rerun counts (5 at qualification, 3 at scoring) are configurable and recorded in the run snapshot. A rerun-policy health check tracks when flips first appear and recommends raising or lowering the counts once enough flake events exist; changes apply only to new dataset or run versions, with owner approval.
-- Outcome taxonomy kept from the original plan: resolved, unresolved, infra\_error, cancelled, budget\_exhausted, fixture\_invalid, excluded\_flaky, provenance\_invalid, runner\_interrupted.
+- Outcome taxonomy kept from the original plan: resolved, unresolved, infra\_error, cancelled, budget\_exhausted, fixture\_invalid, excluded\_flaky, provenance\_invalid, runner\_interrupted, plus refused (a provider refusal, kept in the denominator and reported separately).
 
 ## 11. Metrics and reporting
 
@@ -119,8 +119,8 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 
 ## 12. Ticket plan
 
-1. M1 close-out (tag, owed decisions) and contract inventory
-2. Vertical slice: minimal runner, Grade activity, 3 hand-written Python tasks (dev-only results)
+1. M1 close-out (tag, owed decisions) and contract inventory, including the `contracts.Message` change for thinking replay, the `contracts.Provenance` effort field, and the refusal stop and failure reasons
+2. Vertical slice: minimal runner, Grade activity, 3 hand-written Python tasks (dev-only results); runs them at two effort levels on both models to choose the implementer's effort
 3. Persistence, run snapshot, intent rows, restart reconciliation; runner keeps in-flight workflows at or below the attempt slot count; benchmark worker without GitHub
 4. `test_writer` fixture lifecycle, qualification, owner sign-off
 5. Hidden-test isolation tests
@@ -139,7 +139,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 | Wall time: one attempt slot per worker, \~8 minutes per attempt; a full official run is \~44 hours serial | Several attempt workers; fewer seeds or one model until the pipeline is proven |
 | The reaper releases live sandboxes of queued attempts: at one slot, roughly the 15th task onward passes the 2-hour sweep cutoff | Runner bounds in-flight workflows to the slot count (ticket 3) |
 | N workers send N times the configured rate limit | Divide the per-process limit by the worker count |
-| Opus 5 and 5.5 compared at different default effort (high vs. medium) | Set effort per route and record it per attempt |
+| Opus 5 and 5.5 compared at different default effort (high vs. medium) | One explicit implementer effort, the same on both models, recorded per attempt and in the run snapshot |
 | Hidden-test output reaches a later attempt (latent: `PriorFailure` is defined but unset in production) | Grade after the attempt, never in the M1 gate (decision 0017); isolation test on `SessionInput` |
 | `test_writer` produces weak or wrong tests | Qualification against the reference plus owner sign-off |
 
@@ -156,9 +156,15 @@ These weren't settled in discussion and should be decided before drafting the fu
 - [x] M1 assumptions checked (section 3).
 - [x] Benchmark deploy entries: a separate deploy set on its own task queue, as decision 0012 anticipates.
 - [ ] M1 close-out: tag `m1-complete`; write decisions 0002, 0003 and 0005; accept or revise 0008 through 0016
-- [ ] Decision 0017: `test_writer` in the production pipeline, and where hidden tests run (draft proposed)
-- [ ] Effort value per route for Opus 5 and Opus 5.5 (the same explicit value on both)
-- [ ] Thinking blocks: keep discarding them, or replay them (changes `contracts.Message`)
-- [ ] A `refusal` outcome in the taxonomy, so a refused call is not counted as a provider error
+- [x] Decision 0017, accepted 2026-11-24: hidden tests run in a separate Grade step after the task, on an evaluator-only worker. `test_writer` is benchmark-only in Milestone 2, and a gate-failed task's Grade result is kept for diagnosis only.
+- [x] Decided, 2026-11-24: effort follows a rule rather than a per-route list. The implementer runs at one explicit effort, the same on every model being compared, and it is recorded on every attempt and in the run snapshot. Other roles keep their defaults. Ticket 2 picks the value by running its tasks at two effort levels on both models, and the value is fixed before any official run. It lives in the benchmark's deploy set, so changing it later means a new run version.
+- [x] Decided, 2026-11-26: replay thinking blocks. Discarding them on every turn is what the API treats as a one-time recovery step, and it drops the model's reasoning in the middle of a tool round. Replay is safe here because each attempt runs on one model with no fallbacks, and the agent loop only appends to its history, so the API's check that earlier history is unchanged holds. The contract change, for review by hand: `contracts.Message` gains an opaque field owned by the adapter (for example `ProviderContent json.RawMessage`) holding the assistant turn's content exactly as received. The adapter sends it back unchanged, and the agent never reads it. A separate reasoning field is not enough, because `Text` and `ToolCalls` lose the block order the API requires. A test fails if the loop ever edits or removes an earlier message. This lands before ticket 2 measures effort and cost.
+- [x] Decided, 2026-11-26: a provider refusal (`stop_reason: "refusal"`) is an outcome of its own, not an error.
+  - The adapter maps it to a new stop reason and records the `stop_details` category.
+  - The attempt ends `failed` with reason `refused`, not `errored`. A refused attempt does not get a retry ordinal.
+  - The benchmark reports `refused` separately and keeps those tasks in the denominator, because refusing is part of how the model performed.
+  - No server-side fallbacks in the benchmark: they would switch models mid-attempt and drop the replayed thinking. Production fallbacks are a later decision.
+  - The contract change, for review by hand: `StopRefusal` and `ReasonRefused` in `internal/contracts`, and a place to record the category.
+  - This is not `agent.Refusal`, which is a tool declining a bad call.
 - [ ] How many attempt workers for official runs, given the per-process rate limit and the shared blob directory
 - [ ] Verify recent PR activity and shortlist repos per language

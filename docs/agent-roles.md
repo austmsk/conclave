@@ -99,7 +99,7 @@ Exceeding steps, tokens, or wall clock ends the attempt as `failed` with the rea
 |---|---|---|---|---|---|
 | `brief` | 3 | Repository at a commit | `read_file`, `list_dir`, `search`, LSP queries | Codebase brief: architecture, module map, commands, conventions, key dependencies | Read-only. Cached per commit. Output is untrusted data downstream (FR-SEC6) |
 | `planner` | 4 | Issue text, codebase brief, repository constraints | Read-only tools | Task graph with acceptance criteria, predicted file footprints, risk flags, decision records | Read-only. Plan validated mechanically before execution |
-| `test_writer` | 2 (start) | Task spec, repository profile | Implementer tools minus `request_dependency` | Visible and hidden test sets | Runs before implementers; hidden set withheld (FR-A2). Ships before any benchmark results are generated |
+| `test_writer` | 2 (start) | Task spec, repository profile | Implementer tools minus `request_dependency` | Hidden test set | Runs once per authored benchmark task while the dataset is built, blind to the reference fix. Its tests are qualified against that fix and signed off by the owner, then graded after each attempt and never shown to it (FR-A2, decision 0017). Not in the production pipeline in Milestone 2 |
 | `judge` | 3 | Two attempts' diffs and reports, rubric | Read-only tools | Winner, rationale, rubric scores | Provider chosen by the outside-provider rule; presentation order randomized |
 | `pr_writer` | 1 (minimal) | Task spec, diff, gate results, decisions | None | PR title, description, risk section | No tools; pure synthesis. Minimal version in Milestone 1 |
 | `discussion` | 1 (minimal) | Question, plan, decisions, codebase brief | Read-only tools | Answer citing decisions and files | Never mutates state (FR-S6). The only role permitted on the platform repository before Milestone 2 (FR-SEC32) |
@@ -131,4 +131,4 @@ Milestone 1 implements `implementer` and a minimal `pr_writer` and `discussion`.
 
 ## Decisions
 
-- **Milestone 1 implementers write their own tests.** The walking skeleton stays thin, with no separate test writer. The `test_writer` role and the hidden-test split ship at the start of Milestone 2, before any benchmark results are generated, so evaluation numbers always come from a pipeline that includes tests the implementer never saw.
+- **Milestone 1 implementers write their own tests.** The walking skeleton stays thin, with no separate test writer. The `test_writer` role and the hidden-test split ship at the start of Milestone 2, before any benchmark results are generated, so evaluation numbers are always graded by tests the implementer never saw. In Milestone 2 the role writes benchmark fixtures only, and implementers still write their own tests ([decision 0017](decisions/0017-test-writer-and-hidden-test-grading.md)).

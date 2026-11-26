@@ -1,7 +1,7 @@
 # 0017 — Hidden tests are graded after the attempt, and `test_writer` writes benchmark fixtures, not production tests
 
 **Date:** 2026-11-24
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
@@ -89,7 +89,7 @@ Ticket 5 of the M2 plan writes these as attack tests, beside the code they guard
 
 ### Changes on acceptance
 
-These land with acceptance, in the same change, and not before:
+Applied when the owner accepted this record, on 2026-11-24:
 
 | Document | Change |
 |---|---|

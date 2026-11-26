@@ -87,7 +87,7 @@ Every repository has a tier, set in the platform repository's configuration. A t
 | ID | Threat | Mitigations | Requirements |
 |---|---|---|---|
 | T1 | Agent weakens gates by deleting or skipping tests or editing CI | Gate-weakening detection; protected paths; repository configuration stored in the platform repository; GitHub App lacks the `workflows` permission, so CI files cannot be modified | FR-A3, FR-SEC8, FR-SEC15 |
-| T2 | Agent reads or edits hidden tests | Hidden tests stored outside the sandbox and applied only during gating | FR-A2 |
+| T2 | Agent reads or edits hidden tests | Hidden tests stored in an evaluator-only store, applied only when grading in a fresh sandbox; isolation attack tests | FR-A2 |
 | T3 | Changes land directly on a default branch | App pushes only to `agent/` branches; branch rules with no bypass for the App | FR-SEC5, FR-SEC16 |
 | T4 | Malicious dependency is added | Dependency additions only through a platform tool: registry allowlist, vulnerability scan, license check, typosquatting and package-age heuristics, owner approval | FR-SEC14, FR-C1 |
 | T4a | Diff installs a git hook or other build-time execution | Execution surface check flags lifecycle scripts, hook installers, registry configuration, `.gitattributes` filters, Makefiles, Dockerfiles, and build plugins; flagged in the PR and labeled | FR-SEC25 |
