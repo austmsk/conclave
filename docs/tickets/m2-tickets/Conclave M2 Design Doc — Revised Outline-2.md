@@ -167,5 +167,6 @@ These weren't settled in discussion and should be decided before drafting the fu
   - The contract change, for review by hand: `StopRefusal` and `ReasonRefused` in `internal/contracts`, and a place to record the category.
   - This is not `agent.Refusal`, which is a tool declining a bad call.
 - [x] Decided, 2026-11-26: Milestone 2's datasets cover Python, JS/TS and Java only. Go and C++ are deferred, with the Go tasks authored from Conclave. Sections 2, 7 and 8, ticket 6 and the C++ risk row still show the five-language plan; `m2-design.md` has the current counts (25 or 26 internal tasks).
+- [x] Decided, 2026-11-26: cut cost. The adapter turns on prompt caching (an amendment to decision 0008), and development passes run the implementer on Haiku 5.5. Opus stays for the effort measurement, `test_writer` and official runs. `m2-design.md` section 10.4 has the details and the estimate (about $550–600 for Milestone 2, down from about $2,000–2,300).
 - [ ] How many attempt workers for official runs, given the per-process rate limit and the shared blob directory
 - [ ] Verify recent PR activity and shortlist repos per language

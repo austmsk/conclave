@@ -386,6 +386,34 @@ One outcome per `run_task`. Precedence runs top to bottom: the first row that ap
 | FR-SEC27 default | After a scoring run, re-gate a sample of its frozen artifacts in both modes and compare time and result. No model calls |
 | Run budget cap | Set after ticket 2 measures cost per task |
 
+### 10.4 Cost
+
+*Decided, 2026-11-26:* two cost controls, applied before ticket 2 measures anything.
+
+**Prompt caching.** The Anthropic adapter today sends every request uncached (decision 0008, item 5). In the Milestone 1 trials, input was 65% of the implementer's cost, because each step resends the whole conversation.
+- The adapter marks the end of the system prompt and tools with an explicit cache breakpoint, and sets top-level automatic caching for the growing conversation. This is the pattern the API documents for agent loops.
+- Caching does not change what the model outputs, so cached and uncached attempts are comparable. The agent loop's history only grows, which is what caching needs, and it fits thinking replay.
+- The router config already holds cache write and read prices, and the adapter already reads the cache usage fields, so cost accounting needs no change.
+- **TTL:** the 5-minute default. A cache read refreshes it, but the clock runs from each request's start, so a long model turn followed by a slow `run_tests` can let it lapse. Ticket 2 counts cache writes after the first step. If lapses are common, the 1-hour TTL (2× the write price) is set in the deploy set and recorded in the run snapshot.
+- This is an adapter change with no contract change. It needs a dated amendment to decision 0008.
+
+**Haiku 5.5 for development passes.** Development runs check the pipeline, not the model: datasets load, Grade runs, rows reconcile. They run the implementer on `claude-haiku-5-5`.
+- Development results are never reported as benchmark results, and never compared with official ones. The run snapshot records the model, so the two cannot be confused.
+- Opus stays for ticket 2's effort measurement, for `test_writer` and for official runs.
+- **Haiku 5.5 has two rate cards:** $0.10 / $0.50 per million tokens when the prompt is 100K tokens or fewer, and $0.50 / $2.50 when it is longer. The router holds one price per model, so the benchmark deploy set prices Haiku at the higher card. Cost and budget caps then never undercount; they overcount short prompts. Its cache prices follow the same card: reads at 0.1× and 5-minute writes at 1.25× the input rate.
+
+**Estimated cost** (extrapolated from the ten Milestone 1 trials on Fable 5.2, so a direction, not a budget; ticket 2 replaces it with measured cost per task):
+
+| Item | Before | With caching and Haiku |
+|---|---|---|
+| Ticket 2's effort measurement | ~$35 | ~$20 |
+| Development passes | ~$700–1,000 | ~$15–55 |
+| `test_writer` fixtures | ~$100 | ~$50 |
+| One official run (61 tasks × 3 seeds × 2 models) | ~$1,050 | ~$470 |
+| **Milestone 2 total** | **~$2,000–2,300** | **~$550–600** |
+
+The local router's `monthly_usd` cap is $200. An official run needs that raised for its month, or a run budget of its own (open item 4).
+
 ## 11. Security work in this milestone
 
 - **Hidden-test isolation.** Section 6.3 and ticket 5.
@@ -408,6 +436,7 @@ Contracts are reviewed by hand. These are the changes this milestone asks for, g
 Platform changes outside contracts:
 
 - `llm.RoleRoute` gains `effort`; the adapter sends it and replays thinking blocks.
+- The adapter turns on prompt caching (section 10.4), with a dated amendment to decision 0008.
 - A refused attempt ends `failed/refused` and gets no retry ordinal. This changes `TaskWorkflow`'s routing, so it is gated with `workflow.GetVersion` and the replay fixtures must still pass.
 - `internal/gate` exports staging and gains a per-test JUnit parser. `gate.Input` is unchanged.
 - `sandboxes.yaml` accepts a per-task image.
@@ -422,7 +451,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 | # | Ticket | Depends on | Review list |
 |---|---|---|---|
 | 0 | `/continue` command (already written: [`continue-command.md`](continue-command.md)) | — | RL-9 |
-| 1 | Close-out and contracts: accept 0010, 0013, 0014; the four contract changes; effort, thinking replay and refusals in the adapter and workflow | 0 | RL-6, RL-16 |
+| 1 | Close-out and contracts: accept 0010, 0013, 0014; the four contract changes; effort, thinking replay, prompt caching and refusals in the adapter and workflow | 0 | RL-6, RL-16 |
 | 2 | Vertical slice: minimal runner, evaluator worker, Grade, three hand-written Python tasks; the effort measurement | 1 | RL-2, RL-3, RL-14 |
 | 3 | Persistence and operations: the three tables, run snapshot, intent rows and reattachment, in-flight bound, benchmark worker without GitHub, several attempt workers | 2 | RL-2, RL-4, RL-13 |
 | 4 | Fixture lifecycle: `test_writer` role, qualification runs, owner sign-off | 3 | RL-11 |
@@ -444,7 +473,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 | The cutoff date is provisional | Confirm Opus 5.5's training cutoff before freezing the first dataset |
 | The Java environment eats time | Build it last; prefer small builds |
 | Curation takes longer than coding | Shortlist repositories early; about 30 to 60 minutes per authored task |
-| Run cost: tasks × 3 seeds × 2 models, plus SWE-bench | A per-run budget cap; fewer seeds during development |
+| Run cost: tasks × 3 seeds × 2 models, plus SWE-bench | Prompt caching; Haiku 5.5 for development passes; a per-run budget cap |
 | Wall time: about 44 hours serial for an official run | Several attempt workers; one model or fewer seeds until the pipeline is proven |
 | The sweep releases a queued attempt's sandbox | The runner bounds in-flight work to the slot count |
 | N workers send N times the rate limit | Each worker gets 1/N of the limit |
@@ -467,6 +496,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 4. The run budget cap (after ticket 2).
 5. Whether the Multi-Language Dataset Plan comes into the repository.
 6. Decisions 0010, 0013 and 0014 are still `proposed`.
+7. The cache TTL: 5 minutes unless ticket 2 finds lapses (10.4).
 
 **Proposed in this draft and confirmed by the owner, 2026-11-26**
 
