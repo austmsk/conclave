@@ -34,7 +34,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 | Grade sandbox ID | `attempts.sandbox_id` is write-once and belongs to the attempt | New: a record for the grade sandbox, so cleanup can find it. |
 | Sweep clock | `attempts.started_at` is set when the row is created, before the attempt waits on the queue; the sweep releases sandboxes older than `-sweep-after` (2 hours) | Runner keeps in-flight workflows at or below the slot count, or the sweep keys on when the sandbox was recorded. Grade's timeout counts in `LongestSandboxHold`. |
 | Effort per attempt | Missing: the adapter never sets it; Opus 5 defaults to high, Opus 5.5 to medium | New: `effort` on `llm.RoleRoute`, sent as `output_config.effort`, recorded in `contracts.Provenance` plus an `attempts` column (contract change, by hand). |
-| Thinking blocks and refusals | Thinking blocks are discarded under a stale comment; `stopReason` treats a refusal as a provider error | Decide: thinking-block replay, and a refusal outcome. |
+| Thinking blocks and refusals | Thinking blocks are discarded under a stale comment; `stopReason` treats a refusal as a provider error | Change: replay thinking blocks through an opaque `contracts.Message` field (contract change, by hand). Decide: a refusal outcome. |
 | Opus 5.5 route | Missing from `router.yaml` | Add a model entry. |
 | Worker build version | Not recorded | Add to the run snapshot. |
 | `test_writer` role | Contract exists; `roles()` and `TestRolesAreMilestoneOne` allow only implementer and pr\_writer | Keep: the production `roles()` is unchanged. `test_writer` goes in the evaluator worker's own role map (decision 0017). |
@@ -119,7 +119,7 @@ Checked against the repo on Nov 16, 2026 (`main` after PR #29). A local run the 
 
 ## 12. Ticket plan
 
-1. M1 close-out (tag, owed decisions) and contract inventory
+1. M1 close-out (tag, owed decisions) and contract inventory, including the `contracts.Message` change for thinking replay and the `contracts.Provenance` effort field
 2. Vertical slice: minimal runner, Grade activity, 3 hand-written Python tasks (dev-only results); runs them at two effort levels on both models to choose the implementer's effort
 3. Persistence, run snapshot, intent rows, restart reconciliation; runner keeps in-flight workflows at or below the attempt slot count; benchmark worker without GitHub
 4. `test_writer` fixture lifecycle, qualification, owner sign-off
@@ -158,7 +158,7 @@ These weren't settled in discussion and should be decided before drafting the fu
 - [ ] M1 close-out: tag `m1-complete`; write decisions 0002, 0003 and 0005; accept or revise 0008 through 0016
 - [x] Decision 0017, accepted 2026-11-24: hidden tests run in a separate Grade step after the task, on an evaluator-only worker. `test_writer` is benchmark-only in Milestone 2, and a gate-failed task's Grade result is kept for diagnosis only.
 - [x] Decided, 2026-11-24: effort follows a rule rather than a per-route list. The implementer runs at one explicit effort, the same on every model being compared, and it is recorded on every attempt and in the run snapshot. Other roles keep their defaults. Ticket 2 picks the value by running its tasks at two effort levels on both models, and the value is fixed before any official run. It lives in the benchmark's deploy set, so changing it later means a new run version.
-- [ ] Thinking blocks: keep discarding them, or replay them (changes `contracts.Message`)
+- [x] Decided, 2026-11-26: replay thinking blocks. Discarding them on every turn is what the API treats as a one-time recovery step, and it drops the model's reasoning in the middle of a tool round. Replay is safe here because each attempt runs on one model with no fallbacks, and the agent loop only appends to its history, so the API's check that earlier history is unchanged holds. The contract change, for review by hand: `contracts.Message` gains an opaque field owned by the adapter (for example `ProviderContent json.RawMessage`) holding the assistant turn's content exactly as received. The adapter sends it back unchanged, and the agent never reads it. A separate reasoning field is not enough, because `Text` and `ToolCalls` lose the block order the API requires. A test fails if the loop ever edits or removes an earlier message. This lands before ticket 2 measures effort and cost.
 - [ ] A `refusal` outcome in the taxonomy, so a refused call is not counted as a provider error
 - [ ] How many attempt workers for official runs, given the per-process rate limit and the shared blob directory
 - [ ] Verify recent PR activity and shortlist repos per language
