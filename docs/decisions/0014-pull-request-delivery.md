@@ -1,7 +1,7 @@
 # 0014 — Pull request delivery: delivered after CI, polled checks, a sandboxed rebase, and deterministic commits
 
 **Date:** 2026-10-31
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 

@@ -1,7 +1,7 @@
 # 0010 — GitHub App auth and REST are written on net/http, not go-github or ghinstallation
 
 **Date:** 2026-10-19
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
@@ -46,3 +46,18 @@ Containing all of that would have taken more code than writing the client. That 
 - The project owns RS256 signing, which tests check against the public key. It also owns token expiry and clock skew (`iat` is set 60 seconds in the past), and keeping up with API changes.
 - Features a library would give for free are written when a ticket needs them: pagination, GraphQL (ticket 9 needs `markPullRequestReadyForReview` to take a pull request out of draft), and the checks API. Retries are not done in the client; Temporal's activity retry policy owns them, as in 0008.
 - The REST surface is small and every call is listed in `internal/github`, so reviewing what the App can do to a repository means reading one package.
+
+## Amendment, 2026-11-27: the permissions and calls added since ticket 6
+
+Reviewed after Milestone 1 closed and accepted. The reasons above still hold, and the client stays hand-written on `net/http`. Its scope has grown since this record was written:
+
+- **Run tokens also ask for `checks: read`.** Ticket 9 polls the repository's CI through the checks API ([0014](0014-pull-request-delivery.md)). A run token now asks for contents, issues and pull requests (write), and checks and metadata (read). The set is fixed in code (`tokenPermissions` in `internal/github/appauth.go`), so no configuration can widen it. A reply granting more than was asked is still refused, and `workflows` and `administration` are refused even if a later edit asks for them. Checks are read, never written.
+- **Alerts use a second, narrower token.** Ticket 10a opens alert issues in a separate operations repository with a token limited to `issues: write` and `metadata: read` (`alertTokenPermissions`, [0015](0015-kill-switch-alerts-and-reaper.md)). No run token reaches that repository.
+- **The six REST calls are now twelve.** Ticket 6's six are unchanged. Six were added:
+  - listing an issue's comments, to find the App's own marked comments so that a retry edits rather than posts again ([0013](0013-commands-and-status-surface.md));
+  - reading a pull request, listing a commit's check runs, and marking a pull request ready for review, which is a GraphQL call ([0014](0014-pull-request-delivery.md));
+  - creating and listing alert issues ([0015](0015-kill-switch-alerts-and-reaper.md)).
+
+Every call is still in `internal/github`, so reviewing what the App can do to a repository still means reading one package. All of them go through the same request path (`send` and `do` in `internal/github/api.go`), which keeps the fixed error text and refuses redirects.
+
+**Known gap.** The leak tests have not kept up. `TestAPIErrorsCarryNoSecrets` drives only ticket 6's calls (its `restCalls` table: create, edit and react to a comment, and create a pull request, which covers listing). The alert calls have their own test, `TestAlertErrorsCarryNoSecrets`. Listing an issue's comments, listing check runs and marking a pull request ready are covered only through the shared request path, not by a test that fails each of them and checks the error for credentials. Adding them to `restCalls` is a small test-only change for a later ticket.
