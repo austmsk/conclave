@@ -1,7 +1,7 @@
 # 0013 — Commands and the status surface: one table, a closed-run workflow, and a versioned change
 
 **Date:** 2026-10-31
-**Status:** proposed
+**Status:** accepted
 
 ## Context
 
@@ -53,3 +53,9 @@ The owner decided, on 2026-10-30:
 - **Some edge cases stay log-only.** A command arriving in the instant between the drain and the workflow's completion is not audited. The receiver's log keeps it, and a redelivery reaches the closed-run workflow.
 - **Ticket numbering shifts.** This record and migration 00008 are taken, so ticket 9's draft moves to migration 00009 and decision 0014.
 - **Replay fixtures.** A v8b history has not been captured as a replay fixture. The fixtures that exist prove the old path still replays.
+
+## Amendment, 2026-11-27: the versioned path has a replay fixture
+
+Reviewed after Milestone 1 closed and accepted.
+
+**Corrected.** The last consequence above says no v8b history was captured as a replay fixture. Ticket 9 captured one: `internal/workflow/testdata/feature-mid-ci.json` records `commands-8b` and `delivery-9`, both at version 1, and `TestReplayMidAttempt` replays it. Both sides of the `commands-8b` gate are now covered. The ticket 8 fixtures replay the old path, and ticket 9's fixture replays the new one.

@@ -461,7 +461,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 | # | Ticket | Depends on | Review list |
 |---|---|---|---|
 | 0 | `/continue` command (already written: [`continue-command.md`](continue-command.md)) | — | RL-9 |
-| 1 | Close-out and contracts: accept 0010, 0013, 0014; the four contract changes; effort, thinking replay, prompt caching, task budget and refusals in the adapter and workflow | 0 | RL-6, RL-16 |
+| 1 | Close-out and contracts: the four contract changes; effort, thinking replay, prompt caching, task budget and refusals in the adapter and workflow | 0 | RL-6, RL-16 |
 | 2 | Vertical slice: minimal runner, evaluator worker, Grade, three hand-written Python tasks; the effort measurement | 1 | RL-2, RL-3, RL-14 |
 | 3 | Persistence and operations: the three tables, run snapshot, intent rows and reattachment, in-flight bound, benchmark worker without GitHub, several attempt workers | 2 | RL-2, RL-4, RL-13 |
 | 4 | Fixture lifecycle: `test_writer` role, qualification runs, owner sign-off | 3 | RL-11 |
@@ -505,7 +505,7 @@ One ticket per session, as in Milestone 1. Each ticket's own file will name its 
 3. The implementer's effort value (ticket 2 measures it).
 4. The run budget cap (after ticket 2).
 5. Whether the Multi-Language Dataset Plan comes into the repository.
-6. Decisions 0010, 0013 and 0014 are still `proposed`.
+6. *Closed, 2026-11-27:* decisions 0010, 0013 and 0014 are accepted.
 7. The cache TTL: 5 minutes unless ticket 2 finds lapses (10.4).
 8. The `task_budget` value (ticket 2 measures it, 10.4).
 
